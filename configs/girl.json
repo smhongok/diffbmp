@@ -1,0 +1,40 @@
+{
+    "preprocessing": {
+        "final_width": 128,
+        "trim": false,
+        "FM_halftone": false,
+        "transform": "none",
+        "img_path": "images/girl.png",
+        "bg_threshold": 250,
+        "do_equalize": true,
+        "do_local_contrast": false,
+        "local_contrast":{
+            "radius": 2.0,
+            "amount": 3.0
+        },
+        "do_tone_curve": false,
+        "tone_params": {
+            "in_low": 50,
+            "in_high": 200,
+            "out_low": 30,
+            "out_high": 230
+        },
+        "vertical_paddings": [0, 0]
+    },
+    "initialization": {
+        "template_matching": true,
+        "N": 50000,
+        "min_distance": 5,
+        "peak_threshold": 0.5,
+        "radii_min": 2,
+        "arc_thickness": 1,
+        "v_init_mean": -5.0
+    },
+    "optimization": {
+        "num_iterations": 300,
+        "learning_rate": 0.1
+    },
+    "postprocessing": {
+        "output_path": "outputs/girl_N=50000.pdf"
+    }
+}

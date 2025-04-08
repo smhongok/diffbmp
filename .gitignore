@@ -5,9 +5,12 @@
 outputs/*
 images/*
 !images/girl.png
+configs/*
+!configs/girl.json
 main_color.py
 main_text.py
 main_rgb.py
+.vscode/
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
