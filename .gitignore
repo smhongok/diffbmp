@@ -7,7 +7,7 @@ images/*
 !images/girl.png
 configs/*
 !configs/girl.json
-main_color.py
+!configs/girl_color.json
 main_text.py
 main_rgb.py
 .vscode/

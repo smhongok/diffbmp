@@ -138,3 +138,37 @@ class Initializer:
             v = torch.randn(N, device=device) + self.v_init_mean
         
         return x,y,r,v
+    
+
+    def initialize_circles_color(self, I_target):
+        """
+        I_target이 (H, W, 3) 형태의 컬러 이미지일 때 동작하도록 수정된 함수.
+        """
+        device = I_target.device
+        H, W, _ = I_target.shape  # 컬러 이미지의 크기 추출
+        if self.radii_max is None:
+            self.radii_max = min(H, W) // 2
+        N = self.N
+
+        # Initialize circle parameters
+        if self.template_matching:
+            # I_target을 (H, W, 3)에서 (H, W)로 변환 (예: 밝기 채널 사용)
+            I_target_gray = I_target.mean(dim=-1)  # RGB 평균값으로 흑백 변환
+            x, y, r, v = self.initialize_circles_with_template_matching(I_target_gray)
+            torch.manual_seed(0)
+            # Pad with random values if fewer than N circles are detected
+            if len(x) < N:
+                additional = N - len(x)
+                x = torch.cat((x, torch.rand(additional, device=device) * W))
+                y = torch.cat((y, torch.rand(additional, device=device) * H))
+                r = torch.cat((r, torch.rand(additional, device=device) * (self.radii_max - self.radii_min) + self.radii_min))
+                v = torch.cat((v, torch.randn(additional, device=device) + self.v_init_mean))
+        else:
+            # Random initialization
+            torch.manual_seed(0)
+            x = torch.rand(N, device=device) * W
+            y = torch.rand(N, device=device) * H
+            r = torch.rand(N, device=device) * (self.radii_max - self.radii_min) + self.radii_min
+            v = torch.randn(N, device=device) + self.v_init_mean
+
+        return x, y, r, v
