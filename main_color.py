@@ -228,5 +228,74 @@ def export_circles_to_pdf(x, y, r, v, c, filename="circle_art.pdf", canvas_size=
     plt.close(fig)
 
 # 실제 PDF export 실행
-output_path = config["postprocessing"].get("output_path", "circle_art.pdf")
-export_circles_to_pdf(x, y, r, v, c, filename=output_path)
+# output_path = config["postprocessing"].get("output_path", "circle_art.pdf")
+# export_circles_to_pdf(x, y, r, v, c, filename=output_path)
+
+
+#############################################
+# PDF & GIF Export 함수: layer-wise 누적 결과를 캡처
+#############################################
+def export_circles_to_pdf_and_gif(x, y, r, v, c,
+                                  pdf_filename="circle_art.pdf",
+                                  gif_filename="layer_progress.gif",
+                                  canvas_size=(8, 8),
+                                  frame_interval=200):
+    # 디렉토리 생성
+    directory_pdf = os.path.dirname(pdf_filename)
+    if directory_pdf and not os.path.exists(directory_pdf):
+        os.makedirs(directory_pdf)
+    directory_gif = os.path.dirname(gif_filename)
+    if directory_gif and not os.path.exists(directory_gif):
+        os.makedirs(directory_gif)
+    
+    # figure와 axis 생성
+    fig, ax = plt.subplots(figsize=canvas_size)
+    
+    # PDF용 전체 도형은 밑쪽부터 쌓기 위해 reversed 순서로 처리
+    alpha_vals = torch.sigmoid(v).detach().cpu().numpy()
+    colors = torch.sigmoid(c).detach().cpu().numpy()
+    
+    # GIF 프레임 저장 리스트
+    frames = []
+    
+    # for문을 통해 각 도형을 하나씩 add_patch
+    patches_list = list(zip(x.cpu(), y.cpu(), r.cpu(), alpha_vals, colors))
+    # 일반적으로 PDF에서는 맨 밑 레이어부터 그리므로 reversed 순서로 처리합니다.
+    for idx, (xi, yi, ri, alpha, col) in enumerate(reversed(patches_list)):
+        circle = patches.Circle((xi, yi), ri,
+                                linewidth=config["postprocessing"].get("linewidth", 3.0),
+                                edgecolor=(col[0], col[1], col[2], alpha),
+                                facecolor='none')
+        ax.add_patch(circle)
+        
+        # 매 frame_interval마다 현재 canvas 상태를 프레임으로 캡처
+        if (idx + 1) % frame_interval == 0 or idx == len(patches_list) - 1:
+            fig.canvas.draw()
+            image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+            image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+            # 해상도를 낮추기 위해 PIL을 사용하여 이미지 크기를 조절
+            pil_img = Image.fromarray(image)
+            new_size = (pp_conf.get("final_width", 128), int(pp_conf.get("final_width", 128)*H /W))
+            pil_img = pil_img.resize(new_size, resample=Image.BILINEAR)
+            image = np.array(pil_img)
+            frames.append(image.copy())
+    
+    # figure 설정
+    ax.set_xlim(0, W)
+    ax.set_ylim(H, 0)  # y축 상하 반전 (일반 이미지 좌표계)
+    ax.set_aspect('equal', adjustable='box')
+    plt.axis('off')
+    
+    # PDF 저장
+    with PdfPages(pdf_filename) as pdf:
+        pdf.savefig(fig, bbox_inches='tight', pad_inches=0)
+    plt.close(fig)
+    
+    # GIF 저장 (duration은 프레임 간 간격, 0.1초 정도 권장)
+    imageio.mimsave(gif_filename, frames, duration=0.1)
+    print(f"PDF saved as {pdf_filename} and GIF saved as {gif_filename}")
+
+# 실제 PDF와 GIF export 실행
+output_pdf = config["postprocessing"].get("output_path", "circle_art.pdf")
+output_gif = config["postprocessing"].get("gif_output_path", "layer_progress.gif")
+export_circles_to_pdf_and_gif(x, y, r, v, c, pdf_filename=output_pdf, gif_filename=output_gif, canvas_size=(8, 8), frame_interval=200)

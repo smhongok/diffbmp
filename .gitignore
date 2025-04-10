@@ -8,8 +8,10 @@ images/*
 configs/*
 !configs/girl.json
 !configs/girl_color.json
+!configs/girl_triangle.json
 main_text.py
 main_rgb.py
+main_svg.py
 .vscode/
 
 ### Python ###
