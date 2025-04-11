@@ -9,6 +9,7 @@ import imageio
 from tqdm import tqdm
 from PIL import Image
 import json
+import tempfile
 import argparse
 import svgpathtools
 from svgpathtools import svg2paths
@@ -48,13 +49,16 @@ paths, attributes = svg2paths(svg_file)
 # SVG를 고화질 bmp로 변환 (실제로는 cairosvg 등으로 렌더링 필요)
 # 여기서는 예시로 PIL을 사용해 임시 bmp를 생성한다고 가정
 from cairosvg import svg2png
-# SVG를 PNG로 변환
-svg2png(url=svg_file, write_to="temp.png")
 
-# RGBA 이미지로 읽기
-bmp_image = Image.open("temp.png").convert('RGBA')
-bmp_image = np.array(bmp_image)
-
+# 임시 파일 생성
+with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as temp_file:
+    # SVG를 PNG로 변환
+    svg2png(url=svg_file, write_to=temp_file.name)
+    
+    # RGBA 이미지로 읽기
+    bmp_image = Image.open(temp_file.name).convert('RGBA')
+    bmp_image = np.array(bmp_image)
+    
 # 원본 이미지 크기 얻기
 orig_h, orig_w, _ = bmp_image.shape
 new_size = max(orig_h, orig_w)
@@ -231,7 +235,7 @@ visualize_results(I_target, I_hat)
 import os
 import xml.etree.ElementTree as ET
 from copy import deepcopy
-import tempfile
+
 from cairosvg import svg2pdf
 
 def remove_svg_styles(root):
