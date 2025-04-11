@@ -226,7 +226,7 @@ class Initializer:
 
         x = torch.rand(N, device=device) * W  # 중심 x 좌표
         y = torch.rand(N, device=device) * H  # 중심 y 좌표
-        r = torch.ones(N, device=device)  # 배율 (초기값 1)
+        r = torch.rand(N, device=device) * min(H,W) / 8 + min(H,W) / 32  # 배율 (초기값 1)
         v = torch.full((N,), self.v_init_mean, device=device)  # alpha 초깃값
         theta = torch.rand(N, device=device) * 2 * np.pi  # 회전각 (0~2π)
         return x, y, r, v, theta
