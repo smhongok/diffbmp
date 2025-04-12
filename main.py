@@ -21,7 +21,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Argument parser setup
 parser = argparse.ArgumentParser(description="Process some images.")
-parser.add_argument('--config', type=str, required=True, help='Path to the config file')
+parser.add_argument('--config', type=str, default='configs/girl.json', help='Path to the config file')
 args = parser.parse_args()
 
 config_path = args.config
