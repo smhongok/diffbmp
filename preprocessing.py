@@ -110,6 +110,95 @@ class Preprocessor:
 
         return arr
 
+    def load_image_8bit_color(self, config):
+        """
+        이미지를 8비트 컬러(RGB)로 로드하고, 크기가 크면 CenterCrop → White Padding → 최종 사이즈로 리사이즈.
+        이후 (255 - arr)로 컬러 반전.
+        transform_mode 및 FM_halftone 옵션에 따라 후처리를 적용.
+        """
+        img = Image.open(config["img_path"]).convert('RGB')  # 8비트 컬러
+        w, h = img.size
+        self.width = w
+        self.height = h
+
+        if self.trim:
+            # 아직 구현 안함
+            raise NotImplementedError("trim=True는 아직 구현되지 않았습니다.")
+
+        # 1) CenterCrop (너무 큰 경우)
+        if w > self.width or h > self.height:
+            crop_w = min(w, self.width)
+            crop_h = min(h, self.height)
+            left = (w - crop_w) // 2
+            top = (h - crop_h) // 2
+            img = img.crop((left, top, left + crop_w, top + crop_h))
+            w, h = img.size
+
+        # 2) 패딩 (흰색=255)
+        pad_w = self.width
+        pad_h = self.height
+        padded_arr = np.full((pad_h, pad_w, 3), fill_value=255, dtype=np.uint8)  # 3채널 흰색 패딩
+
+        img_arr = np.array(img, dtype=np.uint8)
+        img_h, img_w, _ = img_arr.shape
+        if img_w > pad_w or img_h > pad_h:
+            raise ValueError("Cropping failed: 여전히 이미지가 목표보다 큽니다.")
+
+        left = (pad_w - img_w) // 2
+        top = (pad_h - img_h) // 2
+        padded_arr[top:top + img_h, left:left + img_w, :] = img_arr
+
+        # 3) final_width x final_width로 리사이즈(가로세로 비율은 여기선 강제함)
+        padded_img = Image.fromarray(padded_arr)
+        w, h = padded_img.size
+        ratio = self.final_width / float(w)
+        new_w = self.final_width
+        new_h = int(h * ratio)
+        self.final_width = new_w
+        self.final_height = new_h
+        resized_img = padded_img.resize((new_w, new_h), Image.LANCZOS)
+
+        # (1) 히스토그램 평활화
+        if config["do_equalize"]:
+            resized_img = histogram_equalization_excluding_bg(resized_img, bg_threshold=config["bg_threshold"])
+
+        # (2) 로컬 콘트라스트
+        if config["do_local_contrast"]:
+            resized_img = local_contrast_enhancement_excluding_bg(
+                resized_img, radius=config["local_contrast"]["radius"], 
+                amount=config["local_contrast"]["amount"], 
+                bg_threshold=config["bg_threshold"]
+            )
+
+        # (3) 톤 커브
+        if config["do_tone_curve"]:
+            if config["tone_params"] is None:
+                config["tone_params"] = {}
+            resized_img = partial_tone_curve_excluding_bg(
+                resized_img,
+                bg_threshold=config["bg_threshold"],
+                **config["tone_params"]
+            )
+
+        # (255 - arr) 반전: 컬러 이미지의 밝기 반전
+        arr = (np.array(resized_img, dtype=np.uint8))
+
+        # FM_halftone 옵션 적용 (Floyd-Steinberg 에러 확산 디더링)
+        if self.FM_halftone:
+            arr = self._fm_halftone_transform(arr)
+
+        # transform_mode 적용
+        if self.transform_mode == "ellipse":
+            arr = self._ellipse_transform(arr)
+        elif self.transform_mode == "none":
+            pass
+        else:
+            raise ValueError(f"알 수 없는 transform_mode: {self.transform_mode}")
+
+        arr = pad_array_color(arr, tuple(config["vertical_paddings"]))
+
+        return arr
+
     def _fm_halftone_transform(self, image):
         """
         Floyd-Steinberg 에러 확산 디더링을 이용하여 이미지를 이진화(FM halftone 효과)합니다.
@@ -322,3 +411,15 @@ def enhance_image_excluding_bg(
 
 def pad_array(arr, vertical_paddings=(0,0)):
     return np.pad(arr, pad_width=(vertical_paddings, (0, 0)), mode='constant', constant_values=0)
+
+def pad_array_color(arr, vertical_paddings=(0, 0)):
+    """
+    컬러(RGB) 이미지를 위한 패딩 함수.
+    상하단에 지정된 크기만큼 흰색(255) 패딩을 추가합니다.
+    """
+    return np.pad(
+        arr,
+        pad_width=(vertical_paddings, (0, 0), (0, 0)),  # 마지막 축(채널)은 패딩하지 않음
+        mode='constant',
+        constant_values=255  # 흰색 패딩
+    )

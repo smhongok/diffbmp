@@ -5,9 +5,15 @@
 outputs/*
 images/*
 !images/girl.png
+!images/apple.svg
+!images/apple_logo_hollow.svg
+!images/jylee.png
 configs/*
 !configs/girl.json
-main_color.py
+!configs/girl_color.json
+!configs/girl_triangle.json
+!configs/jylee_svg_hollow.json
+!configs/jylee_svg.json
 main_text.py
 main_rgb.py
 .vscode/
