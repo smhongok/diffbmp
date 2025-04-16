@@ -7,7 +7,7 @@ from copy import deepcopy
 class StructureAwareInitializer:
     def __init__(self, num_init=100, alpha=0.3, min_distance=20, 
                  peak_threshold=0.5, radii_min=2, radii_max=None, 
-                 v_init_mean=-5.0):
+                 v_init_mean=-5.0, keypoint_extracting=False):
         self.num_init = num_init
         self.alpha = alpha
         self.min_distance = min_distance
@@ -15,8 +15,9 @@ class StructureAwareInitializer:
         self.radii_min = radii_min
         self.radii_max = radii_max
         self.v_init_mean = v_init_mean
-
-    def curvature_aware_densification(self, edge_map, points):
+        self.keypoint_extracting = keypoint_extracting
+    def curvature_aware_densification(self, edge_map, points, N):
+        N_add = N - len(points)
         h, w = edge_map.shape
         new_points = []
         edge_norm = edge_map.astype(np.float32) / 255.0
@@ -24,6 +25,8 @@ class StructureAwareInitializer:
         for (y, x) in low_edge_coords:
             if len(points) == 0 or np.min(np.linalg.norm(points - np.array([x, y]), axis=1)) > self.min_distance:
                 new_points.append([x, y])
+                if len(new_points) >= N_add:
+                    break
         return np.vstack([points, np.array(new_points)]) if new_points else points
 
     def structure_aware_adjustment(self, points, grad_x, grad_y):
@@ -61,15 +64,36 @@ class StructureAwareInitializer:
             if I_np.ndim == 3:
                 I_np = cv2.cvtColor(I_np, cv2.COLOR_RGB2GRAY)
                 
+        # Ensure image is in correct format for ORB
+        if I_np.dtype != np.uint8:
+            I_np = (I_np * 255).astype(np.uint8)
+            
         # Now use our structure-aware initialization
-        edges = cv2.Canny(I_np.astype(np.uint8), 100, 200)
+        edges = cv2.Canny(I_np, 100, 200)
         grad_y, grad_x = np.gradient(I_np.astype(np.float32))
         
-        # Start with random points
-        init_pts = np.random.rand(N, 2) * np.array([W, H])
-        
+        # Start with ORB points
+        num_kp = N // 10
+        if self.keypoint_extracting:
+            orb = cv2.ORB_create(nfeatures=N, scaleFactor=1.2, nlevels=8, edgeThreshold=15, firstLevel=0, WTA_K=2, patchSize=31, fastThreshold=20)
+            keypoints = orb.detect(I_np, None)
+        else:
+            keypoints = False
+
+        # If no keypoints found, do random initialization
+        if not keypoints:
+            if self.keypoint_extracting:
+                print("No ORB keypoints. using random initialization.")
+            else:
+                print("keypoint_extracting off. using random initialization.")
+            init_pts = np.random.rand(num_kp, 2) * np.array([W, H])
+        else:
+            # Sort based on less strength and pick top N//5
+            sorted_kp = sorted(keypoints, key=lambda kp: -kp.response, reverse=True)
+            print("num_kp: ", num_kp)
+            init_pts = np.array([kp.pt for kp in sorted_kp[:num_kp]])  # (x, y)
         # Apply our structure-aware techniques
-        densified_pts = self.curvature_aware_densification(edges, init_pts)
+        densified_pts = self.curvature_aware_densification(edges, init_pts, N)
         adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y)
         
         # Convert to tensors with requires_grad=True
@@ -79,20 +103,6 @@ class StructureAwareInitializer:
         r = torch.rand(num_points, device=device, requires_grad=True) * min(H, W) / 8 + min(H, W) / 32
         v = torch.full((num_points,), self.v_init_mean, device=device, requires_grad=True)
         theta = torch.rand(num_points, device=device, requires_grad=True) * 2 * np.pi
-        
-        # If we have fewer points than requested, pad with random ones
-        if num_points < N:
-            additional = N - num_points
-            x_add = torch.rand(additional, device=device, requires_grad=True) * W
-            y_add = torch.rand(additional, device=device, requires_grad=True) * H
-            r_add = torch.rand(additional, device=device, requires_grad=True) * min(H, W) / 8 + min(H, W) / 32
-            v_add = torch.full((additional,), self.v_init_mean, device=device, requires_grad=True)
-            theta_add = torch.rand(additional, device=device, requires_grad=True) * 2 * np.pi
-            
-            x = torch.cat([x, x_add])
-            y = torch.cat([y, y_add])
-            r = torch.cat([r, r_add])
-            v = torch.cat([v, v_add])
-            theta = torch.cat([theta, theta_add])
+        print("len(x): ", len(x))
         
         return x, y, r, v, theta

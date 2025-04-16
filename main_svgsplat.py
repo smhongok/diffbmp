@@ -101,7 +101,8 @@ initializer = StructureAwareInitializer(
     peak_threshold=init_conf.get("peak_threshold", 0.5),
     radii_min=init_conf.get("radii_min", 2),
     radii_max=init_conf.get("radii_max", None),
-    v_init_mean=init_conf.get("v_init_mean", -5.0)
+    v_init_mean=init_conf.get("v_init_mean", -5.0),
+    keypoint_extracting=init_conf.get("keypoint_extracting", False)
 )
 
 # Initialize from SVG - all parameters are now learnable
@@ -266,8 +267,8 @@ learning_rate = config["optimization"].get("learning_rate", 0.1)
 
 # Create optimizer for all learnable parameters
 optimizer = torch.optim.Adam([
-    {'params': x, 'lr': learning_rate},
-    {'params': y, 'lr': learning_rate},
+    {'params': x, 'lr': learning_rate*10},
+    {'params': y, 'lr': learning_rate*10},
     {'params': r, 'lr': learning_rate},  # Smaller learning rate for radius
     {'params': v, 'lr': learning_rate},  # Smaller learning rate for visibility
     {'params': theta, 'lr': learning_rate},  # Smaller learning rate for rotation
