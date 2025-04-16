@@ -12,6 +12,7 @@ imageio==2.37.0
 importlib_resources==6.5.2
 Jinja2==3.1.4
 kiwisolver==1.4.7
+lazy_loader==0.4
 MarkupSafe==2.1.5
 matplotlib==3.7.1
 mpmath==1.3.0
@@ -35,11 +36,14 @@ Pillow==9.5.0
 pycparser==2.22
 pyparsing==3.2.3
 python-dateutil==2.9.0.post0
+PyWavelets==1.6.0
+scikit-image==0.24.0
 scipy==1.11.4
 six==1.17.0
 svgpathtools==1.6.1
 svgwrite==1.4.3
 sympy==1.13.1
+tifffile==2024.8.30
 tinycss2==1.4.0
 torch==2.5.1+cu121
 torchaudio==2.5.1+cu121
