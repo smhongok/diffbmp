@@ -8,15 +8,11 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
-import matplotlib.patches as patches
-import imageio
 from tqdm import tqdm
 from PIL import Image
 import json
 import tempfile
 import argparse
-import svgpathtools
 from svgpathtools import svg2paths
 
 # Import our modules
@@ -126,55 +122,6 @@ X, Y = X.unsqueeze(0), Y.unsqueeze(0)  # (1, H, W)
 
 alpha_upper_bound = config["optimization"].get("alpha_upper_bound", 0.5)
 
-def soft_rasterize_shape(bmp_image, X, Y, x, y, r, theta):
-    """
-    Treats bmp_image as a continuous function defined on [-1,1]^2,
-    scales it by r, rotates by theta, translates to (x,y),
-    and samples the result at coordinates (X,Y).
-    
-    Args:
-        bmp_image: (H_bmp, W_bmp) torch tensor, value in [0,1]
-        X, Y: (1, H, W) coordinate grid
-        x, y, r, theta: position, scale, rotation
-    Returns:
-        mask: (1, H, W)
-    """
-    _, H, W = X.shape
-
-    # (1) Reshape bmp_image as a 4D continuous function on [-1, 1]^2
-    bmp_image = bmp_image.unsqueeze(0).unsqueeze(0)  # (1,1,H_bmp,W_bmp)
-
-    # (2) Convert (X,Y) grid to (u,v) (inverse transform)
-    # Rotation matrix (theta: counter-clockwise rotation)
-    cos_t = torch.cos(theta)
-    sin_t = torch.sin(theta)
-    R_inv = torch.stack([
-        torch.stack([cos_t, sin_t], dim=0),
-        torch.stack([-sin_t, cos_t], dim=0)
-    ], dim=0)  # (2, 2)
-
-    # Output grid coordinates (1, H, W) -> (H, W)
-    X_flat = X.squeeze(0)
-    Y_flat = Y.squeeze(0)
-
-    # (X - x, Y - y): normalize position
-    pos = torch.stack([X_flat - x, Y_flat - y], dim=0)  # (2, H, W)
-    pos = pos / r  # Scale adjustment
-
-    # Inverse rotation transform
-    uv = torch.einsum('ij,jhw->ihw', R_inv, pos)  # (2, H, W)
-
-    # (3) Reshape uv ∈ [-1,1]^2 to (H, W, 2) for grid_sample
-    u = uv[0]  # (H, W)
-    v = uv[1]  # (H, W)
-    grid = torch.stack([u, v], dim=-1)  # (H, W, 2)
-    grid = grid.unsqueeze(0)  # (1, H, W, 2)
-
-    # (4) Sample (bilinear interpolation over [-1, 1])
-    sampled = F.grid_sample(bmp_image, grid, mode='bilinear', padding_mode='zeros', align_corners=True)  # (1,1,H,W)
-
-    return sampled.squeeze(1)  # (1, H, W)
-
 def batched_soft_rasterize(bmp_image, X, Y, x, y, r, theta):
     B = len(x)
     _, H, W = X.shape
@@ -238,17 +185,6 @@ def tree_over(m, a):
         a = a[:, 0] + (1 - a[:, 0]) * a[:, 1]
     return m.squeeze(0), a.squeeze(0)
 
-# Cache masks
-print("Precomputing masks...")
-'''
-_cached_masks = []
-for i in range(len(x)):  # This will iterate from 0 to len(x)-1
-    mask_i = soft_rasterize_shape(bmp_image_tensor, X, Y, x[i], y[i], r[i], theta[i])
-    _cached_masks.append(mask_i)
-_cached_masks = torch.cat(_cached_masks, dim=0)  # (N, H, W)
-_cached_masks = batched_soft_rasterize(bmp_image_tensor, X, Y, x, y, r, theta)
-'''
-
 # Rendering function
 def render_image_vector_cached(cached_masks, v, c, X, Y):
     N = v.shape[0]
@@ -280,13 +216,6 @@ for epoch in tqdm(range(num_iterations)):
     optimizer.zero_grad()
     
     # Recompute masks for current parameters
-    '''
-    _cached_masks = []
-    for i in range(len(x)):  # This will iterate from 0 to len(x)-1
-        mask_i = soft_rasterize_shape(bmp_image_tensor, X, Y, x[i], y[i], r[i], theta[i])
-        _cached_masks.append(mask_i)
-    _cached_masks = torch.cat(_cached_masks, dim=0)
-    '''
     _cached_masks = batched_soft_rasterize(bmp_image_tensor, X, Y, x, y, r, theta)
 
     I_hat = render_image_vector_cached(_cached_masks, v, c, X, Y)

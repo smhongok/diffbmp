@@ -16,6 +16,7 @@ configs/*
 !configs/jylee_svg.json
 main_text.py
 main_rgb.py
+*ignore.py
 .vscode/
 
 ### Python ###
