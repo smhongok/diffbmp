@@ -27,7 +27,7 @@
     },
     "initialization": {
         "template_matching": false,
-        "N": 10000,
+        "N": 3000,
         "min_distance": 5,
         "peak_threshold": 0.5,
         "radii_min": 2,
@@ -40,7 +40,7 @@
         "alpha_upper_bound": 0.3
     },
     "postprocessing": {
-        "output_path": "outputs/jylee_hollow_svg_N=10000.pdf",
+        "output_path": "outputs/jylee_hollow_svg_N=3000.pdf",
         "linewidth": 8.0
     }
 }

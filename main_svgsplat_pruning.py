@@ -8,33 +8,22 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+import matplotlib.patches as patches
+import imageio
 from tqdm import tqdm
 from PIL import Image
 import json
 import tempfile
 import argparse
-from svgpathtools import svg2paths, svg2paths2
-import random
-
+import svgpathtools
+from svgpathtools import svg2paths
 
 # Import our modules
 from preprocessing import Preprocessor
 from svgsplat_initialization import StructureAwareInitializer
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-def set_global_seed(seed: int = 42):
-    """
-    Fix RNG states for Python, NumPy, PyTorch (CPU & CUDA).
-    Also forces cuDNN / PyTorch 연산을 deterministic 모드로 전환.
-    """
-    os.environ["PYTHONHASHSEED"] = str(seed)   # 파이썬 해시 시드
-    random.seed(seed)                          # 내장 random
-    np.random.seed(seed)                       # NumPy
-    torch.manual_seed(seed)                    # PyTorch CPU
-    torch.cuda.manual_seed(seed)               # 현재 GPU
-    torch.cuda.manual_seed_all(seed)           # 모든 GPU
-
 
 # Argument parser setup
 parser = argparse.ArgumentParser(description="Process images with Structure-Aware Graphics Synthesis")
@@ -45,9 +34,6 @@ config_path = args.config
 # Load configuration
 with open(config_path, "r", encoding="utf-8") as f:
     config = json.load(f)
-
-# import 뒤 혹은 config 로드 직후
-set_global_seed(config.get("seed", 42))
 
 # Initialize preprocessor
 pp_conf = config["preprocessing"]
@@ -66,23 +52,7 @@ W = preprocessor.final_width
 
 # Load SVG file
 svg_file = config["svg"].get("svg_file", "images/tesla_logo.svg")
-paths, attributes, svg_attributes = svg2paths2(svg_file)
-
-viewbox = svg_attributes.get("viewBox")
-
-if viewbox is None:
-    raise ValueError("SVG does not contain a viewBox attribute.")
-
-# 파싱: 'min_x min_y width height'
-parts = viewbox.strip().split()
-if len(parts) != 4:
-    raise ValueError(f"Invalid viewBox format: '{viewbox}'")
-
-svg_min_x, svg_min_y, svg_width, svg_height = map(float, parts)
-
-if svg_min_x != 0 or svg_min_y != 0:
-    raise ValueError(f"viewBox starts at ({svg_min_x}, {svg_min_y}), expected (0, 0)")
-
+paths, attributes = svg2paths(svg_file)
 
 # Convert SVG to high-quality bitmap
 from cairosvg import svg2png
@@ -90,8 +60,7 @@ from cairosvg import svg2png
 # Create temporary file
 with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as temp_file:
     # Convert SVG to PNG
-    svg2png(url=svg_file, write_to=temp_file.name, 
-            output_width=config["svg"].get("output_width", 32))
+    svg2png(url=svg_file, write_to=temp_file.name, output_width=config["svg"].get("output_width", 128))
     
     # Read as RGBA image
     bmp_image = Image.open(temp_file.name).convert('RGBA')
@@ -147,6 +116,12 @@ r = r.detach().clone().requires_grad_(True)
 v = v.detach().clone().requires_grad_(True)
 theta = theta.detach().clone().requires_grad_(True)
 
+x_init = x.clone().detach()
+y_init = y.clone().detach()
+r_init = r.clone().detach()
+v_init = v.clone().detach()
+theta_init = theta.clone().detach()
+
 # Initialize learnable parameters c (3-vector color)
 c = torch.rand(N, 3, device=device, requires_grad=True)  # Color, initially in [0,1] range
 
@@ -156,71 +131,53 @@ X, Y = torch.meshgrid(torch.arange(W, device=device),
 X, Y = X.unsqueeze(0), Y.unsqueeze(0)  # (1, H, W)
 
 alpha_upper_bound = config["optimization"].get("alpha_upper_bound", 0.5)
+delta      = config["optimization"].get("delta", 1.0)
+kappa      = config["optimization"].get("kappa", 2000)   # 남길 splat 수
+prune_itv  = config["optimization"].get("prune_interval", 20)
+warmup     = config["optimization"].get("warmup_iter", 100)
 
-# Gaussian Blur 함수 (2D convolution 방식)
-def gaussian_blur(input_tensor, sigma):
-    """
-    input_tensor: (N, H, W)
-    sigma: Gaussian kernel의 표준편차 (스칼라, float)
-    """
-    if sigma <= 0.0:
-        return input_tensor
-    # PyTorch가 자동으로 커널 사이즈를 구해주진 않으니, 기존처럼 3*sigma 기준으로 설정
-    kernel_size = int(2 * round(3 * sigma) + 1)
-    # F.gaussian_blur에 맞게 입력 채널 차원 추가
-    x = input_tensor.unsqueeze(1)  # (N,1,H,W)
-    # kernel_size와 sigma를 리스트로 넘겨줍니다
-    x = F.gaussian_blur(
-        x,
-        kernel_size=(kernel_size, kernel_size),
-        sigma=(sigma, sigma),
-        padding="same"
-    )
-    return x.squeeze(1)  # (N,H,W)
+z      = torch.zeros_like(v, requires_grad=False)      # auxiliary sparse var
+lam    = torch.zeros_like(v, requires_grad=False)      # λ in paper
 
-def batched_soft_rasterize(bmp_image, X, Y, x, y, r, theta, sigma=0.0):
-    """
-    bmp_image: (H_bmp, W_bmp) tensor in [0,1]
-    X, Y: (1, H, W) coordinate grids
-    x, y, r, theta: each is tensor of shape (B,)
-    sigma: Gaussian blur standard deviation for softening the mask
-    Returns:
-        (B, H, W) soft masks
-    """
+def batched_soft_rasterize(bmp_image, X, Y, x, y, r, theta):
     B = len(x)
     _, H, W = X.shape
-
-    # 1) 입력 bmp_image에 Gaussian blur 적용 (soft rasterization 효과)
-    if sigma > 0.0:
-        # bmp_image: (H_bmp, W_bmp) -> (1,H_bmp,W_bmp)
-        bmp = bmp_image.unsqueeze(0)
-        # gaussian_blur: (N, H, W) 형태를 기대하므로 N=1
-        bmp = gaussian_blur(bmp, sigma)  # (N, H_bmp, W_bmp)
-        bmp_image = bmp.squeeze(0)       # (H_bmp, W_bmp)
-
-    # 2) 그리드와 파라미터를 배치 크기에 맞춰 확장
+    
+    # Reshape X and Y to match batch dimension
     X_exp = X.expand(B, H, W)
     Y_exp = Y.expand(B, H, W)
-    x_exp = x.view(B,1,1).expand(B, H, W)
-    y_exp = y.view(B,1,1).expand(B, H, W)
-    r_exp = r.view(B,1,1).expand(B, H, W)
-
-    # 3) 위치 정규화 및 회전
+    
+    # Reshape x, y, r, theta to match grid dimensions
+    x_exp = x.view(B, 1, 1).expand(B, H, W)
+    y_exp = y.view(B, 1, 1).expand(B, H, W)
+    r_exp = r.view(B, 1, 1).expand(B, H, W)
+    
+    # Calculate position
     pos = torch.stack([X_exp - x_exp, Y_exp - y_exp], dim=1) / r_exp.unsqueeze(1)
+    
+    # Calculate rotation for each batch element
     cos_t = torch.cos(theta)
     sin_t = torch.sin(theta)
+    
+    # Create rotation matrices for each batch element
     R_inv = torch.zeros(B, 2, 2, device=X.device)
-    R_inv[:,0,0] = cos_t; R_inv[:,0,1] = sin_t
-    R_inv[:,1,0] = -sin_t; R_inv[:,1,1] = cos_t
+    R_inv[:, 0, 0] = cos_t
+    R_inv[:, 0, 1] = sin_t
+    R_inv[:, 1, 0] = -sin_t
+    R_inv[:, 1, 1] = cos_t
+    
+    # Apply rotation
     uv = torch.einsum('bij,bjhw->bihw', R_inv, pos)
-
-    # 4) grid_sample을 위한 형태 조정
-    grid = uv.permute(0,2,3,1)  # (B, H, W, 2)
-    bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, -1, -1, -1)  # (B,1,H_bmp,W_bmp)
-
-    # 5) bilinear sampling
-    sampled = F.grid_sample(bmp_exp, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
-
+    
+    # Reshape for grid_sample
+    grid = uv.permute(0, 2, 3, 1)  # (B,H,W,2)
+    
+    # Expand bmp_image to match batch dimension
+    bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, -1, -1, -1)
+    
+    # Sample
+    sampled = F.grid_sample(bmp_exp, grid, align_corners=True, mode='bilinear', padding_mode='zeros')
+    
     return sampled.squeeze(1)  # (B, H, W)
 
 # Over Operator functions
@@ -261,10 +218,6 @@ def render_image_vector_cached(cached_masks, v, c, X, Y):
 num_iterations = config["optimization"].get("num_iterations", 300)
 learning_rate = config["optimization"].get("learning_rate", 0.1)
 
-# sigma 스케줄: config 에서 초기와 최종 값 가져옴 (기본값: 2.0 -> 1.0)
-sigma_start = config["optimization"].get("sigma_start", 0.0) # 
-sigma_end = config["optimization"].get("sigma_end", 0.0)
-
 # Create optimizer for all learnable parameters
 optimizer = torch.optim.Adam([
     {'params': x, 'lr': learning_rate*10},
@@ -278,15 +231,16 @@ optimizer = torch.optim.Adam([
 print(f"Starting optimization for {num_iterations} iterations...")
 for epoch in tqdm(range(num_iterations)):
     optimizer.zero_grad()
-
-    # 현재 epoch에 따른 sigma (선형 보간)
-    sigma = sigma_start * (1 - epoch / num_iterations) + sigma_end * (epoch / num_iterations)
     
     # Recompute masks for current parameters
-    _cached_masks = batched_soft_rasterize(bmp_image_tensor, X, Y, x, y, r, theta, sigma=sigma)
+    _cached_masks = batched_soft_rasterize(bmp_image_tensor, X, Y, x, y, r, theta)
 
     I_hat = render_image_vector_cached(_cached_masks, v, c, X, Y)
-    loss = F.mse_loss(I_hat, I_target)
+
+    _alpha      = alpha_upper_bound * torch.sigmoid(v)
+    loss   = F.mse_loss(I_hat, I_target)
+    loss  += 0.5 * delta * F.mse_loss(_alpha, z - lam)  # ❋ 추가
+
     loss.backward()
     optimizer.step()
     
@@ -297,8 +251,65 @@ for epoch in tqdm(range(num_iterations)):
         r.clamp_(init_conf.get("radii_min", 2), init_conf.get("radii_max", min(H, W) // 4))
         theta.clamp_(0, 2 * np.pi)
     
+    if (epoch >= warmup and epoch % prune_itv == 0):
+        with torch.no_grad():
+            _alpha = alpha_upper_bound * torch.sigmoid(v.detach())
+            # 중요도 = α 자체(혹은 |∂loss/∂α| 곱)  ↔ 실험 후 선택
+            keep_idx = torch.topk(_alpha, kappa).indices
+            mask     = torch.zeros_like(_alpha, dtype=torch.bool)
+            mask[keep_idx] = True
+            
+            z.zero_(); z[mask] = _alpha[mask]        # z ← sparse projection
+            lam += (_alpha - z)                      # λ ← λ + α - z
+
+            # *** 실제 파라미터 수를 줄이고 싶다면 ***  
+            if epoch % (10*prune_itv) == 0:     # 느슨한 빈도로 detach
+                # ------------------------  pruning  ------------------------ #
+                # 1) helper: 기존 tensor -> 잘라낸 tensor(requires_grad 유지)
+                def _prune(t):
+                    t_new = t[keep_idx].clone().detach()
+                    if t.requires_grad:
+                        t_new.requires_grad_(True)
+                    return t_new
+
+                # 2) 실제 파라미터·보조변수 잘라내기
+                x, y, r, theta, v, c = map(_prune, (x, y, r, theta, v, c))
+                z, lam               = map(_prune, (z, lam))
+
+                # 3) optimizer 재생성 (Adam state 깔끔히 초기화)
+                optimizer = torch.optim.Adam([
+                    {'params': x, 'lr': learning_rate*10},
+                    {'params': y, 'lr': learning_rate*10},
+                    {'params': r, 'lr': learning_rate},
+                    {'params': v, 'lr': learning_rate},
+                    {'params': theta, 'lr': learning_rate},
+                    {'params': c, 'lr': learning_rate},
+                ])
+
+                # 4) sparsity 목표를 조금 더 줄여 나가고 싶다면
+                kappa = max(int(kappa * 0.8), 500)   # 예: 최저 500개까지
+
+
     if epoch % 20 == 0:
         print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
+
+# RNMSE of x,y,r,v,theta
+# print("RNMSE of x:", torch.norm(x - x_init) / torch.norm(x_init))
+# print("RNMSE of y:", torch.norm(y - y_init) / torch.norm(y_init))
+# print("RNMSE of r:", torch.norm(r - r_init) / torch.norm(r_init))
+# print("RNMSE of v:", torch.norm(v - v_init) / torch.norm(v_init))
+# print("RNMSE of theta:", torch.norm(theta - theta_init) / torch.norm(theta_init))
+
+# 1) v 자체 분포
+alpha_cpu = alpha_upper_bound * torch.sigmoid(v.detach()).cpu().numpy()          # (N,)
+plt.figure(figsize=(6, 4))
+plt.hist(alpha_cpu, bins=50)
+plt.xlabel("alpha")
+plt.ylabel("Count")
+plt.title("Histogram of alpha after optimization, with sparsifying")
+plt.tight_layout()
+plt.show()
+
 
 
 # Export vector graphics to PDF
@@ -351,9 +362,8 @@ def export_vector_graphics_to_pdf(x, y, r, v, theta, c,
     remove_svg_styles(root)
     
     # Calculate normalization scale
-    # norm_scale = 2 / new_size
-    norm_scale = 2 / max(svg_width, svg_height)
-
+    norm_scale = 2 / new_size
+    
     # Set final PDF canvas size
     root.attrib['width'] = str(W)
     root.attrib['height'] = str(H)
@@ -383,7 +393,7 @@ def export_vector_graphics_to_pdf(x, y, r, v, theta, c,
             f"rotate({theta_deg}) "                             # Rotate
             f"scale({r_np[i]}) "                                # Scale per vector
             f"scale({norm_scale}) "                             # Normalize original SVG size
-            f"translate({-svg_width/2},{-svg_height/2})"               # Center original SVG at 0,0
+            f"translate({-orig_w/2},{-orig_h/2})"               # Center original SVG at 0,0
         )
         g = ET.Element("g")
         g.attrib["transform"] = transform_str
@@ -399,6 +409,8 @@ def export_vector_graphics_to_pdf(x, y, r, v, theta, c,
             g.attrib["fill"] = f"rgb({r_int},{g_int},{b_int})"
             g.attrib["fill-opacity"] = str(0.0)
         else:
+            g.attrib["stroke"] = f"rgb({r_int},{g_int},{b_int})"
+            g.attrib["stroke-opacity"] = str(alpha_vals[i])
             g.attrib["fill"] = f"rgb({r_int},{g_int},{b_int})"
             g.attrib["fill-opacity"] = str(alpha_vals[i])
         
