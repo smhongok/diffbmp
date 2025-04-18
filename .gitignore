@@ -8,12 +8,17 @@ images/*
 !images/apple.svg
 !images/apple_logo_hollow.svg
 !images/jylee.png
+!images/trump.png
+!images/tesla_logo.svg
+!images/curved_line.svg
 configs/*
 !configs/girl.json
 !configs/girl_color.json
 !configs/girl_triangle.json
 !configs/jylee_svg_hollow.json
 !configs/jylee_svg.json
+!configs/sags_trump.json
+
 main_text.py
 main_rgb.py
 .vscode/
