@@ -1,39 +1,43 @@
+import time
+from datetime import timedelta
+# 시작 시간 기록
+start_time = time.time()
+
 import os
 import torch
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
-import matplotlib.patches as patches
-from matplotlib.patches import Arc, Circle
-
-import imageio
 from tqdm import tqdm
-from PIL import Image, ImageOps
+from PIL import Image
 import json
 import argparse
 
-# Assuming Preprocessor is defined in preprocessing.py
+# Import our modules
 from preprocessing import Preprocessor
-from initialization import Initializer
+from svgsplat_initialization import StructureAwareInitializer
+from utils import set_global_seed, gaussian_blur
+from svg_loader import SVGLoader
+from pdf_exporter import PDFExporter
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Argument parser setup
-parser = argparse.ArgumentParser(description="Process some images.")
-parser.add_argument('--config', type=str, default='configs/girl.json', help='Path to the config file')
+parser = argparse.ArgumentParser(description="Process images with Structure-Aware Graphics Synthesis")
+parser.add_argument('--config', type=str, required=True, help='Path to the config file')
 args = parser.parse_args()
-
 config_path = args.config
 
-# 1) Load JSON config
-print(f"---Loading config from {config_path}---")
+# Load configuration
 with open(config_path, "r", encoding="utf-8") as f:
     config = json.load(f)
 
-# 2) Preprocessing setup
-print("---Preprocessing---")
+# import 뒤 혹은 config 로드 직후
+set_global_seed(config.get("seed", 42))
+
+# Initialize preprocessor
 pp_conf = config["preprocessing"]
+opt_conf = config["optimization"]
 
 preprocessor = Preprocessor(
     final_width=pp_conf.get("final_width", 128),
@@ -42,122 +46,189 @@ preprocessor = Preprocessor(
     transform_mode=pp_conf.get("transform", "none"),
 )
 
-# Load and preprocess the target image
-I_target = preprocessor.load_image_8bit_gray(config["preprocessing"]).astype(np.float32) / 255.0
-I_target = torch.tensor(I_target, device=device)
-
+# Load target color image
+I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
+I_target = torch.tensor(I_target, device=device)  # (H, W, 3)
 H = preprocessor.final_height
 W = preprocessor.final_width
 
-initizlier = Initializer(
-    template_matching=config["initialization"].get("template_matching", False),
-    N=config["initialization"].get("N", 10000),
-    min_distance=config["initialization"].get("min_distance", 5),
-    peak_threshold=config["initialization"].get("peak_threshold", 0.5),
-    radii_min=config["initialization"].get("radii_min", 2),
-    radii_max=config["initialization"].get("radii_max", None),
-    arc_thickness=config["initialization"].get("arc_thickness", 1),
-    v_init_mean=config["initialization"].get("v_init_mean", -5.0),
+# Load SVG file
+svg_loader = SVGLoader(
+    svg_path=config["svg"].get("svg_file", "images/tesla_logo.svg"),
+    output_width=config["svg"].get("output_width", 128),
+    device=device
 )
-# 3) Initialize circle parameters
-print("---Initializing circles---")
-x, y, r, v = initizlier.initialize_circles(I_target)
 
-# 4) Convert to tensors and move to device
-# Make v a learnable parameter
-v = v.clone().detach().requires_grad_(True)
+bmp_image_tensor = svg_loader.load_alpha_bitmap()
 
-# Precompute pixel coordinates
+# Initialize with Structure-Aware method
+print("---Initializing vector graphics with Structure-Aware method---")
+init_conf = config["initialization"]
+initializer = StructureAwareInitializer(
+    num_init=init_conf.get("N", 10000),
+    alpha=init_conf.get("alpha", 0.3),  # Structure adjustment strength from config
+    min_distance=init_conf.get("min_distance", 5),
+    peak_threshold=init_conf.get("peak_threshold", 0.5),
+    radii_min=init_conf.get("radii_min", 2),
+    radii_max=init_conf.get("radii_max", None),
+    v_init_mean=init_conf.get("v_init_mean", -5.0),
+    keypoint_extracting=init_conf.get("keypoint_extracting", False)
+)
+
+# Initialize from SVG - all parameters are now learnable
+x, y, r, v, theta = initializer.initialize_for_svg(I_target)
+N = len(x)
+
+# Convert to leaf tensors for optimization
+x = x.detach().clone().requires_grad_(True)
+y = y.detach().clone().requires_grad_(True)
+r = r.detach().clone().requires_grad_(True)
+v = v.detach().clone().requires_grad_(True)
+theta = theta.detach().clone().requires_grad_(True)
+
+# Initialize learnable parameters c (3-vector color)
+c = torch.rand(N, 3, device=device, requires_grad=True)  # Color, initially in [0,1] range
+
+# Pre-compute pixel coordinates
 X, Y = torch.meshgrid(torch.arange(W, device=device),
                       torch.arange(H, device=device), indexing='xy')
-X, Y = X.unsqueeze(0), Y.unsqueeze(0)  # shape [1, W, H]
+X, Y = X.unsqueeze(0), Y.unsqueeze(0)  # (1, H, W)
 
-# 5) Set up the optimizer
-num_iterations = config["optimization"].get("num_iterations", 300)
-learning_rate = config["optimization"].get("learning_rate", 0.1)
+alpha_upper_bound = opt_conf.get("alpha_upper_bound", 0.5)
 
-# Optimization setup
-optimizer = torch.optim.Adam([v], lr=learning_rate)
+def batched_soft_rasterize(bmp_image, X, Y, x, y, r, theta, sigma=0.0):
+    """
+    bmp_image: (H_bmp, W_bmp) tensor in [0,1]
+    X, Y: (1, H, W) coordinate grids
+    x, y, r, theta: each is tensor of shape (B,)
+    sigma: Gaussian blur standard deviation for softening the mask
+    Returns:
+        (B, H, W) soft masks
+    """
+    B = len(x)
+    _, H, W = X.shape
 
-# Render image function (unchanged)
-def render_image(x, y, r, v, X, Y):
-    x = x.view(-1, 1, 1)
-    y = y.view(-1, 1, 1)
-    r = r.view(-1, 1, 1)
-    v_alpha = torch.sigmoid(v).view(-1, 1, 1)
+    # 1) 입력 bmp_image에 Gaussian blur 적용 (soft rasterization 효과)
+    if sigma > 0.0:
+        # bmp_image: (H_bmp, W_bmp) -> (1,H_bmp,W_bmp)
+        bmp = bmp_image.unsqueeze(0)
+        # gaussian_blur: (N, H, W) 형태를 기대하므로 N=1
+        bmp = gaussian_blur(bmp, sigma)  # (N, H_bmp, W_bmp)
+        bmp_image = bmp.squeeze(0)       # (H_bmp, W_bmp)
 
-    dist = torch.sqrt((X - x)**2 + (Y - y)**2)
-    thickness = 0.5
-    circle_mask = ((dist >= (r - thickness)) & (dist <= (r + thickness))).float()
+    # 2) 그리드와 파라미터를 배치 크기에 맞춰 확장
+    X_exp = X.expand(B, H, W)
+    Y_exp = Y.expand(B, H, W)
+    x_exp = x.view(B,1,1).expand(B, H, W)
+    y_exp = y.view(B,1,1).expand(B, H, W)
+    r_exp = r.view(B,1,1).expand(B, H, W)
 
-    img = torch.prod(1 - v_alpha * circle_mask, dim=0)
-    img = 1 - img
+    # 3) 위치 정규화 및 회전
+    pos = torch.stack([X_exp - x_exp, Y_exp - y_exp], dim=1) / r_exp.unsqueeze(1)
+    cos_t = torch.cos(theta)
+    sin_t = torch.sin(theta)
+    R_inv = torch.zeros(B, 2, 2, device=X.device)
+    R_inv[:,0,0] = cos_t; R_inv[:,0,1] = sin_t
+    R_inv[:,1,0] = -sin_t; R_inv[:,1,1] = cos_t
+    uv = torch.einsum('bij,bjhw->bihw', R_inv, pos)
 
-    return img
+    # 4) grid_sample을 위한 형태 조정
+    grid = uv.permute(0,2,3,1)  # (B, H, W, 2)
+    bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, -1, -1, -1)  # (B,1,H_bmp,W_bmp)
+
+    # 5) bilinear sampling
+    sampled = F.grid_sample(bmp_exp, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
+
+    return sampled.squeeze(1)  # (B, H, W)
+
+# Over Operator functions
+def over_pair(m1, a1, m2, a2):
+    m_out = m1 + (1 - a1).unsqueeze(-1) * m2
+    a_out = a1 + (1 - a1) * a2
+    return m_out, a_out
+
+def tree_over(m, a):
+    while m.size(0) > 1:
+        n = m.size(0)
+        if n % 2 == 1:
+            pad_m = torch.zeros((1, *m.shape[1:]), device=m.device, dtype=m.dtype)
+            pad_a = torch.zeros((1, *a.shape[1:]), device=a.device, dtype=a.dtype)
+            m = torch.cat([m, pad_m], dim=0)
+            a = torch.cat([a, pad_a], dim=0)
+            n = m.size(0)
+        new_n = n // 2
+        m = m.reshape(new_n, 2, m.size(1), m.size(2), 3)
+        a = a.reshape(new_n, 2, a.size(1), a.size(2))
+        m = m[:, 0] + (1 - a[:, 0]).unsqueeze(-1) * m[:, 1]
+        a = a[:, 0] + (1 - a[:, 0]) * a[:, 1]
+    return m.squeeze(0), a.squeeze(0)
+
+# Rendering function
+def render_image_vector_cached(cached_masks, v, c, X, Y):
+    N = v.shape[0]
+    v_alpha = alpha_upper_bound * torch.sigmoid(v).view(N, 1, 1)
+    a = v_alpha * cached_masks
+    c_eff = torch.sigmoid(c).view(N, 1, 1, 3)
+    m = a.unsqueeze(-1) * c_eff
+    comp_m, comp_a = tree_over(m, a)
+    background = torch.ones_like(comp_m)
+    final = comp_m + (1 - comp_a).unsqueeze(-1) * background
+    return final  # (H, W, 3)
 
 # Training loop
-for epoch in range(num_iterations):
+num_iterations = opt_conf.get("num_iterations", 300)
+learning_rate = opt_conf.get("learning_rate", 0.1)
+
+# sigma 스케줄: config 에서 초기와 최종 값 가져옴 (기본값: 2.0 -> 1.0)
+sigma_start = opt_conf.get("blur_sigma_start", 2.0) # 
+sigma_end = opt_conf.get("blur_sigma_end", 1.0)
+
+# Create optimizer for all learnable parameters
+lr_conf = opt_conf["learning_rate"]
+lr = lr_conf.get("default", 0.1)
+optimizer = torch.optim.Adam([
+    {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
+    {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
+    {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},  
+    {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},  
+    {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
+    {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)}, 
+])
+
+
+print(f"Starting optimization for {num_iterations} iterations...")
+for epoch in tqdm(range(num_iterations)):
     optimizer.zero_grad()
-    I_hat = render_image(x, y, r, v, X, Y)
+
+    # 현재 epoch에 따른 sigma (선형 보간)
+    sigma = sigma_start * (1 - epoch / num_iterations) + sigma_end * (epoch / num_iterations)
+    
+    # Recompute masks for current parameters
+    _cached_masks = batched_soft_rasterize(bmp_image_tensor, X, Y, x, y, r, theta, sigma=sigma)
+
+    I_hat = render_image_vector_cached(_cached_masks, v, c, X, Y)
     loss = F.mse_loss(I_hat, I_target)
     loss.backward()
     optimizer.step()
-
+    
+    # Clamp parameters to valid ranges
+    with torch.no_grad():
+        x.clamp_(0, W)
+        y.clamp_(0, H)
+        r.clamp_(init_conf.get("radii_min", 2), init_conf.get("radii_max", min(H, W) // 4))
+        theta.clamp_(0, 2 * np.pi)
+    
     if epoch % 20 == 0:
         print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
 
-# 결과 시각화
-def visualize_results(I_target, I_hat):
-    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-    ax[0].imshow(I_target.cpu().detach(), cmap='gray')
-    ax[0].set_title("Target Image")
-    ax[0].axis('off')
+exporter = PDFExporter(svg_loader.svg_path, canvas_size=(W, H), viewbox_size=(svg_loader.get_svg_size()),
+                       alpha_upper_bound=alpha_upper_bound, stroke_width=config["postprocessing"].get("linewidth", 3.0))
 
-    ax[1].imshow(I_hat.cpu().detach(), cmap='gray')
-    ax[1].set_title("Reconstructed Image (Circles)")
-    ax[1].axis('off')
+exporter.export(x, y, r, theta, v, c,
+                output_path=config['postprocessing']['output_path'], 
+                svg_hollow=config['svg'].get('svg_hollow',False))
 
-    plt.show()
-
-# 최종 결과 시각화
-visualize_results(I_target, I_hat)
-
-# PDF로 export하는 함수
-def export_circles_to_pdf(x, y, r, v, filename="circle_art.pdf", canvas_size=(8, 8)):
-    # 디렉토리 경로 추출
-    directory = os.path.dirname(filename)
-    
-    # 디렉토리가 존재하지 않으면 생성
-    if directory and not os.path.exists(directory):
-        os.makedirs(directory)
-
-    fig, ax = plt.subplots(figsize=canvas_size)
-
-    # 강도를 [0,1] 사이로 정규화 (sigmoid 사용)
-    alpha_vals = torch.sigmoid(v).detach().cpu().numpy()
-
-    # 원들을 PDF에 추가
-    for xi, yi, ri, alpha in zip(x.cpu(), y.cpu(), r.cpu(), alpha_vals):
-        circle = patches.Circle((xi, yi), ri,
-                                linewidth=3.,  # 적당한 선
-                                edgecolor=(0,0,0,alpha),  # 검은색 + 알파값 (투명도)
-                                facecolor='none')
-        ax.add_patch(circle)
-
-    # 이미지 범위 설정
-    ax.set_xlim(0, W)
-    ax.set_ylim(H, 0)  # y축 상하 반전 (일반 이미지 좌표계)
-    ax.set_aspect('equal', adjustable='box')
-    plt.axis('off')
-
-    # PDF로 저장
-    with PdfPages(filename) as pdf:
-        pdf.savefig(fig, bbox_inches='tight', pad_inches=0)
-
-    plt.close(fig)
-
-# 실제 PDF export 실행
-output_path = config["postprocessing"].get("output_path", "circle_art.pdf")
-export_circles_to_pdf(x, y, r, v, filename=output_path)
-
-
+end_time = time.time()
+formatted_time = str(timedelta(seconds=int(end_time - start_time)))
+# 수행 시간 출력
+print(f"total_cost_time: {formatted_time}")

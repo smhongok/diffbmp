@@ -60,7 +60,7 @@ from cairosvg import svg2png
 # Create temporary file
 with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as temp_file:
     # Convert SVG to PNG
-    svg2png(url=svg_file, write_to=temp_file.name)
+    svg2png(url=svg_file, write_to=temp_file.name, output_width=config["svg"].get("output_width", 128))
     
     # Read as RGBA image
     bmp_image = Image.open(temp_file.name).convert('RGBA')
@@ -116,6 +116,12 @@ r = r.detach().clone().requires_grad_(True)
 v = v.detach().clone().requires_grad_(True)
 theta = theta.detach().clone().requires_grad_(True)
 
+x_init = x.clone().detach()
+y_init = y.clone().detach()
+r_init = r.clone().detach()
+v_init = v.clone().detach()
+theta_init = theta.clone().detach()
+
 # Initialize learnable parameters c (3-vector color)
 c = torch.rand(N, 3, device=device, requires_grad=True)  # Color, initially in [0,1] range
 
@@ -125,55 +131,13 @@ X, Y = torch.meshgrid(torch.arange(W, device=device),
 X, Y = X.unsqueeze(0), Y.unsqueeze(0)  # (1, H, W)
 
 alpha_upper_bound = config["optimization"].get("alpha_upper_bound", 0.5)
+delta      = config["optimization"].get("delta", 1.0)
+kappa      = config["optimization"].get("kappa", 2000)   # 남길 splat 수
+prune_itv  = config["optimization"].get("prune_interval", 20)
+warmup     = config["optimization"].get("warmup_iter", 100)
 
-def soft_rasterize_shape(bmp_image, X, Y, x, y, r, theta):
-    """
-    Treats bmp_image as a continuous function defined on [-1,1]^2,
-    scales it by r, rotates by theta, translates to (x,y),
-    and samples the result at coordinates (X,Y).
-    
-    Args:
-        bmp_image: (H_bmp, W_bmp) torch tensor, value in [0,1]
-        X, Y: (1, H, W) coordinate grid
-        x, y, r, theta: position, scale, rotation
-    Returns:
-        mask: (1, H, W)
-    """
-    _, H, W = X.shape
-
-    # (1) Reshape bmp_image as a 4D continuous function on [-1, 1]^2
-    bmp_image = bmp_image.unsqueeze(0).unsqueeze(0)  # (1,1,H_bmp,W_bmp)
-
-    # (2) Convert (X,Y) grid to (u,v) (inverse transform)
-    # Rotation matrix (theta: counter-clockwise rotation)
-    cos_t = torch.cos(theta)
-    sin_t = torch.sin(theta)
-    R_inv = torch.stack([
-        torch.stack([cos_t, sin_t], dim=0),
-        torch.stack([-sin_t, cos_t], dim=0)
-    ], dim=0)  # (2, 2)
-
-    # Output grid coordinates (1, H, W) -> (H, W)
-    X_flat = X.squeeze(0)
-    Y_flat = Y.squeeze(0)
-
-    # (X - x, Y - y): normalize position
-    pos = torch.stack([X_flat - x, Y_flat - y], dim=0)  # (2, H, W)
-    pos = pos / r  # Scale adjustment
-
-    # Inverse rotation transform
-    uv = torch.einsum('ij,jhw->ihw', R_inv, pos)  # (2, H, W)
-
-    # (3) Reshape uv ∈ [-1,1]^2 to (H, W, 2) for grid_sample
-    u = uv[0]  # (H, W)
-    v = uv[1]  # (H, W)
-    grid = torch.stack([u, v], dim=-1)  # (H, W, 2)
-    grid = grid.unsqueeze(0)  # (1, H, W, 2)
-
-    # (4) Sample (bilinear interpolation over [-1, 1])
-    sampled = F.grid_sample(bmp_image, grid, mode='bilinear', padding_mode='zeros', align_corners=True)  # (1,1,H,W)
-
-    return sampled.squeeze(1)  # (1, H, W)
+z      = torch.zeros_like(v, requires_grad=False)      # auxiliary sparse var
+lam    = torch.zeros_like(v, requires_grad=False)      # λ in paper
 
 def batched_soft_rasterize(bmp_image, X, Y, x, y, r, theta):
     B = len(x)
@@ -238,17 +202,6 @@ def tree_over(m, a):
         a = a[:, 0] + (1 - a[:, 0]) * a[:, 1]
     return m.squeeze(0), a.squeeze(0)
 
-# Cache masks
-print("Precomputing masks...")
-'''
-_cached_masks = []
-for i in range(len(x)):  # This will iterate from 0 to len(x)-1
-    mask_i = soft_rasterize_shape(bmp_image_tensor, X, Y, x[i], y[i], r[i], theta[i])
-    _cached_masks.append(mask_i)
-_cached_masks = torch.cat(_cached_masks, dim=0)  # (N, H, W)
-_cached_masks = batched_soft_rasterize(bmp_image_tensor, X, Y, x, y, r, theta)
-'''
-
 # Rendering function
 def render_image_vector_cached(cached_masks, v, c, X, Y):
     N = v.shape[0]
@@ -280,17 +233,14 @@ for epoch in tqdm(range(num_iterations)):
     optimizer.zero_grad()
     
     # Recompute masks for current parameters
-    '''
-    _cached_masks = []
-    for i in range(len(x)):  # This will iterate from 0 to len(x)-1
-        mask_i = soft_rasterize_shape(bmp_image_tensor, X, Y, x[i], y[i], r[i], theta[i])
-        _cached_masks.append(mask_i)
-    _cached_masks = torch.cat(_cached_masks, dim=0)
-    '''
     _cached_masks = batched_soft_rasterize(bmp_image_tensor, X, Y, x, y, r, theta)
 
     I_hat = render_image_vector_cached(_cached_masks, v, c, X, Y)
-    loss = F.mse_loss(I_hat, I_target)
+
+    _alpha      = alpha_upper_bound * torch.sigmoid(v)
+    loss   = F.mse_loss(I_hat, I_target)
+    loss  += 0.5 * delta * F.mse_loss(_alpha, z - lam)  # ❋ 추가
+
     loss.backward()
     optimizer.step()
     
@@ -301,8 +251,65 @@ for epoch in tqdm(range(num_iterations)):
         r.clamp_(init_conf.get("radii_min", 2), init_conf.get("radii_max", min(H, W) // 4))
         theta.clamp_(0, 2 * np.pi)
     
+    if (epoch >= warmup and epoch % prune_itv == 0):
+        with torch.no_grad():
+            _alpha = alpha_upper_bound * torch.sigmoid(v.detach())
+            # 중요도 = α 자체(혹은 |∂loss/∂α| 곱)  ↔ 실험 후 선택
+            keep_idx = torch.topk(_alpha, kappa).indices
+            mask     = torch.zeros_like(_alpha, dtype=torch.bool)
+            mask[keep_idx] = True
+            
+            z.zero_(); z[mask] = _alpha[mask]        # z ← sparse projection
+            lam += (_alpha - z)                      # λ ← λ + α - z
+
+            # *** 실제 파라미터 수를 줄이고 싶다면 ***  
+            if epoch % (10*prune_itv) == 0:     # 느슨한 빈도로 detach
+                # ------------------------  pruning  ------------------------ #
+                # 1) helper: 기존 tensor -> 잘라낸 tensor(requires_grad 유지)
+                def _prune(t):
+                    t_new = t[keep_idx].clone().detach()
+                    if t.requires_grad:
+                        t_new.requires_grad_(True)
+                    return t_new
+
+                # 2) 실제 파라미터·보조변수 잘라내기
+                x, y, r, theta, v, c = map(_prune, (x, y, r, theta, v, c))
+                z, lam               = map(_prune, (z, lam))
+
+                # 3) optimizer 재생성 (Adam state 깔끔히 초기화)
+                optimizer = torch.optim.Adam([
+                    {'params': x, 'lr': learning_rate*10},
+                    {'params': y, 'lr': learning_rate*10},
+                    {'params': r, 'lr': learning_rate},
+                    {'params': v, 'lr': learning_rate},
+                    {'params': theta, 'lr': learning_rate},
+                    {'params': c, 'lr': learning_rate},
+                ])
+
+                # 4) sparsity 목표를 조금 더 줄여 나가고 싶다면
+                kappa = max(int(kappa * 0.8), 500)   # 예: 최저 500개까지
+
+
     if epoch % 20 == 0:
         print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
+
+# RNMSE of x,y,r,v,theta
+# print("RNMSE of x:", torch.norm(x - x_init) / torch.norm(x_init))
+# print("RNMSE of y:", torch.norm(y - y_init) / torch.norm(y_init))
+# print("RNMSE of r:", torch.norm(r - r_init) / torch.norm(r_init))
+# print("RNMSE of v:", torch.norm(v - v_init) / torch.norm(v_init))
+# print("RNMSE of theta:", torch.norm(theta - theta_init) / torch.norm(theta_init))
+
+# 1) v 자체 분포
+alpha_cpu = alpha_upper_bound * torch.sigmoid(v.detach()).cpu().numpy()          # (N,)
+plt.figure(figsize=(6, 4))
+plt.hist(alpha_cpu, bins=50)
+plt.xlabel("alpha")
+plt.ylabel("Count")
+plt.title("Histogram of alpha after optimization, with sparsifying")
+plt.tight_layout()
+plt.show()
+
 
 
 # Export vector graphics to PDF

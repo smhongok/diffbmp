@@ -17,11 +17,14 @@ configs/*
 !configs/girl_triangle.json
 !configs/jylee_svg_hollow.json
 !configs/jylee_svg.json
-!configs/sags_trump.json
+!configs/smhong-dev.json
 
 main_text.py
 main_rgb.py
+*ignore.py
 .vscode/
+
+codes_legacy/*
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
