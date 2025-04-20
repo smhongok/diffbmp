@@ -40,4 +40,6 @@ def gaussian_blur(input_tensor, sigma):
     blurred = F.conv2d(input_tensor, kernel2d, padding=padding)
     return blurred.squeeze(1)  # (N, H, W)
 
-
+def compute_psnr(img1, img2, max_val=1.0):
+    mse = F.mse_loss(img1, img2)
+    return 10 * torch.log10(max_val**2 / mse)

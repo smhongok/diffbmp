@@ -12,11 +12,7 @@ images/*
 !images/tesla_logo.svg
 !images/curved_line.svg
 configs/*
-!configs/girl.json
-!configs/girl_color.json
-!configs/girl_triangle.json
 !configs/jylee_svg_hollow.json
-!configs/jylee_svg.json
 !configs/smhong-dev.json
 
 main_text.py

@@ -23,24 +23,45 @@
     },
     "svg": {
         "svg_file": "images/apple_logo_hollow.svg",
-        "svg_hollow": true
+        "svg_hollow": true,
+        "output_width": 128
     },
     "initialization": {
-        "template_matching": false,
-        "N": 3000,
-        "min_distance": 5,
+        "N": 5000,
+        "alpha": 0.3,
+        "min_distance": 3,
         "peak_threshold": 0.5,
         "radii_min": 2,
-        "arc_thickness": 1,
-        "v_init_mean": -5.0
+        "v_init_mean": -5.0,
+        "keypoint_extracting": true
     },
     "optimization": {
         "num_iterations": 300,
-        "learning_rate": 0.1,
-        "alpha_upper_bound": 0.3
+        "learning_rate": {
+            "default": 0.1,
+            "gain_x": 10.0,
+            "gain_y": 10.0,
+            "gain_r": 1.0,
+            "gain_v": 1.0,
+            "gain_theta": 1.0,
+            "gain_c": 1.0
+        },
+        "alpha_upper_bound": 0.5,
+        "do_gaussian_blur": true,
+        "blur_sigma_start": 2.0,
+        "blur_sigma_end": 1.0,
+        "sparsifying": {
+            "do_sparsify": true,
+            "sparsify_warmup": 100,
+            "sparsify_duration": 100,
+            "sparsify_loss_coeff": 0.5,
+            "sparsifying_period": 20,
+            "sparsified_N": 2500
+        }
     },
     "postprocessing": {
-        "output_path": "outputs/jylee_hollow_svg_N=3000.pdf",
-        "linewidth": 8.0
+        "output_path": "outputs/apple_N=10000_init_o_blur_o_sparse_o.pdf",
+        "linewidth": 3.0,
+        "compute_psnr": true
     }
-}
+} 
