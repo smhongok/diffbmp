@@ -6,6 +6,9 @@ from copy import deepcopy
 import matplotlib.pyplot as plt
 import os
 
+def point_key(p):
+    return (int(p[0]), int(p[1]))
+
 class StructureAwareInitializer:
     def __init__(self, num_init=100, alpha=0.3, min_distance=20, 
                  peak_threshold=0.5, radii_min=2, radii_max=None, 
@@ -23,14 +26,45 @@ class StructureAwareInitializer:
     def curvature_aware_densification(self, edge_map, points, N, min_dist):
         N_add = N - len(points)
         h, w = edge_map.shape
-        new_points = []
         edge_norm = edge_map.astype(np.float32) / 255.0
-        low_edge_coords = np.argwhere(edge_norm < 0.2)
-        for (y, x) in low_edge_coords:
+
+        # 1. Mask only low-curvature regions (below threshold)
+        mask = edge_norm < 0.2
+        num_total = edge_norm.size
+        num_valid = np.count_nonzero(mask)
+        print(f"Low-edge pixels: {num_valid} / {num_total} ({100 * num_valid / num_total:.2f}%)")
+
+        if not np.any(mask):
+            print("Warning: No low-edge regions found under threshold. Returning original points.")
+            return points
+
+        # 2. Create probability map from masked region
+        prob_map = (1.0 - edge_norm) * mask.astype(np.float32)
+        prob_flat = prob_map.flatten()
+        prob_flat /= prob_flat.sum()  # Normalize to sum=1
+
+        # 3. Get coordinates only in masked region
+        all_coords = np.array([(y, x) for y in range(h) for x in range(w)])
+        valid_indices = np.flatnonzero(mask.flatten())
+        
+        # 4. Limit the number of candidates to avoid too many points
+        num_candidates = min(len(valid_indices), N_add * 5)
+        
+        if num_candidates == 0:
+            print("Warning: No valid candidates to sample from.")
+            return points
+
+        # 5. Sample from only valid (low-edge) positions
+        sampled_indices = np.random.choice(valid_indices, size=num_candidates, replace=False, p=prob_flat[valid_indices])
+        candidate_coords = all_coords[sampled_indices]
+
+        new_points = []
+        for (y, x) in candidate_coords:
             if len(points) == 0 or np.min(np.linalg.norm(points - np.array([x, y]), axis=1)) > min_dist:
                 new_points.append([x, y])
                 if len(new_points) >= N_add:
                     break
+
         return np.vstack([points, np.array(new_points)]) if new_points else points
 
     def structure_aware_adjustment(self, points, grad_x, grad_y):
@@ -44,108 +78,138 @@ class StructureAwareInitializer:
             adjusted.append([new_x, new_y])
         return np.array(adjusted)
     
-    def coarse_to_fine_densification(self, edge_map, N, levels=5):
+    def coarse_to_fine_densification(self, edge_map, N, levels, refine_min_dist=False):
         h, w = edge_map.shape
+        print("edge_map.shape: ", edge_map.shape)
         points = np.empty((0, 2), dtype=np.float32)
 
-        for level in range(levels):
-            scale = 2 ** -(levels - level - 1)
+        for level in range(0, levels + 1, 1):
+            scale = 2 ** -(levels - level)
             small_edge = cv2.resize(edge_map, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
             small_points = points * scale
 
             # Scale-aware min_distance
             scaled_min_dist = self.min_distance * scale
-
-            # Inject into the existing densification function
             densified = self.curvature_aware_densification(small_edge, small_points, N, scaled_min_dist)
-            points = densified / scale
-            points = np.unique(points.astype(np.int32), axis=0).astype(np.float32)
 
+            # Upscale newly added points only
+            new_pts = densified[len(small_points):] / scale
+
+            # Append newly added points to current set
+            points = np.vstack([points, new_pts])
+
+            # Optionally, deduplicate
+            points = np.unique(points.astype(np.int32), axis=0).astype(np.float32)
+            
             if len(points) >= N:
                 break
+            
+        if refine_min_dist:
+            for level in range(0, levels + 1, 1):
+                scale = 2 ** -(levels - level)
+                small_edge = cv2.resize(edge_map, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+                small_points = points * scale
+
+                # Scale-aware min_distance
+                scaled_min_dist = 1 * scale
+                densified = self.curvature_aware_densification(small_edge, small_points, N, scaled_min_dist)
+
+                # Upscale newly added points only
+                new_pts = densified[len(small_points):] / scale
+
+                # Append newly added points to current set
+                points = np.vstack([points, new_pts])
+
+                # Optionally, deduplicate
+                points = np.unique(points.astype(np.int32), axis=0).astype(np.float32)
+                
+                if len(points) >= N:
+                    break
         
         return points[:N]
+    
+    def find_best_densification(self, edge_map, N):
+        best_points = None
+        best_level = 7
+        best_min_distance = None
+        max_len = -1
+
+        for min_dist in range(20, 1, -2):
+            self.min_distance = min_dist
+            points = self.coarse_to_fine_densification(edge_map, N, best_level)
+            if len(points) > max_len:
+                print("len(points): ", len(points), ", N: ", N, ", level: ", best_level, ", min_dist: ", min_dist)
+                max_len = len(points)
+                best_points = points[:N]
+                best_min_distance = min_dist
+                if len(points) >= N:
+                    break  # good enough, go shallower
+            
+        if len(points) < N:
+            print("Couldn't generate enough points with given constraints. Try again with min_distance 1.")
+            self.min_distance = best_min_distance
+            best_points = self.coarse_to_fine_densification(edge_map, N, best_level, refine_min_dist=True)
+
+        print(f"Using level={best_level}, min_distance={best_min_distance:.2f}")
+        return best_points
 
     def visualize_points(self, image, init_pts, densified_pts, adjusted_pts, filename='point_visualization.png'):
         """
-        Visualize densified_pts in red and adjusted_pts in blue on a white canvas.
-        
-        Args:
-            image: Original image (for size reference)
-            init_pts: Initial points (red)
-            densified_pts: Points after densification (green)
-            adjusted_pts: Points after adjustment (blue)
-            filename: Output filename
+        Visualize initial, densified, and adjusted points with color-coded overlaps.
+        - Red: initial only
+        - Green: densified only
+        - Blue: adjusted only
+        - Magenta: initial + densified
+        - Yellow: initial + adjusted
+        - Cyan: densified + adjusted
+        - Black: all three overlap
         """
-        # Create white canvas with same size as input image
+        # Create white canvas
         H, W = image.shape[:2] if len(image.shape) > 2 else image.shape
         canvas = np.ones((H, W, 3), dtype=np.uint8) * 255
-                
-        is_densified_dup_list = []
-        is_adjusted_dup_list = []
-        # Draw initial points in red
-        for xi, yi in init_pts:
-            xi, yi = int(xi), int(yi)
-            is_densified_dup = False
-            is_adjusted_dup = False
-            if 0 <= xi < W and 0 <= yi < H:
-                for idx, (xa, ya) in enumerate(adjusted_pts):
-                    xa, ya = int(xa), int(ya)
-                    if 0 <= xa < W and 0 <= ya < H:
-                        if xi==xa and yi==ya:
-                            is_adjusted_dup = True
-                            is_adjusted_dup_list.append(idx)
-                            break
-                for idx, (xd, yd) in enumerate(densified_pts):
-                    xd, yd = int(xd), int(yd)
-                    if 0 <= xd < W and 0 <= yd < H:
-                        if xi==xd and yi==yd:
-                            is_densified_dup = True
-                            is_densified_dup_list.append(idx)
-                            break
-            if is_densified_dup and is_adjusted_dup:
-                cv2.circle(canvas, (xi, yi), 1, (0, 0, 0), -1)  # Black (BGR)
-            elif is_densified_dup:
-                cv2.circle(canvas, (xi, yi), 1, (255, 0, 255), -1)  # Magenta (BGR)
-            elif is_adjusted_dup:
-                cv2.circle(canvas, (xi, yi), 1, (0, 255, 255), -1)  # Yellow (BGR)
-            else:
-                cv2.circle(canvas, (xi, yi), 1, (0, 0, 255), -1)  # Red (BGR)
-        
-        # Draw densified points in green
-        for idxd, (xd, yd) in enumerate(densified_pts):
-            if idxd in is_densified_dup_list:
+
+        # Convert to sets of int tuples for easy comparison
+        init_set = set(map(point_key, init_pts))
+        dens_set = set(map(point_key, densified_pts))
+        adj_set  = set(map(point_key, adjusted_pts))
+
+        all_keys = init_set | dens_set | adj_set
+
+        for x, y in all_keys:
+            in_init = (x, y) in init_set
+            in_dens = (x, y) in dens_set
+            in_adj  = (x, y) in adj_set
+
+            # Skip points outside canvas
+            if not (0 <= x < W and 0 <= y < H):
                 continue
-            is_adjusted_dup = False
-            xd, yd = int(xd), int(yd)
-            if 0 <= xd < W and 0 <= yd < H:
-                for idxa, (xa, ya) in enumerate(adjusted_pts):
-                    xa, ya = int(xa), int(ya)
-                    if 0 <= xa < W and 0 <= ya < H:
-                        if xd==xa and yd==ya:
-                            is_adjusted_dup = True
-                            is_adjusted_dup_list.append(idxa)
-                            break
-                        
-            if is_adjusted_dup:
-                cv2.circle(canvas, (xd, yd), 1, (255, 255, 0), -1)  # Yellow (BGR)
+
+            # Determine color based on combination
+            if in_init and in_dens and in_adj:
+                color = (0, 0, 0)           # Black
+            elif in_init and in_dens:
+                color = (255, 0, 255)       # Magenta
+            elif in_init and in_adj:
+                color = (0, 255, 255)       # Yellow
+            elif in_dens and in_adj:
+                color = (255, 255, 0)       # Cyan
+            elif in_init:
+                color = (0, 0, 255)         # Red
+            elif in_dens:
+                color = (0, 255, 0)         # Green
+            elif in_adj:
+                color = (255, 0, 0)         # Blue
             else:
-                cv2.circle(canvas, (xd, yd), 1, (0, 255, 0), -1)  # Green (BGR)
-        
-        # Draw adjusted points in blue
-        for idx, (x, y) in enumerate(adjusted_pts):
-            if idx in is_adjusted_dup_list:
-                continue
-            x, y = int(x), int(y)
-            if 0 <= x < W and 0 <= y < H:
-                cv2.circle(canvas, (x, y), 1, (255, 0, 0), -1)  # Blue (BGR)
-                
+                continue  # Should not happen
+
+            cv2.circle(canvas, (int(x), int(y)), 1, color, -1)
+
         # Save the visualization
         cv2.imwrite(filename, canvas)
         print(f"Point visualization saved to {filename}")
         
         return canvas
-
+   
     def initialize_for_svg(self, I_target):
         """
         Specialization for SVG input to match the API expected in main_svg.py
@@ -200,7 +264,7 @@ class StructureAwareInitializer:
             init_pts = np.array([kp.pt for kp in sorted_kp[:num_kp]])  # (x, y)
         
         # Apply our structure-aware techniques
-        densified_pts = self.coarse_to_fine_densification(edges, N)
+        densified_pts = self.find_best_densification(edges, N)
         adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y)
         print("len(densified_pts): ", len(densified_pts), ", len(adjusted_pts): ", len(adjusted_pts))
         
