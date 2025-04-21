@@ -18,7 +18,7 @@ from datetime import datetime
 # Import our modules
 from preprocessing import Preprocessor
 from svgsplat_initialization import StructureAwareInitializer
-from utils import set_global_seed, gaussian_blur
+from utils import set_global_seed, gaussian_blur, compute_psnr
 from svg_loader import SVGLoader
 from pdf_exporter import PDFExporter
 
@@ -183,36 +183,66 @@ num_iterations = opt_conf.get("num_iterations", 300)
 learning_rate = opt_conf.get("learning_rate", 0.1)
 
 # sigma 스케줄: config 에서 초기와 최종 값 가져옴 (기본값: 2.0 -> 1.0)
+do_gaussian_blur = opt_conf.get("do_gaussian_blur", False)
 sigma_start = opt_conf.get("blur_sigma_start", 2.0) # 
 sigma_end = opt_conf.get("blur_sigma_end", 1.0)
 
 # Create optimizer for all learnable parameters
 lr_conf = opt_conf["learning_rate"]
 lr = lr_conf.get("default", 0.1)
-optimizer = torch.optim.Adam([
+do_decay = opt_conf.get("do_decay", False)
+optimizer_xyr = torch.optim.Adam([
     {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
     {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
     {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},  
+])
+
+optimizer_rest = torch.optim.Adam([
     {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},  
     {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
     {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)}, 
 ])
+sched_xyr = torch.optim.lr_scheduler.ExponentialLR(
+    optimizer_xyr, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
 
+
+sparsify_conf = opt_conf["sparsifying"]
+do_sparsify = sparsify_conf.get("do_sparsify", False)
+
+if do_sparsify:
+    z = torch.zeros_like(v, requires_grad=False)
+    lam = torch.zeros_like(v, requires_grad=False)
+    iters_warmup = sparsify_conf.get("sparsify_warmup", num_iterations//3)
+    sparsify_duration = sparsify_conf.get("sparsify_duration", num_iterations//3)
+    sparsify_loss_coeff = sparsify_conf.get("sparsify_loss_coeff", 0.5)
+    sparsifying_period = sparsify_conf.get("sparsifying_period", 20)
+    sparsified_N = int(sparsify_conf.get("sparsified_N", 0.6 * N))
+    assert sparsified_N < N, "sparsified_N must be less than N"
+    assert num_iterations > iters_warmup + sparsify_duration, "num_iterations must be greater than warmup + duration"
 
 print(f"Starting optimization for {num_iterations} iterations...")
 for epoch in tqdm(range(num_iterations)):
-    optimizer.zero_grad()
+    optimizer_xyr.zero_grad()
+    optimizer_rest.zero_grad()
 
     # 현재 epoch에 따른 sigma (선형 보간)
-    sigma = sigma_start * (1 - epoch / num_iterations) + sigma_end * (epoch / num_iterations)
+    sigma = sigma_start * (1 - epoch / num_iterations) + sigma_end * (epoch / num_iterations) if do_gaussian_blur else 0.0
     
     # Recompute masks for current parameters
     _cached_masks = batched_soft_rasterize(bmp_image_tensor, X, Y, x, y, r, theta, sigma=sigma)
 
     I_hat = render_image_vector_cached(_cached_masks, v, c, X, Y)
     loss = F.mse_loss(I_hat, I_target)
+    if do_sparsify and epoch >= iters_warmup and epoch < iters_warmup+sparsify_duration:
+        _alpha      = alpha_upper_bound * torch.sigmoid(v)
+        loss  += 0.5 * sparsify_loss_coeff * F.mse_loss(_alpha, z - lam) # Sparsification loss
     loss.backward()
-    optimizer.step()
+
+    # step the optimizers
+    optimizer_xyr.step()
+    optimizer_rest.step()
+    if do_decay and sched_xyr is not None:
+        sched_xyr.step()
     
     # Clamp parameters to valid ranges
     with torch.no_grad():
@@ -223,6 +253,47 @@ for epoch in tqdm(range(num_iterations)):
     
     if epoch % 20 == 0:
         print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
+    
+    if do_sparsify:
+        with torch.no_grad():
+            if (epoch>= iters_warmup and epoch <= iters_warmup+sparsify_duration):
+                if epoch % sparsifying_period == 0:
+                    # Sparsification step
+                    _alpha = alpha_upper_bound * torch.sigmoid(v.detach())
+                    keep_idx = torch.topk(_alpha, sparsified_N).indices
+                    mask     = torch.zeros_like(_alpha, dtype=torch.bool)
+                    mask[keep_idx] = True
+                    
+                    z.zero_(); z[mask] = _alpha[mask]        # z ← sparse projection
+                    lam += (_alpha - z)             
+                
+                if epoch == iters_warmup+sparsify_duration:
+                    # actual sparsification
+                    # 1) helper: 기존 tensor -> 잘라낸 tensor(requires_grad 유지)
+                    def _prune(t):
+                        t_new = t[keep_idx].clone().detach()
+                        if t.requires_grad:
+                            t_new.requires_grad_(True)
+                        return t_new
+
+                    # 2) 실제 파라미터·보조변수 잘라내기
+                    x, y, r, theta, v, c = map(_prune, (x, y, r, theta, v, c))
+                    z, lam               = map(_prune, (z, lam))
+
+                    # 3) optimizer 재생성 (Adam state 깔끔히 초기화)
+                    optimizer_xyr = torch.optim.Adam([
+                        {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
+                        {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
+                        {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},  
+                    ])
+
+                    optimizer_rest = torch.optim.Adam([
+                        {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},  
+                        {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
+                        {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)}, 
+                    ])
+                    sched_xyr = torch.optim.lr_scheduler.ExponentialLR(
+                    optimizer_xyr, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
 
 # Save the final rendered image
 final_render = render_image_vector_cached(_cached_masks, v, c, X, Y)
@@ -278,3 +349,38 @@ end_time = time.time()
 formatted_time = str(timedelta(seconds=int(end_time - start_time)))
 # 수행 시간 출력
 print(f"total_cost_time: {formatted_time}")
+
+do_compute_psnr = config['postprocessing'].get('compute_psnr', False)
+
+# compute PSNR, SSIM, LPIPS between exported PDF and target image
+if do_compute_psnr:
+    try:
+        from pdf2image import convert_from_path
+        import piq
+        # Convert first page of PDF to image at same resolution
+        pages = convert_from_path(config['postprocessing']['output_path'], dpi=300)
+        export_img_pil = pages[0].resize((W, H))
+        export_arr = np.array(export_img_pil).astype(np.float32) / 255.0
+        # If RGBA, drop alpha
+        if export_arr.shape[2] == 4:
+            export_arr = export_arr[..., :3]
+        export_tensor = torch.tensor(export_arr, device=device)
+        # reshape to (1,3,H,W)
+        out = export_tensor.permute(2,0,1).unsqueeze(0)
+        tgt = I_target.permute(2,0,1).unsqueeze(0)
+        # Compute metrics
+        psnr_val = piq.psnr(out, tgt, data_range=1.0)
+        ssim_val = piq.ssim(out, tgt, data_range=1.0)
+        vif_val = piq.vif_p(out, tgt, data_range=1.0)
+        lpips_val = piq.LPIPS()(out, tgt)
+        print(f"PSNR: {psnr_val.item():.2f} dB")
+        print(f"SSIM: {ssim_val.item():.4f}")
+        print(f"VIF: {vif_val.item():.4f}")
+        print(f"LPIPS: {lpips_val.item():.4f}")
+        print(f"Number of splats: {len(x)}")
+    except ImportError as e:
+        print(f"Required library missing: {e}. Cannot compute metrics.")
+
+        print(f"Number of splats: {len(x)}")
+    except ImportError:
+        print("pdf2image not installed; cannot compute metrics on PDF export.")
