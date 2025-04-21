@@ -6,9 +6,6 @@ from copy import deepcopy
 import matplotlib.pyplot as plt
 import os
 
-def point_key(p):
-    return (int(p[0]), int(p[1]))
-
 class StructureAwareInitializer:
     def __init__(self, num_init=100, alpha=0.3, min_distance=20, 
                  peak_threshold=0.5, radii_min=2, radii_max=None, 
@@ -79,53 +76,41 @@ class StructureAwareInitializer:
         return np.array(adjusted)
     
     def coarse_to_fine_densification(self, edge_map, N, levels, refine_min_dist=False):
-        h, w = edge_map.shape
+        def densify_at_levels(edge_map, N, levels, initial_points, base_min_dist):
+            points = initial_points.copy()
+
+            for level in range(0, levels + 1):
+                scale = 2 ** -(levels - level)
+                small_edge = cv2.resize(edge_map, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                small_points = points * scale
+
+                scaled_min_dist = base_min_dist * scale
+                densified = self.curvature_aware_densification(small_edge, small_points, N, scaled_min_dist)
+
+                # Add only newly added points (after scaling back)
+                new_pts = densified[len(small_points):] / scale
+                points = np.vstack([points, new_pts])
+
+                # Deduplicate by integer rounding
+                points = np.unique(points.astype(np.int32), axis=0).astype(np.float32)
+
+                if len(points) >= N:
+                    break
+
+            return points
+
         print("edge_map.shape: ", edge_map.shape)
         points = np.empty((0, 2), dtype=np.float32)
 
-        for level in range(0, levels + 1, 1):
-            scale = 2 ** -(levels - level)
-            small_edge = cv2.resize(edge_map, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
-            small_points = points * scale
+        # Step 1: Coarse-to-fine densification with default min_distance
+        points = densify_at_levels(edge_map, N, levels, points, self.min_distance)
 
-            # Scale-aware min_distance
-            scaled_min_dist = self.min_distance * scale
-            densified = self.curvature_aware_densification(small_edge, small_points, N, scaled_min_dist)
+        # Step 2 (optional): refine with smaller min_distance
+        if refine_min_dist and len(points) < N:
+            points = densify_at_levels(edge_map, N, levels, points, base_min_dist=1.0)
+            if len(points) < N:
+                points = densify_at_levels(edge_map, N, levels, points, base_min_dist=0.9)
 
-            # Upscale newly added points only
-            new_pts = densified[len(small_points):] / scale
-
-            # Append newly added points to current set
-            points = np.vstack([points, new_pts])
-
-            # Optionally, deduplicate
-            points = np.unique(points.astype(np.int32), axis=0).astype(np.float32)
-            
-            if len(points) >= N:
-                break
-            
-        if refine_min_dist:
-            for level in range(0, levels + 1, 1):
-                scale = 2 ** -(levels - level)
-                small_edge = cv2.resize(edge_map, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
-                small_points = points * scale
-
-                # Scale-aware min_distance
-                scaled_min_dist = 1 * scale
-                densified = self.curvature_aware_densification(small_edge, small_points, N, scaled_min_dist)
-
-                # Upscale newly added points only
-                new_pts = densified[len(small_points):] / scale
-
-                # Append newly added points to current set
-                points = np.vstack([points, new_pts])
-
-                # Optionally, deduplicate
-                points = np.unique(points.astype(np.int32), axis=0).astype(np.float32)
-                
-                if len(points) >= N:
-                    break
-        
         return points[:N]
     
     def find_best_densification(self, edge_map, N):
@@ -164,6 +149,10 @@ class StructureAwareInitializer:
         - Cyan: densified + adjusted
         - Black: all three overlap
         """
+        
+        def point_key(p):
+            return (int(p[0]), int(p[1]))
+
         # Create white canvas
         H, W = image.shape[:2] if len(image.shape) > 2 else image.shape
         canvas = np.ones((H, W, 3), dtype=np.uint8) * 255
