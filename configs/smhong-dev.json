@@ -27,7 +27,7 @@
         "output_width": 128
     },
     "initialization": {
-        "N": 5000,
+        "N": 2000,
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
@@ -41,18 +41,29 @@
             "default": 0.1,
             "gain_x": 10.0,
             "gain_y": 10.0,
-            "gain_r": 1.0,
+            "gain_r": 10.0,
             "gain_v": 1.0,
             "gain_theta": 1.0,
             "gain_c": 1.0
         },
-        "alpha_upper_bound": 0.5,
+        "do_decay": true,
+        "decay_rate": 0.99,
+        "alpha_upper_bound": 1.0,
+        "do_gaussian_blur": true,
         "blur_sigma_start": 2.0,
         "blur_sigma_end": 1.0,
-        "kappa": 3000
+        "sparsifying": {
+            "do_sparsify": true,
+            "sparsify_warmup": 100,
+            "sparsify_duration": 100,
+            "sparsify_loss_coeff": 0.5,
+            "sparsifying_period": 20,
+            "sparsified_N": 1000
+        }
     },
     "postprocessing": {
-        "output_path": "outputs/trump_sags_N=3000_ITER=300_keypoint_sparseO.pdf",
-        "linewidth": 3.0
+        "output_path": "outputs/N=2000_init_o_blur_o_sparse_o.pdf",
+        "linewidth": 3.0,
+        "compute_psnr": true
     }
 } 
