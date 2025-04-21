@@ -141,53 +141,6 @@ def batched_soft_rasterize(bmp_image, X, Y, x, y, r, theta, sigma=0.0):
 
     return sampled.squeeze(1)  # (B, H, W)
 
-def plot_gaussian_blur():
-    # 1) Build a binary circular mask in pixel space via normalized grid
-    size = 100
-    xs = np.linspace(-1,1,size)
-    ys = np.linspace(-1,1,size)
-    Xg, Yg = np.meshgrid(xs, ys)
-    bmp = ((Xg**2 + Yg**2) <= 1.0).astype(np.float32)
-
-    # 2) Convert to tensor
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    bmp_t = torch.tensor(bmp, device=device)
-
-    # 3) Create normalized coordinate grids in [-1,1]
-    x_lin = torch.linspace(-1,1,size, device=device)
-    y_lin = torch.linspace(-1,1,size, device=device)
-    Xc, Yc = torch.meshgrid(x_lin, y_lin, indexing='xy')
-    Xc, Yc = Xc.unsqueeze(0), Yc.unsqueeze(0)
-
-    # 4) Set parameters at center, no rotation
-    B = 1
-    x = torch.zeros(B, device=device)   # center at 0 in normalized coords
-    y = torch.zeros(B, device=device)
-    r = torch.ones(B, device=device)    # radius = 1 for unit circle
-    theta = torch.zeros(B, device=device)
-
-    # 5) Evaluate at different blur levels
-    sigmas = [0.0, 1.0, 2.0]
-    profiles = []
-    for s in sigmas:
-        out = batched_soft_rasterize(bmp_t, Xc, Yc, x, y, r, theta, sigma=s)
-        profiles.append(out[0].cpu().numpy())
-
-    # 6) Plot 3D surfaces
-    fig = plt.figure(figsize=(12,4))
-    for i, s in enumerate(sigmas,1):
-        ax = fig.add_subplot(1,3,i, projection='3d')
-        ax.plot_surface(Xg, Yg, profiles[i-1], cmap='viridis', edgecolor='none')
-        ax.set_title(f'sigma={s}')
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Mask Value')
-    plt.tight_layout()
-    plt.savefig('soft_rasterization_profiles.png', dpi=300)
-    plt.show()
-
-plot_gaussian_blur()
-
 # Over Operator functions
 def over_pair(m1, a1, m2, a2):
     m_out = m1 + (1 - a1).unsqueeze(-1) * m2
