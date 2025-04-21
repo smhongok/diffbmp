@@ -34,11 +34,6 @@ config_path = args.config
 with open(config_path, "r", encoding="utf-8") as f:
     config = json.load(f)
 
-filename_only = os.path.splitext(os.path.basename(config['preprocessing']['img_path']))[0]
-output_path=config['postprocessing']['output_folder'] + filename_only + "_N" + str(init_conf.get("N", 1000)) + "_ITER" + str(num_iterations) \
-    + "_" + str(config['optimization']['sparsifying']['do_sparsify'])[0] + "_SPN" + str(config['optimization']['sparsifying']['sparsified_N']) + ".pdf"
-config['postprocessing']['output_path'] = output_path
-
 # import 뒤 혹은 config 로드 직후
 set_global_seed(config.get("seed", 42))
 
@@ -385,6 +380,11 @@ if init_conf.get("debug_mode", False):
         print(timestamp_str)
         cv2.imwrite('outputs/combined_visualization_' + timestamp_str + '.png', combined)
         print("Combined visualization saved to outputs/combined_visualization.png")
+
+filename_only = os.path.splitext(os.path.basename(config['preprocessing']['img_path']))[0]
+output_path=config['postprocessing']['output_folder'] + filename_only + "_N" + str(init_conf.get("N", 1000)) + "_ITER" + str(num_iterations) \
+    + "_" + str(config['optimization']['sparsifying']['do_sparsify'])[0] + "_SPN" + str(config['optimization']['sparsifying']['sparsified_N']) + ".pdf"
+config['postprocessing']['output_path'] = output_path
 
 exporter = PDFExporter(svg_loader.svg_path, canvas_size=(W, H), viewbox_size=(svg_loader.get_svg_size()),
                        alpha_upper_bound=alpha_upper_bound, stroke_width=config["postprocessing"].get("linewidth", 3.0))
