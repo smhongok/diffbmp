@@ -12,6 +12,8 @@ from tqdm import tqdm
 from PIL import Image
 import json
 import argparse
+import cv2
+from datetime import datetime
 
 # Import our modules
 from preprocessing import Preprocessor
@@ -72,7 +74,8 @@ initializer = StructureAwareInitializer(
     radii_min=init_conf.get("radii_min", 2),
     radii_max=init_conf.get("radii_max", None),
     v_init_mean=init_conf.get("v_init_mean", -5.0),
-    keypoint_extracting=init_conf.get("keypoint_extracting", False)
+    keypoint_extracting=init_conf.get("keypoint_extracting", False),
+    debug_mode=init_conf.get("debug_mode", False)  # Add debug mode parameter
 )
 
 # Initialize from SVG - all parameters are now learnable
@@ -292,6 +295,97 @@ for epoch in tqdm(range(num_iterations)):
                     sched_xyr = torch.optim.lr_scheduler.ExponentialLR(
                     optimizer_xyr, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
 
+# Save the final rendered image
+final_render = render_image_vector_cached(_cached_masks, v, c, X, Y)
+final_render_np = final_render.detach().cpu().numpy()
+final_render_np = (final_render_np * 255).astype(np.uint8)
+
+# Create combined visualization with point debug if debug mode was enabled
+if init_conf.get("debug_mode", False):
+    # Ensure outputs directory exists
+    os.makedirs('outputs', exist_ok=True)
+    
+    # Save the final render
+    cv2.imwrite('outputs/final_render.png', cv2.cvtColor(final_render_np, cv2.COLOR_RGB2BGR))
+    
+    # Load point debug visualization
+    point_debug = cv2.imread('outputs/point_debug.png')
+    
+    # Resize if dimensions don't match
+    if point_debug.shape[:2] != final_render_np.shape[:2]:
+        point_debug = cv2.resize(point_debug, (final_render_np.shape[1], final_render_np.shape[0]))
+    
+    # Load original visualization if it exists
+    if os.path.exists('outputs/side_by_side_debug.png'):
+        side_by_side = cv2.imread('outputs/side_by_side_debug.png')
+        
+        # Create a new row with final render
+        final_render_bgr = cv2.cvtColor(final_render_np, cv2.COLOR_RGB2BGR)
+        
+        # Extract original and point debug from side_by_side
+        mid_point = side_by_side.shape[1] // 2
+        original = side_by_side[:, :mid_point]
+        points = side_by_side[:, mid_point:]
+        
+        # Resize final render to match original and points
+        final_render_bgr = cv2.resize(final_render_bgr, (mid_point, side_by_side.shape[0]))
+        
+        # Create three-panel image: original, points, final render
+        combined = np.hstack((original, points, final_render_bgr))
+        
+        timestamp_str = datetime.now().strftime("%m-%d-%H-%M-%S")
+        print(timestamp_str)
+        cv2.imwrite('outputs/combined_visualization_' + timestamp_str + '.png', combined)
+        print("Combined visualization saved to outputs/combined_visualization.png")
+
+# Save the final rendered image
+final_render = render_image_vector_cached(_cached_masks, v, c, X, Y)
+final_render_np = final_render.detach().cpu().numpy()
+final_render_np = (final_render_np * 255).astype(np.uint8)
+
+# Create combined visualization with point debug if debug mode was enabled
+if init_conf.get("debug_mode", False):
+    # Ensure outputs directory exists
+    os.makedirs('outputs', exist_ok=True)
+    
+    # Save the final render
+    cv2.imwrite('outputs/final_render.png', cv2.cvtColor(final_render_np, cv2.COLOR_RGB2BGR))
+    
+    # Load point debug visualization
+    point_debug = cv2.imread('outputs/point_debug.png')
+    
+    # Resize if dimensions don't match
+    if point_debug.shape[:2] != final_render_np.shape[:2]:
+        point_debug = cv2.resize(point_debug, (final_render_np.shape[1], final_render_np.shape[0]))
+    
+    # Load original visualization if it exists
+    if os.path.exists('outputs/side_by_side_debug.png'):
+        side_by_side = cv2.imread('outputs/side_by_side_debug.png')
+        
+        # Create a new row with final render
+        final_render_bgr = cv2.cvtColor(final_render_np, cv2.COLOR_RGB2BGR)
+        
+        # Extract original and point debug from side_by_side
+        mid_point = side_by_side.shape[1] // 2
+        original = side_by_side[:, :mid_point]
+        points = side_by_side[:, mid_point:]
+        
+        # Resize final render to match original and points
+        final_render_bgr = cv2.resize(final_render_bgr, (mid_point, side_by_side.shape[0]))
+        
+        # Create three-panel image: original, points, final render
+        combined = np.hstack((original, points, final_render_bgr))
+        
+        timestamp_str = datetime.now().strftime("%m-%d-%H-%M-%S")
+        print(timestamp_str)
+        cv2.imwrite('outputs/combined_visualization_' + timestamp_str + '.png', combined)
+        print("Combined visualization saved to outputs/combined_visualization.png")
+
+filename_only = os.path.splitext(os.path.basename(config['preprocessing']['img_path']))[0]
+output_path=config['postprocessing']['output_folder'] + filename_only + "_N" + str(init_conf.get("N", 1000)) + "_ITER" + str(num_iterations) \
+    + "_" + str(config['optimization']['sparsifying']['do_sparsify'])[0] + "_SPN" + str(config['optimization']['sparsifying']['sparsified_N']) + ".pdf"
+config['postprocessing']['output_path'] = output_path
+
 exporter = PDFExporter(svg_loader.svg_path, canvas_size=(W, H), viewbox_size=(svg_loader.get_svg_size()),
                        alpha_upper_bound=alpha_upper_bound, stroke_width=config["postprocessing"].get("linewidth", 3.0))
 
@@ -335,6 +429,3 @@ if do_compute_psnr:
     except ImportError as e:
         print(f"Required library missing: {e}. Cannot compute metrics.")
 
-        print(f"Number of splats: {len(x)}")
-    except ImportError:
-        print("pdf2image not installed; cannot compute metrics on PDF export.")
