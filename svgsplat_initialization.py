@@ -100,7 +100,9 @@ class StructureAwareInitializer:
         x = torch.tensor(adjusted_pts[:, 0], dtype=torch.float32, device=device, requires_grad=True)
         y = torch.tensor(adjusted_pts[:, 1], dtype=torch.float32, device=device, requires_grad=True)
         num_points = len(x)
-        r = torch.rand(num_points, device=device, requires_grad=True) * min(H, W) / 8 + min(H, W) / 32
+        # r = torch.rand(num_points, device=device, requires_grad=True) * min(H, W) / 8 + min(H, W) / 32
+        r = torch.rand(num_points, device=device, requires_grad=True) * min(H, W) / 16 + self.radii_min
+        # r = torch.poisson(torch.full((num_points,), rate, device=device, requires_grad=False)) + self.radii_min
         v = torch.full((num_points,), self.v_init_mean, device=device, requires_grad=True)
         theta = torch.rand(num_points, device=device, requires_grad=True) * 2 * np.pi
         print("len(x): ", len(x))

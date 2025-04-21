@@ -141,6 +141,53 @@ def batched_soft_rasterize(bmp_image, X, Y, x, y, r, theta, sigma=0.0):
 
     return sampled.squeeze(1)  # (B, H, W)
 
+def plot_gaussian_blur():
+    # 1) Build a binary circular mask in pixel space via normalized grid
+    size = 100
+    xs = np.linspace(-1,1,size)
+    ys = np.linspace(-1,1,size)
+    Xg, Yg = np.meshgrid(xs, ys)
+    bmp = ((Xg**2 + Yg**2) <= 1.0).astype(np.float32)
+
+    # 2) Convert to tensor
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    bmp_t = torch.tensor(bmp, device=device)
+
+    # 3) Create normalized coordinate grids in [-1,1]
+    x_lin = torch.linspace(-1,1,size, device=device)
+    y_lin = torch.linspace(-1,1,size, device=device)
+    Xc, Yc = torch.meshgrid(x_lin, y_lin, indexing='xy')
+    Xc, Yc = Xc.unsqueeze(0), Yc.unsqueeze(0)
+
+    # 4) Set parameters at center, no rotation
+    B = 1
+    x = torch.zeros(B, device=device)   # center at 0 in normalized coords
+    y = torch.zeros(B, device=device)
+    r = torch.ones(B, device=device)    # radius = 1 for unit circle
+    theta = torch.zeros(B, device=device)
+
+    # 5) Evaluate at different blur levels
+    sigmas = [0.0, 1.0, 2.0]
+    profiles = []
+    for s in sigmas:
+        out = batched_soft_rasterize(bmp_t, Xc, Yc, x, y, r, theta, sigma=s)
+        profiles.append(out[0].cpu().numpy())
+
+    # 6) Plot 3D surfaces
+    fig = plt.figure(figsize=(12,4))
+    for i, s in enumerate(sigmas,1):
+        ax = fig.add_subplot(1,3,i, projection='3d')
+        ax.plot_surface(Xg, Yg, profiles[i-1], cmap='viridis', edgecolor='none')
+        ax.set_title(f'sigma={s}')
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Mask Value')
+    plt.tight_layout()
+    plt.savefig('soft_rasterization_profiles.png', dpi=300)
+    plt.show()
+
+plot_gaussian_blur()
+
 # Over Operator functions
 def over_pair(m1, a1, m2, a2):
     m_out = m1 + (1 - a1).unsqueeze(-1) * m2
@@ -187,14 +234,21 @@ sigma_end = opt_conf.get("blur_sigma_end", 1.0)
 # Create optimizer for all learnable parameters
 lr_conf = opt_conf["learning_rate"]
 lr = lr_conf.get("default", 0.1)
-optimizer = torch.optim.Adam([
+do_decay = opt_conf.get("do_decay", False)
+optimizer_xyr = torch.optim.Adam([
     {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
     {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
     {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},  
+])
+
+optimizer_rest = torch.optim.Adam([
     {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},  
     {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
     {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)}, 
 ])
+sched_xyr = torch.optim.lr_scheduler.ExponentialLR(
+    optimizer_xyr, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
+
 
 sparsify_conf = opt_conf["sparsifying"]
 do_sparsify = sparsify_conf.get("do_sparsify", False)
@@ -212,7 +266,8 @@ if do_sparsify:
 
 print(f"Starting optimization for {num_iterations} iterations...")
 for epoch in tqdm(range(num_iterations)):
-    optimizer.zero_grad()
+    optimizer_xyr.zero_grad()
+    optimizer_rest.zero_grad()
 
     # 현재 epoch에 따른 sigma (선형 보간)
     sigma = sigma_start * (1 - epoch / num_iterations) + sigma_end * (epoch / num_iterations) if do_gaussian_blur else 0.0
@@ -226,7 +281,12 @@ for epoch in tqdm(range(num_iterations)):
         _alpha      = alpha_upper_bound * torch.sigmoid(v)
         loss  += 0.5 * sparsify_loss_coeff * F.mse_loss(_alpha, z - lam) # Sparsification loss
     loss.backward()
-    optimizer.step()
+
+    # step the optimizers
+    optimizer_xyr.step()
+    optimizer_rest.step()
+    if do_decay and sched_xyr is not None:
+        sched_xyr.step()
     
     # Clamp parameters to valid ranges
     with torch.no_grad():
@@ -265,15 +325,19 @@ for epoch in tqdm(range(num_iterations)):
                     z, lam               = map(_prune, (z, lam))
 
                     # 3) optimizer 재생성 (Adam state 깔끔히 초기화)
-                    optimizer = torch.optim.Adam([
+                    optimizer_xyr = torch.optim.Adam([
                         {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
                         {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
                         {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},  
+                    ])
+
+                    optimizer_rest = torch.optim.Adam([
                         {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},  
                         {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
                         {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)}, 
-                    ])             
-
+                    ])
+                    sched_xyr = torch.optim.lr_scheduler.ExponentialLR(
+                    optimizer_xyr, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
 
 exporter = PDFExporter(svg_loader.svg_path, canvas_size=(W, H), viewbox_size=(svg_loader.get_svg_size()),
                        alpha_upper_bound=alpha_upper_bound, stroke_width=config["postprocessing"].get("linewidth", 3.0))

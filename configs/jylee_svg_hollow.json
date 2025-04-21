@@ -33,7 +33,7 @@
         "peak_threshold": 0.5,
         "radii_min": 2,
         "v_init_mean": -5.0,
-        "keypoint_extracting": true
+        "keypoint_extracting": false
     },
     "optimization": {
         "num_iterations": 300,
@@ -41,12 +41,14 @@
             "default": 0.1,
             "gain_x": 10.0,
             "gain_y": 10.0,
-            "gain_r": 1.0,
+            "gain_r": 10.0,
             "gain_v": 1.0,
             "gain_theta": 1.0,
             "gain_c": 1.0
         },
-        "alpha_upper_bound": 0.5,
+        "do_decay": true,
+        "decay_rate": 0.99,
+        "alpha_upper_bound": 1.0,
         "do_gaussian_blur": true,
         "blur_sigma_start": 2.0,
         "blur_sigma_end": 1.0,
@@ -60,8 +62,8 @@
         }
     },
     "postprocessing": {
-        "output_path": "outputs/apple_N=10000_init_o_blur_o_sparse_o.pdf",
-        "linewidth": 3.0,
+        "output_path": "outputs/apple_N=5000_init_x_blur_o_sparse_o.pdf",
+        "linewidth": 5.0,
         "compute_psnr": true
     }
 } 
