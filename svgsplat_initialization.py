@@ -189,7 +189,7 @@ class StructureAwareInitializer:
         # If no keypoints found, do random initialization
         if not keypoints:
             if self.keypoint_extracting:
-                print("No ORB keypoints. using random initialization.")
+                print("No ORB keypoints. using coarse-to-fine initialization.")
             else:
                 print("keypoint_extracting off. using random initialization.")
             init_pts = np.random.rand(num_kp, 2) * np.array([W, H])

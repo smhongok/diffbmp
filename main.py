@@ -424,6 +424,3 @@ if do_compute_psnr:
     except ImportError as e:
         print(f"Required library missing: {e}. Cannot compute metrics.")
 
-        print(f"Number of splats: {len(x)}")
-    except ImportError:
-        print("pdf2image not installed; cannot compute metrics on PDF export.")
