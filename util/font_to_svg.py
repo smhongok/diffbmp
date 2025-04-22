@@ -6,6 +6,7 @@ import unicodedata
 base_folder = Path(__file__).resolve().parent.parent
 font_folder = os.path.join(base_folder, "assets", "font") # .ttf 또는 .otf 경로
 svg_folder = os.path.join(base_folder, "assets", "svg") # svg 경로
+print(svg_folder)
 
 class FontParser:
     def __init__(self, font_name):
@@ -44,12 +45,16 @@ class FontParser:
         
         # Estimate SVG width and height based on text
         text_width = self.estimate_text_width(text, font_size)
-        svg_width = text_width + margin
+        svg_width = text_width + margin*2
         svg_height = int(font_size * 1.5) + margin # 여유를 둔 세로 높이
 
         # Create SVG drawing
-        self.output_svg_path = os.path.join(self.output_svg_path, f"_{text}.svg")    
-        dwg = svgwrite.Drawing(self.output_svg_path, size=(f"{svg_width}px", f"{svg_height}px"))
+        self.output_svg_path = self.output_svg_path + f"_{text}.svg"
+        dwg = svgwrite.Drawing(
+            self.output_svg_path, 
+            size=(f"{svg_width}px", f"{svg_height}px"),
+            viewBox=f"0 0 {svg_width} {svg_height}"
+        )
         
         # Embed font via @font-face
         font_face = f"""
@@ -75,7 +80,7 @@ class FontParser:
 
 # 예시 사용법
 if __name__ == "__main__":
-    text = "MarryMe"
+    text = "HELLO"
     font_name = "MaruBuri-Bold.otf"
     font_parser = FontParser(font_name)
     font_parser.text_to_svg(text)
