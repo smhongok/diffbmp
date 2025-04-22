@@ -21,7 +21,7 @@ from svgsplat_initialization import StructureAwareInitializer
 from utils import set_global_seed, gaussian_blur, compute_psnr
 from svg_loader import SVGLoader
 from pdf_exporter import PDFExporter
-
+from util.font_to_svg import FontParser
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Argument parser setup
@@ -33,7 +33,6 @@ config_path = args.config
 # Load configuration
 with open(config_path, "r", encoding="utf-8") as f:
     config = json.load(f)
-
 # import 뒤 혹은 config 로드 직후
 set_global_seed(config.get("seed", 42))
 
@@ -54,9 +53,17 @@ I_target = torch.tensor(I_target, device=device)  # (H, W, 3)
 H = preprocessor.final_height
 W = preprocessor.final_width
 
+svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
+
+if (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
+    font_parser = FontParser(config["svg"].get("svg_file"))
+    svg_path = font_parser.text_to_svg(config["svg"].get("text"))
+else:
+    svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
+
 # Load SVG file
 svg_loader = SVGLoader(
-    svg_path=config["svg"].get("svg_file", "images/tesla_logo.svg"),
+    svg_path=svg_path,
     output_width=config["svg"].get("output_width", 128),
     device=device
 )
@@ -399,7 +406,6 @@ formatted_time = str(timedelta(seconds=int(end_time - start_time)))
 print(f"total_cost_time: {formatted_time}")
 
 do_compute_psnr = config['postprocessing'].get('compute_psnr', False)
-
 # compute PSNR, SSIM, LPIPS between exported PDF and target image
 if do_compute_psnr:
     try:

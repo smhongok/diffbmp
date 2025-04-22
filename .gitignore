@@ -5,12 +5,8 @@
 outputs/*
 images/*
 !images/girl.png
-!images/apple.svg
-!images/apple_logo_hollow.svg
 !images/jylee.png
 !images/trump.png
-!images/tesla_logo.svg
-!images/curved_line.svg
 configs/*
 !configs/jylee_svg_hollow.json
 !configs/smhong-dev.json
