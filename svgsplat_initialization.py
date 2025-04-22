@@ -5,6 +5,9 @@ import xml.etree.ElementTree as ET
 from copy import deepcopy
 import matplotlib.pyplot as plt
 import os
+import time
+from datetime import timedelta
+# 시작 시간 기록
 
 class StructureAwareInitializer:
     def __init__(self, num_init=100, alpha=0.3, min_distance=20, 
@@ -203,6 +206,7 @@ class StructureAwareInitializer:
         """
         Specialization for SVG input to match the API expected in main_svg.py
         """
+        start_time = time.time()
         device = I_target.device
         # Extract image dimensions
         if I_target.ndim == 3:
@@ -293,5 +297,10 @@ class StructureAwareInitializer:
         v = torch.full((num_points,), self.v_init_mean, device=device, requires_grad=True)
         theta = torch.rand(num_points, device=device, requires_grad=True) * 2 * np.pi
         print("len(x): ", len(x))
+        
+        end_time = time.time()
+        formatted_time = str(timedelta(seconds=int(end_time - start_time)))
+        # 수행 시간 출력
+        print(f"[initialize_for_svg]total_cost_time: {formatted_time}")
         
         return x, y, r, v, theta
