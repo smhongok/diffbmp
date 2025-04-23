@@ -12,14 +12,15 @@ from datetime import timedelta
 class StructureAwareInitializer:
     def __init__(self, num_init=100, alpha=0.3, min_distance=20, 
                  peak_threshold=0.5, radii_min=2, radii_max=None, 
-                 v_init_mean=-5.0, keypoint_extracting=False, whole_random=False, debug_mode=False):
+                 v_init_bias=-5.0, v_init_slope=0.0, keypoint_extracting=False, whole_random=False, debug_mode=False):
         self.num_init = num_init
         self.alpha = alpha
         self.min_distance = min_distance
         self.peak_threshold = peak_threshold
         self.radii_min = radii_min
         self.radii_max = radii_max
-        self.v_init_mean = v_init_mean
+        self.v_init_bias  = v_init_bias
+        self.v_init_slope = v_init_slope
         self.whole_random = whole_random
         self.keypoint_extracting = keypoint_extracting if not whole_random else False
         self.debug_mode = debug_mode
@@ -212,8 +213,11 @@ class StructureAwareInitializer:
         # Extract image dimensions
         if I_target.ndim == 3:
             H, W, _ = I_target.shape
+            I_color = I_target.cpu().numpy()            # (H,W,3), 0~1
         else:
             H, W = I_target.shape
+            gray = np.expand_dims(I_np / 255.0, axis=-1)
+            I_color = np.repeat(gray, 3, axis=-1)
             
         N = self.num_init
 
@@ -268,6 +272,16 @@ class StructureAwareInitializer:
             densified_pts = self.find_best_densification(edges, N)
             adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y)
             print("len(densified_pts): ", len(densified_pts), ", len(adjusted_pts): ", len(adjusted_pts))
+
+            # Color initialization
+            # 스플랫 좌표에 해당하는 픽셀 색 샘플
+            idx_x = np.clip(np.round(adjusted_pts[:, 0]).astype(int), 0, W - 1)
+            idx_y = np.clip(np.round(adjusted_pts[:, 1]).astype(int), 0, H - 1)
+            c_init = I_color[idx_y, idx_x]                  # (N,3) float32
+
+            # 약간의 노이즈로 파라미터 다양화
+            c_init += np.random.normal(0.0, 0.02, c_init.shape)
+            c_init = np.clip(c_init, 0.0, 1.0)              # 안전 클립
         
         # Visualize points if debug mode is enabled
         if self.debug_mode:
@@ -295,15 +309,34 @@ class StructureAwareInitializer:
             cv2.imwrite('outputs/side_by_side_debug.png', combined)
             print("Side-by-side visualization saved to outputs/side_by_side_debug.png")
         
-        # Convert to tensors with requires_grad=True
-        x = torch.tensor(adjusted_pts[:, 0], dtype=torch.float32, device=device, requires_grad=True)
-        y = torch.tensor(adjusted_pts[:, 1], dtype=torch.float32, device=device, requires_grad=True)
-        num_points = len(x)
-        # r = torch.rand(num_points, device=device, requires_grad=True) * min(H, W) / 8 + min(H, W) / 32
-        r = torch.rand(num_points, device=device, requires_grad=True) * min(H, W) / 16 + self.radii_min
-        # r = torch.poisson(torch.full((num_points,), rate, device=device, requires_grad=False)) + self.radii_min
-        v = torch.full((num_points,), self.v_init_mean, device=device, requires_grad=True)
+        # -------------------- radius 샘플 & 정렬 -------------------- #
+        num_points = adjusted_pts.shape[0]
+        r_np = np.random.rand(num_points) * min(H, W) / 4 + self.radii_min   # (N,)
+        sort_idx = np.argsort(r_np)           # 오름차순 (+)  → 큰 r 이 나중
+
+        # 좌표·색·반경 모두 같은 순서로 재정렬
+        adjusted_pts = adjusted_pts[sort_idx]
+        r_np         = r_np[sort_idx]
+        c_init       = c_init[sort_idx]
+
+        # -------------------- tensor 변환 --------------------------- #
+        x = torch.tensor(adjusted_pts[:, 0], dtype=torch.float32,
+                         device=device, requires_grad=True)
+        y = torch.tensor(adjusted_pts[:, 1], dtype=torch.float32,
+                         device=device, requires_grad=True)
+
+        r = torch.tensor(r_np, dtype=torch.float32,
+                         device=device, requires_grad=True)
+
+        # -------------------- opacity v 초기화 (레이어 일치) -------- #
+        rank = torch.linspace(0.0, 1.0, steps=num_points, device=device)     # 0(아래)→1(위)
+        v = (self.v_init_bias + self.v_init_slope * rank).clone().detach()
+        v += torch.empty_like(v).normal_(mean=0.0, std=0.05)
+        v.requires_grad_(True)
+
         theta = torch.rand(num_points, device=device, requires_grad=True) * 2 * np.pi
+        c = torch.tensor(c_init, dtype=torch.float32,
+                         device=device, requires_grad=True)
         print("len(x): ", len(x))
         
         end_time = time.time()
@@ -311,4 +344,4 @@ class StructureAwareInitializer:
         # 수행 시간 출력
         print(f"[initialize_for_svg]total_cost_time: {formatted_time}")
         
-        return x, y, r, v, theta
+        return x, y, r, v, theta, c
