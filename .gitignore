@@ -17,6 +17,8 @@ main_rgb.py
 .vscode/
 
 codes_legacy/*
+extra_outputs/*
+assets/svg/*
 
 ### Python ###
 # Byte-compiled / optimized / DLL files

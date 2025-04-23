@@ -80,13 +80,15 @@ initializer = StructureAwareInitializer(
     peak_threshold=init_conf.get("peak_threshold", 0.5),
     radii_min=init_conf.get("radii_min", 2),
     radii_max=init_conf.get("radii_max", None),
-    v_init_mean=init_conf.get("v_init_mean", -5.0),
+    v_init_bias=init_conf.get("v_init_bias", -5.0),
+    v_init_slope=init_conf.get("v_init_slope", 10.0),
     keypoint_extracting=init_conf.get("keypoint_extracting", False),
+    whole_random=init_conf.get("whole_random", False),
     debug_mode=init_conf.get("debug_mode", False)  # Add debug mode parameter
 )
 
 # Initialize from SVG - all parameters are now learnable
-x, y, r, v, theta = initializer.initialize_for_svg(I_target)
+x, y, r, v, theta, c = initializer.initialize_for_svg(I_target)
 N = len(x)
 
 # Convert to leaf tensors for optimization
@@ -95,9 +97,10 @@ y = y.detach().clone().requires_grad_(True)
 r = r.detach().clone().requires_grad_(True)
 v = v.detach().clone().requires_grad_(True)
 theta = theta.detach().clone().requires_grad_(True)
+c = c.detach().clone().requires_grad_(True)
 
 # Initialize learnable parameters c (3-vector color)
-c = torch.rand(N, 3, device=device, requires_grad=True)  # Color, initially in [0,1] range
+# c = torch.rand(N, 3, device=device, requires_grad=True)  # Color, initially in [0,1] range
 
 # Pre-compute pixel coordinates
 X, Y = torch.meshgrid(torch.arange(W, device=device),
