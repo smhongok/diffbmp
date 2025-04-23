@@ -33,7 +33,8 @@
         "peak_threshold": 0.5,
         "radii_min": 2,
         "v_init_mean": -5.0,
-        "keypoint_extracting": true
+        "keypoint_extracting": true,
+        "whole_random": true
     },
     "optimization": {
         "num_iterations": 300,

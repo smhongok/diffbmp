@@ -12,7 +12,7 @@ from datetime import timedelta
 class StructureAwareInitializer:
     def __init__(self, num_init=100, alpha=0.3, min_distance=20, 
                  peak_threshold=0.5, radii_min=2, radii_max=None, 
-                 v_init_mean=-5.0, keypoint_extracting=False, debug_mode=False):
+                 v_init_mean=-5.0, keypoint_extracting=False, whole_random=False, debug_mode=False):
         self.num_init = num_init
         self.alpha = alpha
         self.min_distance = min_distance
@@ -20,7 +20,8 @@ class StructureAwareInitializer:
         self.radii_min = radii_min
         self.radii_max = radii_max
         self.v_init_mean = v_init_mean
-        self.keypoint_extracting = keypoint_extracting
+        self.whole_random = whole_random
+        self.keypoint_extracting = keypoint_extracting if not whole_random else False
         self.debug_mode = debug_mode
         
     def curvature_aware_densification(self, edge_map, points, N, min_dist):
@@ -215,7 +216,7 @@ class StructureAwareInitializer:
             H, W = I_target.shape
             
         N = self.num_init
-        
+
         # For SVG initialization, we'll use the image structure to guide placement
         if isinstance(I_target, torch.Tensor):
             I_np = I_target.cpu().numpy()
@@ -229,37 +230,44 @@ class StructureAwareInitializer:
                 
         # Ensure image is in correct format for ORB
         if I_np.dtype != np.uint8:
-            I_np = (I_np * 255).astype(np.uint8)
+            I_np = (I_np * 255).astype(np.uint8)        
+
+        if self.whole_random:
+            print("Using whole random initialization.")
             
-        # Now use our structure-aware initialization
-        edges = cv2.Canny(I_np, 100, 200)
-        grad_y, grad_x = np.gradient(I_np.astype(np.float32))
-        
-        # Start with ORB points
-        num_kp = 0
-        if self.keypoint_extracting:
-            orb = cv2.ORB_create(nfeatures=N, scaleFactor=1.2, nlevels=8, edgeThreshold=15, firstLevel=0, WTA_K=2, patchSize=31, fastThreshold=20)
-            keypoints = orb.detect(I_np, None)
+            adjusted_pts = np.random.rand(N, 2) * np.array([W, H])
+            init_pts = np.empty((0, 2))
+            densified_pts = np.empty((0, 2))
         else:
-            keypoints = False
-        
-        # If no keypoints found, do random initialization
-        if not keypoints:
+            # Now use our structure-aware initialization
+            edges = cv2.Canny(I_np, 100, 200)
+            grad_y, grad_x = np.gradient(I_np.astype(np.float32))
+            
+            # Start with ORB points
+            num_kp = 0
             if self.keypoint_extracting:
-                print("No ORB keypoints. using coarse-to-fine initialization.")
+                orb = cv2.ORB_create(nfeatures=N, scaleFactor=1.2, nlevels=8, edgeThreshold=15, firstLevel=0, WTA_K=2, patchSize=31, fastThreshold=20)
+                keypoints = orb.detect(I_np, None)
             else:
-                print("keypoint_extracting off. using random initialization.")
-            init_pts = np.random.rand(num_kp, 2) * np.array([W, H])
-        else:
-            # Sort based on less strength and pick top N//5
-            sorted_kp = sorted(keypoints, key=lambda kp: -kp.response, reverse=True)
-            print("num_kp: ", num_kp)
-            init_pts = np.array([kp.pt for kp in sorted_kp[:num_kp]])  # (x, y)
-        
-        # Apply our structure-aware techniques
-        densified_pts = self.find_best_densification(edges, N)
-        adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y)
-        print("len(densified_pts): ", len(densified_pts), ", len(adjusted_pts): ", len(adjusted_pts))
+                keypoints = False
+            
+            # If no keypoints found, do random initialization
+            if not keypoints:
+                if self.keypoint_extracting:
+                    print("No ORB keypoints. using coarse-to-fine initialization.")
+                else:
+                    print("keypoint_extracting off. using random initialization.")
+                init_pts = np.random.rand(num_kp, 2) * np.array([W, H])
+            else:
+                # Sort based on less strength and pick top N//5
+                sorted_kp = sorted(keypoints, key=lambda kp: -kp.response, reverse=True)
+                print("num_kp: ", num_kp)
+                init_pts = np.array([kp.pt for kp in sorted_kp[:num_kp]])  # (x, y)
+            
+            # Apply our structure-aware techniques
+            densified_pts = self.find_best_densification(edges, N)
+            adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y)
+            print("len(densified_pts): ", len(densified_pts), ", len(adjusted_pts): ", len(adjusted_pts))
         
         # Visualize points if debug mode is enabled
         if self.debug_mode:

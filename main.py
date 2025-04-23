@@ -82,6 +82,7 @@ initializer = StructureAwareInitializer(
     radii_max=init_conf.get("radii_max", None),
     v_init_mean=init_conf.get("v_init_mean", -5.0),
     keypoint_extracting=init_conf.get("keypoint_extracting", False),
+    whole_random=init_conf.get("whole_random", False),
     debug_mode=init_conf.get("debug_mode", False)  # Add debug mode parameter
 )
 
