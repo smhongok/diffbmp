@@ -1,12 +1,14 @@
 import svgwrite
 from fontTools.ttLib import TTFont
+from fontTools.subset import Subsetter, Options
 from pathlib import Path
 import os
 import unicodedata
+import base64
+import io
 base_folder = Path(__file__).resolve().parent.parent
 font_folder = os.path.join(base_folder, "assets", "font") # .ttf 또는 .otf 경로
 svg_folder = os.path.join(base_folder, "assets", "svg") # svg 경로
-print(svg_folder)
 
 class FontParser:
     def __init__(self, font_name):
@@ -14,7 +16,7 @@ class FontParser:
         self.font_path = os.path.join(font_folder, font_name)
         self.output_svg_path = os.path.join(svg_folder, os.path.splitext(font_name)[0])
         self.font = TTFont(self.font_path)
-        
+            
     def estimate_text_width(self, text, font_size):
         """
         Text width estimation, giving different factor to the character type to estimate the text width
@@ -36,12 +38,26 @@ class FontParser:
             total_width += font_size * factor
         return int(total_width)
 
-    def text_to_svg(self, text, font_size=72, position=(10, 100), margin=10):
-        # Load font using fontTools (for validation, not rendering)
-        font = TTFont(self.font_path)
+    def subset_font_data(self, text):
+        opts = Options()
+        opts.flavor = None       # 유지할 포맷(w/o woff 등)
+        opts.with_zopfli = False # zopfli 압축은 느리므로 건너뛰기
+        subsetter = Subsetter(options=opts)
+        subsetter.populate(text=text)
+        subsetter.subset(self.font)
 
+        buf = io.BytesIO()
+        self.font.save(buf)
+        return buf.getvalue()
+
+    def text_to_svg(self, text, font_size=72, position=(10, 100), margin=10):
+        # 2) 폰트 파일 읽어서 Base64 인코딩
+        subset_data = self.subset_font_data(text)
+        b64 = base64.b64encode(subset_data).decode()
+        mime, fmt = 'font/truetype','truetype'  # ttf 기준. otf면 변경
+            
         # Extract font name for SVG usage
-        font_name = font['name'].getName(1, 3, 1).toStr()
+        font_name = self.font['name'].getName(1, 3, 1).toStr()
         
         # Estimate SVG width and height based on text
         text_width = self.estimate_text_width(text, font_size)
@@ -60,7 +76,7 @@ class FontParser:
         font_face = f"""
         @font-face {{
             font-family: '{font_name}';
-            src: url('{Path(self.font_path).name}');
+            src: url('data:{mime};base64,{b64}') format('{fmt}');
         }}
         """
         dwg.defs.add(dwg.style(font_face))
@@ -74,8 +90,8 @@ class FontParser:
 
         # Save SVG
         dwg.save()
-
-        print(f"SVG saved to: {self.output_svg_path}")
+        size_kb = Path(self.output_svg_path).stat().st_size/1024
+        print("SVG Saved to:", self.output_svg_path, "({:.1f} KB)".format(size_kb))
         return self.output_svg_path
 
 # 예시 사용법
