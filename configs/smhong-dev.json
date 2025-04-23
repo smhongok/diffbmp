@@ -22,7 +22,7 @@
         "vertical_paddings": [0, 0]
     },
     "svg": {
-        "svg_file": "images/tesla_logo.svg",
+        "svg_file": "assets/svg/tesla_logo.svg",
         "svg_hollow": false,
         "output_width": 128
     },
