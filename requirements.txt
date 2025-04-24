@@ -32,13 +32,16 @@ nvidia-nvjitlink-cu12==12.1.105
 nvidia-nvtx-cu12==12.1.105
 opencv-python==4.5.5.64
 packaging==24.2
+pdf2image==1.17.0
 Pillow==9.5.0
+piq==0.8.0
 pycparser==2.22
 pyparsing==3.2.3
 python-dateutil==2.9.0.post0
 PyWavelets==1.6.0
 scikit-image==0.24.0
 scipy==1.11.4
+scour==0.38.2
 six==1.17.0
 svgpathtools==1.6.1
 svgwrite==1.4.3
