@@ -1,4 +1,5 @@
 # svg_loader.py
+from pathlib import Path
 from cairosvg import svg2png
 from PIL import Image
 import numpy as np
@@ -32,9 +33,11 @@ class SVGLoader:
         return self.svg_width, self.svg_height
 
     def load_alpha_bitmap(self):
+        # SVG 전부를 읽어서 bytes로
+        svg_bytes = Path(self.svg_path).read_bytes()
         # render SVG to PNG
         with tempfile.NamedTemporaryFile(suffix='.png', delete=True) as tmp:
-            svg2png(url=self.svg_path, write_to=tmp.name, output_width=self.output_width)
+            svg2png(bytestring=svg_bytes, write_to=tmp.name, output_width=self.output_width)
             img = Image.open(tmp.name).convert('RGBA')
             arr = np.array(img)
         # pad to square
