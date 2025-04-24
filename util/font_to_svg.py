@@ -8,7 +8,6 @@ import os
 import unicodedata
 import base64
 import io
-import gzip
 
 base_folder = Path(__file__).resolve().parent.parent
 font_folder = os.path.join(base_folder, "assets", "font") # .ttf 또는 .otf 경로
@@ -96,7 +95,7 @@ class FontParser:
         minified = scour.scourString(svg_path.read_text(encoding='utf-8'), opts)
         svg_path.write_text(minified, encoding='utf-8')
 
-    def text_to_svg(self, text, mode='text', font_size=72, position=(10, 100), margin=10):
+    def text_to_svg(self, text, mode='opt-path', font_size=72, position=(10, 100), margin=10):
         """
         mode 'opt-path': optimized path (<path> elements per glyph, scour minification, SVGZ compression)
         """
@@ -113,7 +112,7 @@ class FontParser:
         pen = SVGPathPen(self.glyph_set)
         x, y = position
         scale = font_size / self.upem
-        
+
         # Prepare SVG canvas
         width = self.estimate_text_width(text, font_size) + margin * 2
         height = int(font_size * 1.5) + margin
@@ -140,17 +139,13 @@ class FontParser:
             )
             x += glyph.width * scale
 
-        # Save, minify, and compress to SVGZ
+        # Save and then minify
         dwg.save()
         self.minify_svg(out_path)
 
-        svgz_path = out_path.with_suffix('.svgz')
-        with gzip.open(svgz_path, 'wb') as gz:
-            gz.write(out_path.read_bytes())
-
-        size_kb = svgz_path.stat().st_size / 1024
-        print(f"Saved optimized SVGZ: {svgz_path} ({size_kb:.1f} KB)")
-        return svgz_path
+        size_kb = out_path.stat().st_size / 1024
+        print(f"Saved optimized SVG: {out_path} ({size_kb:.1f} KB)")
+        return out_path
     
     def generate_path(self, text: str, font_size: float, position: tuple, margin: int) -> Path:
         pen = SVGPathPen(self.glyph_set)
