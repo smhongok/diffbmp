@@ -294,25 +294,25 @@ class StructureAwareInitializer:
             r_np         = r_np[sort_idx]
             c_init       = c_init[sort_idx]
 
-        # -------------------- tensor 변환 --------------------------- #
-        x = torch.tensor(adjusted_pts[:, 0], dtype=torch.float32,
-                        device=device, requires_grad=True)
-        y = torch.tensor(adjusted_pts[:, 1], dtype=torch.float32,
-                        device=device, requires_grad=True)
+            # -------------------- tensor 변환 --------------------------- #
+            x = torch.tensor(adjusted_pts[:, 0], dtype=torch.float32,
+                            device=device, requires_grad=True)
+            y = torch.tensor(adjusted_pts[:, 1], dtype=torch.float32,
+                            device=device, requires_grad=True)
 
-        r = torch.tensor(r_np, dtype=torch.float32,
-                        device=device, requires_grad=True)
+            r = torch.tensor(r_np, dtype=torch.float32,
+                            device=device, requires_grad=True)
 
-        # -------------------- opacity v 초기화 (레이어 일치) -------- #
-        rank = torch.linspace(0.0, 1.0, steps=num_points, device=device)     # 0(아래)→1(위)
-        v = (self.v_init_bias + self.v_init_slope * rank).clone().detach()
-        v += torch.empty_like(v).normal_(mean=0.0, std=0.05)
-        v.requires_grad_(True)
+            # -------------------- opacity v 초기화 (레이어 일치) -------- #
+            rank = torch.linspace(0.0, 1.0, steps=num_points, device=device)     # 0(아래)→1(위)
+            v = (self.v_init_bias + self.v_init_slope * rank).clone().detach()
+            v += torch.empty_like(v).normal_(mean=0.0, std=0.05)
+            v.requires_grad_(True)
 
-        theta = _rand_leaf((num_points,), 0, 2 * torch.pi, device)
-        c = torch.tensor(c_init, dtype=torch.float32,
-                        device=device, requires_grad=True)
-        print("len(x): ", len(x))
+            theta = _rand_leaf((num_points,), 0, 2 * torch.pi, device)
+            c = torch.tensor(c_init, dtype=torch.float32,
+                            device=device, requires_grad=True)
+            print("len(x): ", len(x))
 
         # Visualize points if debug mode is enabled
         if self.debug_mode:
