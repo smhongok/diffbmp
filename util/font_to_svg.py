@@ -119,7 +119,7 @@ class FontParser:
         descent = hhea.descent * scale
         # Prepare SVG canvas
         width = self.estimate_text_width(text, font_size) + margin * 2 + 15*len(text)
-        height = int(ascent - descent)
+        height = int(ascent - descent) + margin
         baseline = ascent
         out_path = self.get_output_path(text)
         dwg = self.prepare_drawing(width, height, out_path)
@@ -361,7 +361,7 @@ class FontParser:
 
 # 예시 사용법
 if __name__ == "__main__":
-    text = "え"
+    text = "캬"
     font_name = "MaruBuri-Bold.otf"
     font_parser = FontParser(font_name)
     font_parser.text_to_svg(text, mode='opt-path')
