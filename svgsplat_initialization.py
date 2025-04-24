@@ -239,9 +239,10 @@ class StructureAwareInitializer:
         if self.whole_random:
             print("Using whole random initialization.")
             
-            adjusted_pts = np.random.rand(N, 2) * np.array([W, H])
-            init_pts = np.empty((0, 2))
-            densified_pts = np.empty((0, 2))
+            # adjusted_pts = np.random.rand(N, 2) * np.array([W, H])
+            # init_pts = np.empty((0, 2))
+            # densified_pts = np.empty((0, 2))
+            return self._random_splat_params(self.num_init, H, W, device)
         else:
             # Now use our structure-aware initialization
             edges = cv2.Canny(I_np, 100, 200)
@@ -282,7 +283,37 @@ class StructureAwareInitializer:
             # 약간의 노이즈로 파라미터 다양화
             c_init += np.random.normal(0.0, 0.02, c_init.shape)
             c_init = np.clip(c_init, 0.0, 1.0)              # 안전 클립
-        
+
+            # -------------------- radius 샘플 & 정렬 -------------------- #
+            num_points = adjusted_pts.shape[0]
+            r_np = np.random.rand(num_points) * min(H, W) / 2 + self.radii_min   # (N,)
+            sort_idx = np.argsort(+r_np)           # 오름차순 (+)  → 큰 r 이 나중 그래야 밑에 깔림
+
+            # 좌표·색·반경 모두 같은 순서로 재정렬
+            adjusted_pts = adjusted_pts[sort_idx]
+            r_np         = r_np[sort_idx]
+            c_init       = c_init[sort_idx]
+
+        # -------------------- tensor 변환 --------------------------- #
+        x = torch.tensor(adjusted_pts[:, 0], dtype=torch.float32,
+                        device=device, requires_grad=True)
+        y = torch.tensor(adjusted_pts[:, 1], dtype=torch.float32,
+                        device=device, requires_grad=True)
+
+        r = torch.tensor(r_np, dtype=torch.float32,
+                        device=device, requires_grad=True)
+
+        # -------------------- opacity v 초기화 (레이어 일치) -------- #
+        rank = torch.linspace(0.0, 1.0, steps=num_points, device=device)     # 0(아래)→1(위)
+        v = (self.v_init_bias + self.v_init_slope * rank).clone().detach()
+        v += torch.empty_like(v).normal_(mean=0.0, std=0.05)
+        v.requires_grad_(True)
+
+        theta = _rand_leaf((num_points,), 0, 2 * torch.pi, device)
+        c = torch.tensor(c_init, dtype=torch.float32,
+                        device=device, requires_grad=True)
+        print("len(x): ", len(x))
+
         # Visualize points if debug mode is enabled
         if self.debug_mode:
             vis_canvas = self.visualize_points(I_np, init_pts, densified_pts, adjusted_pts, 'outputs/point_debug.png')
@@ -309,35 +340,7 @@ class StructureAwareInitializer:
             cv2.imwrite('outputs/side_by_side_debug.png', combined)
             print("Side-by-side visualization saved to outputs/side_by_side_debug.png")
         
-        # -------------------- radius 샘플 & 정렬 -------------------- #
-        num_points = adjusted_pts.shape[0]
-        r_np = np.random.rand(num_points) * min(H, W) / 4 + self.radii_min   # (N,)
-        sort_idx = np.argsort(r_np)           # 오름차순 (+)  → 큰 r 이 나중
 
-        # 좌표·색·반경 모두 같은 순서로 재정렬
-        adjusted_pts = adjusted_pts[sort_idx]
-        r_np         = r_np[sort_idx]
-        c_init       = c_init[sort_idx]
-
-        # -------------------- tensor 변환 --------------------------- #
-        x = torch.tensor(adjusted_pts[:, 0], dtype=torch.float32,
-                         device=device, requires_grad=True)
-        y = torch.tensor(adjusted_pts[:, 1], dtype=torch.float32,
-                         device=device, requires_grad=True)
-
-        r = torch.tensor(r_np, dtype=torch.float32,
-                         device=device, requires_grad=True)
-
-        # -------------------- opacity v 초기화 (레이어 일치) -------- #
-        rank = torch.linspace(0.0, 1.0, steps=num_points, device=device)     # 0(아래)→1(위)
-        v = (self.v_init_bias + self.v_init_slope * rank).clone().detach()
-        v += torch.empty_like(v).normal_(mean=0.0, std=0.05)
-        v.requires_grad_(True)
-
-        theta = torch.rand(num_points, device=device, requires_grad=True) * 2 * np.pi
-        c = torch.tensor(c_init, dtype=torch.float32,
-                         device=device, requires_grad=True)
-        print("len(x): ", len(x))
         
         end_time = time.time()
         formatted_time = str(timedelta(seconds=int(end_time - start_time)))
@@ -345,3 +348,23 @@ class StructureAwareInitializer:
         print(f"[initialize_for_svg]total_cost_time: {formatted_time}")
         
         return x, y, r, v, theta, c
+
+
+    def _random_splat_params(self, N, H, W, device):
+        x = _rand_leaf((N,),       0,       W, device)
+        y = _rand_leaf((N,),       0,       H, device)
+
+        r_min, r_max = self.radii_min, 0.5 * min(H, W)
+        r = _rand_leaf((N,),   r_min,  r_max, device)
+
+        v = _rand_leaf((N,),
+                    self.v_init_bias - 0.5,
+                    self.v_init_bias + 0.5, device)
+
+        theta = _rand_leaf((N,), 0, 2 * torch.pi, device)
+        c     = _rand_leaf((N,3), 0, 1, device)
+        return x, y, r, v, theta, c
+    
+def _rand_leaf(shape, low, high, device):
+    t = torch.empty(shape, device=device).uniform_(low, high)
+    return t.requires_grad_(True)   # leaf tensor

@@ -91,13 +91,13 @@ initializer = StructureAwareInitializer(
 x, y, r, v, theta, c = initializer.initialize_for_svg(I_target)
 N = len(x)
 
-# Convert to leaf tensors for optimization
-x = x.detach().clone().requires_grad_(True)
-y = y.detach().clone().requires_grad_(True)
-r = r.detach().clone().requires_grad_(True)
-v = v.detach().clone().requires_grad_(True)
-theta = theta.detach().clone().requires_grad_(True)
-c = c.detach().clone().requires_grad_(True)
+# # Convert to leaf tensors for optimization
+# x = x.detach().clone().requires_grad_(True)
+# y = y.detach().clone().requires_grad_(True)
+# r = r.detach().clone().requires_grad_(True)
+# v = v.detach().clone().requires_grad_(True)
+# theta = theta.detach().clone().requires_grad_(True)
+# c = c.detach().clone().requires_grad_(True)
 
 # Initialize learnable parameters c (3-vector color)
 # c = torch.rand(N, 3, device=device, requires_grad=True)  # Color, initially in [0,1] range
