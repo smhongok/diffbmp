@@ -19,8 +19,8 @@ from datetime import datetime
 from preprocessing import Preprocessor
 from core.opsizelv_initialization import OpSizeLvAwareInitializer
 from core.svgsplat_initialization import StructureAwareInitializer
-from utils import set_global_seed, gaussian_blur, compute_psnr
-from svg_loader import SVGLoader
+from util.utils import set_global_seed, gaussian_blur, compute_psnr
+from util.svg_loader import SVGLoader
 from pdf_exporter import PDFExporter
 from util.font_to_svg import FontParser
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
