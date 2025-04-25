@@ -167,52 +167,45 @@ class StructureAwareInitializer(BaseInitializer):
         if I_np.dtype != np.uint8:
             I_np = (I_np * 255).astype(np.uint8)        
 
-        if self.whole_random:
-            print("Using whole random initialization.")
-            
-            adjusted_pts = np.random.rand(N, 2) * np.array([W, H])
-            init_pts = np.empty((0, 2))
-            densified_pts = np.empty((0, 2))
+        # Now use our structure-aware initialization
+        edges = cv2.Canny(I_np, 100, 200)
+        grad_y, grad_x = np.gradient(I_np.astype(np.float32))
+        
+        # Start with ORB points
+        num_kp = 0
+        if self.keypoint_extracting:
+            orb = cv2.ORB_create(nfeatures=N, scaleFactor=1.2, nlevels=8, edgeThreshold=15, firstLevel=0, WTA_K=2, patchSize=31, fastThreshold=20)
+            keypoints = orb.detect(I_np, None)
         else:
-            # Now use our structure-aware initialization
-            edges = cv2.Canny(I_np, 100, 200)
-            grad_y, grad_x = np.gradient(I_np.astype(np.float32))
-            
-            # Start with ORB points
-            num_kp = 0
+            keypoints = False
+        
+        # If no keypoints found, do random initialization
+        if not keypoints:
             if self.keypoint_extracting:
-                orb = cv2.ORB_create(nfeatures=N, scaleFactor=1.2, nlevels=8, edgeThreshold=15, firstLevel=0, WTA_K=2, patchSize=31, fastThreshold=20)
-                keypoints = orb.detect(I_np, None)
+                print("No ORB keypoints. using coarse-to-fine initialization.")
             else:
-                keypoints = False
-            
-            # If no keypoints found, do random initialization
-            if not keypoints:
-                if self.keypoint_extracting:
-                    print("No ORB keypoints. using coarse-to-fine initialization.")
-                else:
-                    print("keypoint_extracting off. using random initialization.")
-                init_pts = np.random.rand(num_kp, 2) * np.array([W, H])
-            else:
-                # Sort based on less strength and pick top N//5
-                sorted_kp = sorted(keypoints, key=lambda kp: -kp.response, reverse=True)
-                print("num_kp: ", num_kp)
-                init_pts = np.array([kp.pt for kp in sorted_kp[:num_kp]])  # (x, y)
-            
-            # Apply our structure-aware techniques
-            densified_pts = self.find_best_densification(edges, N)
-            adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y)
-            print("len(densified_pts): ", len(densified_pts), ", len(adjusted_pts): ", len(adjusted_pts))
+                print("keypoint_extracting off. using random initialization.")
+            init_pts = np.random.rand(num_kp, 2) * np.array([W, H])
+        else:
+            # Sort based on less strength and pick top N//5
+            sorted_kp = sorted(keypoints, key=lambda kp: -kp.response, reverse=True)
+            print("num_kp: ", num_kp)
+            init_pts = np.array([kp.pt for kp in sorted_kp[:num_kp]])  # (x, y)
+        
+        # Apply our structure-aware techniques
+        densified_pts = self.find_best_densification(edges, N)
+        adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y)
+        print("len(densified_pts): ", len(densified_pts), ", len(adjusted_pts): ", len(adjusted_pts))
 
-            # Color initialization
-            # 스플랫 좌표에 해당하는 픽셀 색 샘플
-            idx_x = np.clip(np.round(adjusted_pts[:, 0]).astype(int), 0, W - 1)
-            idx_y = np.clip(np.round(adjusted_pts[:, 1]).astype(int), 0, H - 1)
-            c_init = I_color[idx_y, idx_x]                  # (N,3) float32
+        # Color initialization
+        # 스플랫 좌표에 해당하는 픽셀 색 샘플
+        idx_x = np.clip(np.round(adjusted_pts[:, 0]).astype(int), 0, W - 1)
+        idx_y = np.clip(np.round(adjusted_pts[:, 1]).astype(int), 0, H - 1)
+        c_init = I_color[idx_y, idx_x]                  # (N,3) float32
 
-            # 약간의 노이즈로 파라미터 다양화
-            c_init += np.random.normal(0.0, 0.02, c_init.shape)
-            c_init = np.clip(c_init, 0.0, 1.0)              # 안전 클립
+        # 약간의 노이즈로 파라미터 다양화
+        c_init += np.random.normal(0.0, 0.02, c_init.shape)
+        c_init = np.clip(c_init, 0.0, 1.0)              # 안전 클립
         
         # Visualize points if debug mode is enabled
         if self.debug_mode:
