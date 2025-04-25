@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import os
 import time
 from datetime import timedelta
-from base_initializer import BaseInitializer, _rand_leaf
+from .base_initializer import BaseInitializer, _rand_leaf
 
 class OpSizeLvAwareInitializer(BaseInitializer):
     def __init__(self, num_init=100, alpha=0.3, min_distance=20, 

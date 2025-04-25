@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import os
 import time
 from datetime import timedelta
-from base_initializer import BaseInitializer, _rand_leaf
+from .base_initializer import BaseInitializer, _rand_leaf
 # 시작 시간 기록
 
 class StructureAwareInitializer(BaseInitializer):
