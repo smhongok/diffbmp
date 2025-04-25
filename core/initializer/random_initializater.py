@@ -12,10 +12,9 @@ from .base_initializer import BaseInitializer
 class RandomInitializer(BaseInitializer):
     def __init__(self, num_init=100, alpha=0.3, min_distance=20, 
                  peak_threshold=0.5, radii_min=2, radii_max=None, 
-                 v_init_bias=-5.0, v_init_slope=0.0, keypoint_extracting=False, whole_random=False, debug_mode=False):
+                 v_init_bias=-5.0, v_init_slope=0.0, keypoint_extracting=False, debug_mode=False):
         super().__init__(num_init, alpha, min_distance, peak_threshold, radii_min, 
-                         radii_max, v_init_bias, v_init_slope, keypoint_extracting, 
-                         whole_random, debug_mode)
+                         radii_max, v_init_bias, v_init_slope, keypoint_extracting, debug_mode)
    
     def initialize(self, I_target):
         """

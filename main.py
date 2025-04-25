@@ -20,7 +20,7 @@ from core.renderer.mix_renderer import MixRenderer
 from util.svg_loader import SVGLoader
 from util.font_to_svg import FontParser
 from core.initializer.svgsplat_initializater import StructureAwareInitializer
-from core.initializer.opsizelv_initializater import OpSizeLvAwareInitializer
+from core.initializer.random_initializater import RandomInitializer
 
 # Import our modules
 from preprocessing import Preprocessor
@@ -106,11 +106,10 @@ if init_conf.get("initializer", "none") == "structure_aware":
         v_init_bias=init_conf.get("v_init_bias", -5.0),
         v_init_slope=init_conf.get("v_init_slope", 10.0),
         keypoint_extracting=init_conf.get("keypoint_extracting", False),
-        whole_random=init_conf.get("whole_random", False),
         debug_mode=init_conf.get("debug_mode", False)
     )
-elif init_conf.get("initializer", "none") == "op_size_lv_aware":
-    initializer = OpSizeLvAwareInitializer(
+elif init_conf.get("initializer", "none") == "random":
+    initializer = RandomInitializer(
         num_init=init_conf.get("N", 10000),
         alpha=init_conf.get("alpha", 0.3),
         min_distance=init_conf.get("min_distance", 5),
@@ -120,7 +119,6 @@ elif init_conf.get("initializer", "none") == "op_size_lv_aware":
         v_init_bias=init_conf.get("v_init_bias", -5.0),
         v_init_slope=init_conf.get("v_init_slope", 10.0),
         keypoint_extracting=init_conf.get("keypoint_extracting", False),
-        whole_random=init_conf.get("whole_random", False),
         debug_mode=init_conf.get("debug_mode", False)
     )
 else:

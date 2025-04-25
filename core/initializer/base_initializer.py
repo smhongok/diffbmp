@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 class BaseInitializer(ABC):
     def __init__(self, num_init=100, alpha=0.3, min_distance=20, 
                  peak_threshold=0.5, radii_min=2, radii_max=None, 
-                 v_init_bias=-5.0, v_init_slope=0.0, keypoint_extracting=False, whole_random=False, debug_mode=False):
+                 v_init_bias=-5.0, v_init_slope=0.0, keypoint_extracting=False, debug_mode=False):
         self.num_init = num_init
         self.alpha = alpha
         self.min_distance = min_distance
@@ -18,8 +18,7 @@ class BaseInitializer(ABC):
         self.radii_max = radii_max
         self.v_init_bias = v_init_bias
         self.v_init_slope = v_init_slope
-        self.whole_random = whole_random
-        self.keypoint_extracting = keypoint_extracting if not whole_random else False
+        self.keypoint_extracting = keypoint_extracting
         self.debug_mode = debug_mode
         
     @abstractmethod
