@@ -62,7 +62,7 @@ W = preprocessor.final_width
 svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
 if (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
     font_parser = FontParser(config["svg"].get("svg_file"))
-    svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode="opt-path"))
+    svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode=config["svg"].get("mode", "opt_path")))
 else:
     svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
 
@@ -233,4 +233,21 @@ if do_compute_psnr:
         print(f"Number of splats: {len(x)}")
     except ImportError as e:
         print(f"Required library missing: {e}. Cannot compute metrics.")
+
+if "extra_postprocessing" in config:
+    # ------------------------------------------------------------------
+    # Extra post-processing : Figure-1 (PDF)  ─ original | export | dropout
+    # ------------------------------------------------------------------
+    if config.get("extra_postprocessing", {}).get("make_fig1_pdf", False):
+
+        #right_pdf = 'outputs/_fig1_right.pdf'
+        if output_path.endswith(".pdf"):
+            extra_output_path = output_path.replace(".pdf", "_extra.pdf")
+        else:
+            raise("Output path must end with .pdf")
+            extra_output_path = output_path + "_extra.pdf"
+
+        exporter.export_dropout_right_third(x, y, r, theta, v, c,
+                        output_path=extra_output_path,
+                        svg_hollow=config['svg'].get('svg_hollow', False))
 
