@@ -28,7 +28,7 @@
         "output_width": 128
     },
     "initialization": {
-        "initializer": "op_size_lv_aware",
+        "initializer": "random",
         "N": 1500,
         "alpha": 0.3,
         "min_distance": 5,
@@ -37,11 +37,10 @@
         "v_init_bias":  -1.5,
         "v_init_slope": 3.0,
         "keypoint_extracting": false,
-        "whole_random": false,
         "debug_mode": false
     },
     "optimization": {
-        "renderer_type": "mix",
+        "renderer_type": "lpips",
         "num_iterations": 100,
         "learning_rate": {
             "default": 0.05, 

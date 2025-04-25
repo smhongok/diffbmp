@@ -7,16 +7,15 @@ import matplotlib.pyplot as plt
 import os
 import time
 from datetime import timedelta
-from .base_initializer import BaseInitializer, _rand_leaf
+from .base_initializer import BaseInitializer
 # 시작 시간 기록
 
 class StructureAwareInitializer(BaseInitializer):
     def __init__(self, num_init=100, alpha=0.3, min_distance=20, 
                  peak_threshold=0.5, radii_min=2, radii_max=None, 
-                 v_init_bias=-5.0, v_init_slope=0.0, keypoint_extracting=False, whole_random=False, debug_mode=False):
+                 v_init_bias=-5.0, v_init_slope=0.0, keypoint_extracting=False, debug_mode=False):
         super().__init__(num_init, alpha, min_distance, peak_threshold, radii_min, 
-                         radii_max, v_init_bias, v_init_slope, keypoint_extracting, 
-                         whole_random, debug_mode)
+                         radii_max, v_init_bias, v_init_slope, keypoint_extracting, debug_mode)
         
     def curvature_aware_densification(self, edge_map, points, N, min_dist):
         N_add = N - len(points)
@@ -135,67 +134,6 @@ class StructureAwareInitializer(BaseInitializer):
 
         print(f"Using level={best_level}, min_distance={best_min_distance:.2f}")
         return best_points
-
-    def visualize_points(self, image, init_pts, densified_pts, adjusted_pts, filename='point_visualization.png'):
-        """
-        Visualize initial, densified, and adjusted points with color-coded overlaps.
-        - Red: initial only
-        - Green: densified only
-        - Blue: adjusted only
-        - Magenta: initial + densified
-        - Yellow: initial + adjusted
-        - Cyan: densified + adjusted
-        - Black: all three overlap
-        """
-        
-        def point_key(p):
-            return (int(p[0]), int(p[1]))
-
-        # Create white canvas
-        H, W = image.shape[:2] if len(image.shape) > 2 else image.shape
-        canvas = np.ones((H, W, 3), dtype=np.uint8) * 255
-
-        # Convert to sets of int tuples for easy comparison
-        init_set = set(map(point_key, init_pts))
-        dens_set = set(map(point_key, densified_pts))
-        adj_set  = set(map(point_key, adjusted_pts))
-
-        all_keys = init_set | dens_set | adj_set
-
-        for x, y in all_keys:
-            in_init = (x, y) in init_set
-            in_dens = (x, y) in dens_set
-            in_adj  = (x, y) in adj_set
-
-            # Skip points outside canvas
-            if not (0 <= x < W and 0 <= y < H):
-                continue
-
-            # Determine color based on combination
-            if in_init and in_dens and in_adj:
-                color = (0, 0, 0)           # Black
-            elif in_init and in_dens:
-                color = (255, 0, 255)       # Magenta
-            elif in_init and in_adj:
-                color = (0, 255, 255)       # Yellow
-            elif in_dens and in_adj:
-                color = (255, 255, 0)       # Cyan
-            elif in_init:
-                color = (0, 0, 255)         # Red
-            elif in_dens:
-                color = (0, 255, 0)         # Green
-            elif in_adj:
-                color = (255, 0, 0)         # Blue
-            else:
-                continue  # Should not happen
-
-            cv2.circle(canvas, (int(x), int(y)), 1, color, -1)
-
-        # Save the visualization
-        cv2.imwrite(filename, canvas)
-        print(f"Point visualization saved to {filename}")
-        
-        return canvas
    
     def initialize(self, I_target):
         """
@@ -229,52 +167,45 @@ class StructureAwareInitializer(BaseInitializer):
         if I_np.dtype != np.uint8:
             I_np = (I_np * 255).astype(np.uint8)        
 
-        if self.whole_random:
-            print("Using whole random initialization.")
-            
-            adjusted_pts = np.random.rand(N, 2) * np.array([W, H])
-            init_pts = np.empty((0, 2))
-            densified_pts = np.empty((0, 2))
+        # Now use our structure-aware initialization
+        edges = cv2.Canny(I_np, 100, 200)
+        grad_y, grad_x = np.gradient(I_np.astype(np.float32))
+        
+        # Start with ORB points
+        num_kp = 0
+        if self.keypoint_extracting:
+            orb = cv2.ORB_create(nfeatures=N, scaleFactor=1.2, nlevels=8, edgeThreshold=15, firstLevel=0, WTA_K=2, patchSize=31, fastThreshold=20)
+            keypoints = orb.detect(I_np, None)
         else:
-            # Now use our structure-aware initialization
-            edges = cv2.Canny(I_np, 100, 200)
-            grad_y, grad_x = np.gradient(I_np.astype(np.float32))
-            
-            # Start with ORB points
-            num_kp = 0
+            keypoints = False
+        
+        # If no keypoints found, do random initialization
+        if not keypoints:
             if self.keypoint_extracting:
-                orb = cv2.ORB_create(nfeatures=N, scaleFactor=1.2, nlevels=8, edgeThreshold=15, firstLevel=0, WTA_K=2, patchSize=31, fastThreshold=20)
-                keypoints = orb.detect(I_np, None)
+                print("No ORB keypoints. using coarse-to-fine initialization.")
             else:
-                keypoints = False
-            
-            # If no keypoints found, do random initialization
-            if not keypoints:
-                if self.keypoint_extracting:
-                    print("No ORB keypoints. using coarse-to-fine initialization.")
-                else:
-                    print("keypoint_extracting off. using random initialization.")
-                init_pts = np.random.rand(num_kp, 2) * np.array([W, H])
-            else:
-                # Sort based on less strength and pick top N//5
-                sorted_kp = sorted(keypoints, key=lambda kp: -kp.response, reverse=True)
-                print("num_kp: ", num_kp)
-                init_pts = np.array([kp.pt for kp in sorted_kp[:num_kp]])  # (x, y)
-            
-            # Apply our structure-aware techniques
-            densified_pts = self.find_best_densification(edges, N)
-            adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y)
-            print("len(densified_pts): ", len(densified_pts), ", len(adjusted_pts): ", len(adjusted_pts))
+                print("keypoint_extracting off. using random initialization.")
+            init_pts = np.random.rand(num_kp, 2) * np.array([W, H])
+        else:
+            # Sort based on less strength and pick top N//5
+            sorted_kp = sorted(keypoints, key=lambda kp: -kp.response, reverse=True)
+            print("num_kp: ", num_kp)
+            init_pts = np.array([kp.pt for kp in sorted_kp[:num_kp]])  # (x, y)
+        
+        # Apply our structure-aware techniques
+        densified_pts = self.find_best_densification(edges, N)
+        adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y)
+        print("len(densified_pts): ", len(densified_pts), ", len(adjusted_pts): ", len(adjusted_pts))
 
-            # Color initialization
-            # 스플랫 좌표에 해당하는 픽셀 색 샘플
-            idx_x = np.clip(np.round(adjusted_pts[:, 0]).astype(int), 0, W - 1)
-            idx_y = np.clip(np.round(adjusted_pts[:, 1]).astype(int), 0, H - 1)
-            c_init = I_color[idx_y, idx_x]                  # (N,3) float32
+        # Color initialization
+        # 스플랫 좌표에 해당하는 픽셀 색 샘플
+        idx_x = np.clip(np.round(adjusted_pts[:, 0]).astype(int), 0, W - 1)
+        idx_y = np.clip(np.round(adjusted_pts[:, 1]).astype(int), 0, H - 1)
+        c_init = I_color[idx_y, idx_x]                  # (N,3) float32
 
-            # 약간의 노이즈로 파라미터 다양화
-            c_init += np.random.normal(0.0, 0.02, c_init.shape)
-            c_init = np.clip(c_init, 0.0, 1.0)              # 안전 클립
+        # 약간의 노이즈로 파라미터 다양화
+        c_init += np.random.normal(0.0, 0.02, c_init.shape)
+        c_init = np.clip(c_init, 0.0, 1.0)              # 안전 클립
         
         # Visualize points if debug mode is enabled
         if self.debug_mode:

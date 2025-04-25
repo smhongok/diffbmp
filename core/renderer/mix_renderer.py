@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
+from tqdm import tqdm
 from core.renderer.vector_renderer import VectorRenderer
 from typing import Tuple, Dict, Any
 
@@ -13,28 +14,28 @@ class MixRenderer(VectorRenderer):
                                    pred_masks: torch.Tensor, 
                                    target_masks: torch.Tensor) -> torch.Tensor:
         """
-        Compute Dice loss between predicted and target masks.
+        Compute IoU loss between predicted and target masks.
         
         Args:
             pred_masks: Predicted binary masks (B, H, W)
             target_masks: Target binary mask (H, W)
             
         Returns:
-            Dice loss value
+            IoU loss value (ℓmask = 1 - IoU)
         """
         # Expand target mask to match batch dimension
         target_masks = target_masks.unsqueeze(0).expand_as(pred_masks)
         
         # Compute intersection and union
-        intersection = torch.sum(pred_masks * target_masks, dim=(1, 2))
-        pred_sum = torch.sum(pred_masks, dim=(1, 2))
-        target_sum = torch.sum(target_masks, dim=(1, 2))
+        mul_masks = pred_masks * target_masks
+        intersection = torch.sum(mul_masks, dim=(1, 2))
+        union = torch.sum(pred_masks + target_masks - mul_masks, dim=(1, 2)).float() + 1e-8
         
-        # Compute Dice coefficient for each mask
-        dice = (2.0 * intersection) / (pred_sum + target_sum + 1e-8)
+        # Compute IoU
+        iou = intersection / union
         
-        # Return mean Dice loss
-        return 1.0 - torch.mean(dice)
+        # Return mean IoU loss
+        return 1.0 - torch.mean(iou)
 
     def compute_color_alpha_loss(self, 
                                rendered: torch.Tensor,
@@ -42,26 +43,29 @@ class MixRenderer(VectorRenderer):
                                masks: torch.Tensor) -> torch.Tensor:
         """
         Compute masked L1 loss for color and alpha values.
-        Only compute loss in regions where the mask is active.
+        Only compute loss in regions where the target mask is active.
         
         Args:
             rendered: Rendered image tensor (H, W, 3)
             target: Target image tensor (H, W, 3)
-            masks: Binary masks (B, H, W)
+            masks: Target binary mask (H, W)
             
         Returns:
-            Masked L1 loss value
+            Masked L1 loss value (ℓcol)
         """
-        # Create mask for valid regions (where mask value > threshold)
-        valid_mask = (masks > 0.1).float()
+        # Get target mask (Mgt)
+        target_mask = (masks > 0.1).float()
         
-        # Compute L1 loss only in valid regions
+        # Compute absolute difference
         diff = torch.abs(rendered - target)
-        masked_diff = diff * valid_mask.unsqueeze(-1)
         
-        # Normalize by number of valid pixels
-        num_valid = torch.sum(valid_mask) + 1e-8
-        return torch.sum(masked_diff) / num_valid
+        # Compute sum of absolute differences in masked region
+        masked_diff = diff * target_mask.unsqueeze(-1)
+        total_diff = torch.sum(masked_diff)
+        
+        # Normalize by number of pixels in target mask
+        num_mask_pixels = torch.sum(target_mask) + 1e-8
+        return total_diff / num_mask_pixels
 
     def compute_loss(self, 
                     rendered: torch.Tensor, 
@@ -72,10 +76,11 @@ class MixRenderer(VectorRenderer):
                     r: torch.Tensor,
                     v: torch.Tensor,
                     theta: torch.Tensor,
-                    c: torch.Tensor) -> torch.Tensor:
+                    c: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Compute combined loss using shape alignment for geometric parameters and
-        masked L1 loss for color/alpha parameters.
+        Compute shape and color losses separately.
+        Shape loss (ℓmask) affects x, y, r, theta parameters.
+        Color loss (ℓcol) affects c, v parameters.
         
         Args:
             rendered: Rendered image tensor (H, W, 3)
@@ -84,22 +89,23 @@ class MixRenderer(VectorRenderer):
             x, y, r, v, theta, c: Current parameter values
             
         Returns:
-            Combined loss value
+            Tuple of (total_loss, shape_loss, color_loss)
         """
         # Extract target mask from target image (assuming first channel represents mask)
         target_mask = target[..., 0]
         
-        # Compute shape alignment loss
+        # Compute shape alignment loss (affects x, y, r, theta)
         shape_loss = self.compute_shape_alignment_loss(cached_masks, target_mask)
         
-        # Compute color/alpha loss
-        color_loss = self.compute_color_alpha_loss(rendered, target, cached_masks)
+        # Compute color/alpha loss (affects c, v)
+        color_loss = self.compute_color_alpha_loss(rendered, target, target_mask)
         
         # Combine losses with weighting
         shape_weight = 0.7
         color_weight = 0.3
+        total_loss = shape_weight * shape_loss + color_weight * color_loss
         
-        return shape_weight * shape_loss + color_weight * color_loss
+        return total_loss, shape_loss, color_loss
 
     def optimize_parameters(self,
                           x: torch.Tensor,
@@ -113,6 +119,8 @@ class MixRenderer(VectorRenderer):
                           opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
         """
         Override the optimization process to use separate optimizers for shape and appearance parameters.
+        Shape parameters (x, y, r, theta) are optimized using shape loss.
+        Appearance parameters (c, v) are optimized using color loss.
         
         Args:
             x, y, r, v, theta, c: Initial parameters
@@ -142,23 +150,27 @@ class MixRenderer(VectorRenderer):
         ])
         
         print(f"Starting optimization for {num_iterations} iterations...")
-        for epoch in range(num_iterations):
+        for epoch in tqdm(range(num_iterations)):
             shape_optimizer.zero_grad()
             appearance_optimizer.zero_grad()
             
-            # Generate masks
+            # Generate masks using shape parameters (x, y, r, theta)
             cached_masks = self._batched_soft_rasterize(
                 bmp_image, x, y, r, theta,
                 sigma=opt_conf.get("blur_sigma", 0.0)
             )
             
-            # Render image
+            # Render image using appearance parameters (c, v)
             rendered = self.render(cached_masks, v, c)
             
-            # Compute loss
-            loss = self.compute_loss(rendered, target_image, cached_masks,
-                                   x, y, r, v, theta, c)
-            loss.backward()
+            # Compute losses
+            total_loss, shape_loss, color_loss = self.compute_loss(
+                rendered, target_image, cached_masks,
+                x, y, r, v, theta, c
+            )
+            
+            # Backward pass
+            total_loss.backward()
             
             # Update parameters
             shape_optimizer.step()
@@ -172,6 +184,8 @@ class MixRenderer(VectorRenderer):
                 theta.clamp_(0, 2 * np.pi)
             
             if epoch % 20 == 0:
-                print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
+                print(f"Epoch {epoch}, Total Loss: {total_loss.item():.4f}, "
+                      f"Shape Loss: {shape_loss.item():.4f}, "
+                      f"Color Loss: {color_loss.item():.4f}")
         
         return x, y, r, v, theta, c 
