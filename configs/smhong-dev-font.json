@@ -4,7 +4,7 @@
         "trim": false,
         "FM_halftone": false,
         "transform": "none",
-        "img_path": "images/seurat.jpg",
+        "img_path": "images/jylee.png",
         "bg_threshold": 250,
         "do_equalize": false,
         "do_local_contrast": false,
