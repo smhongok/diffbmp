@@ -41,6 +41,7 @@
         "debug_mode": false
     },
     "optimization": {
+        "renderer_type": "mix",
         "num_iterations": 100,
         "learning_rate": {
             "default": 0.05, 
