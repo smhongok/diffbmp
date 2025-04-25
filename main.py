@@ -23,7 +23,7 @@ from core.initializer.svgsplat_initializater import StructureAwareInitializer
 from core.initializer.random_initializater import RandomInitializer
 
 # Import our modules
-from preprocessing import Preprocessor
+from core.preprocessing import Preprocessor
 from util.utils import set_global_seed, gaussian_blur, compute_psnr
 from util.pdf_exporter import PDFExporter
 

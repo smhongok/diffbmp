@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
+from tqdm import tqdm
 from core.renderer.vector_renderer import VectorRenderer
 from typing import Tuple, Dict, Any
 
@@ -149,7 +150,7 @@ class MixRenderer(VectorRenderer):
         ])
         
         print(f"Starting optimization for {num_iterations} iterations...")
-        for epoch in range(num_iterations):
+        for epoch in tqdm(range(num_iterations)):
             shape_optimizer.zero_grad()
             appearance_optimizer.zero_grad()
             
