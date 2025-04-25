@@ -51,10 +51,28 @@ def compute_metrics(pred: torch.Tensor, target: torch.Tensor) -> Dict[str, float
         'LPIPS': lpips
     }
 
-def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np.ndarray):
+def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np.ndarray, config: Dict[str, Any]):
     """Plot results in a 2x3 grid with metrics."""
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    plt.subplots_adjust(hspace=0.3)
+    plt.subplots_adjust(hspace=0.4, top=0.85)  # Increase top margin for config text
+    
+    # Add configuration information at the top
+    init_conf = config["initialization"]
+    opt_conf = config["optimization"]
+    
+    config_line1 = f'N={init_conf.get("N", "N/A")}, iterations={opt_conf.get("num_iterations", "N/A")}, ' \
+                   f'gaussian_blur={opt_conf.get("do_gaussian_blur", False)}, ' \
+                   f'sparsify={opt_conf.get("sparsifying", {}).get("do_sparsify", False)}, ' \
+                   f'sparsified_N={opt_conf.get("sparsifying", {}).get("sparsified_N", "N/A")}'
+    
+    lr_conf = opt_conf.get("learning_rate", {})
+    config_line2 = f'learning_rate: default={lr_conf.get("default", "N/A")}, ' \
+                   f'x={lr_conf.get("gain_x", "N/A")}, y={lr_conf.get("gain_y", "N/A")}, ' \
+                   f'r={lr_conf.get("gain_r", "N/A")}, v={lr_conf.get("gain_v", "N/A")}, ' \
+                   f'theta={lr_conf.get("gain_theta", "N/A")}, c={lr_conf.get("gain_c", "N/A")}'
+    
+    plt.figtext(0.5, 0.95, config_line1, ha='center', va='center', fontsize=8)
+    plt.figtext(0.5, 0.93, config_line2, ha='center', va='center', fontsize=8)
     
     # Add target image as a small inset in the top-right corner
     ax_inset = fig.add_axes([0.85, 0.85, 0.1, 0.1])
@@ -238,7 +256,7 @@ def main():
                             f'comparison_{timestamp}')
     
     # Plot and save results
-    plot_results(results, save_path, I_target.numpy() if args.multi_process else I_target.cpu().numpy())
+    plot_results(results, save_path, I_target.cpu().numpy(), config)
 
 if __name__ == '__main__':
     start_time = time.time()
