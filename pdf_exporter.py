@@ -40,7 +40,10 @@ class PDFExporter:
         return None
 
     def export(self, x, y, r, theta, v, c, output_path: str, svg_hollow=False):
-
+        # Ensure output directory exists
+        output_dir = os.path.dirname(output_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
         # Convert torch.Tensor to numpy array
         x_np = x.detach().cpu().numpy()
         y_np = y.detach().cpu().numpy()
