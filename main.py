@@ -14,15 +14,19 @@ import json
 import argparse
 import cv2
 from datetime import datetime
+from core.renderer.mse_renderer import MseRenderer
+from core.renderer.lpips_renderer import LpipsRenderer
+from core.renderer.mix_renderer import MixRenderer
+from util.svg_loader import SVGLoader
+from util.font_to_svg import FontParser
+from core.initializer.svgsplat_initializater import StructureAwareInitializer
+from core.initializer.opsizelv_initializater import OpSizeLvAwareInitializer
 
 # Import our modules
 from preprocessing import Preprocessor
-from core.opsizelv_initialization import OpSizeLvAwareInitializer
-from core.svgsplat_initialization import StructureAwareInitializer
 from util.utils import set_global_seed, gaussian_blur, compute_psnr
-from util.svg_loader import SVGLoader
 from util.pdf_exporter import PDFExporter
-from util.font_to_svg import FontParser
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Argument parser setup
@@ -54,8 +58,8 @@ I_target = torch.tensor(I_target, device=device)  # (H, W, 3)
 H = preprocessor.final_height
 W = preprocessor.final_width
 
+# Handle SVG file loading
 svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
-
 if (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
     font_parser = FontParser(config["svg"].get("svg_file"))
     svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode=config["svg"].get("mode", "opt_path")))
@@ -69,15 +73,32 @@ svg_loader = SVGLoader(
     device=device
 )
 
-bmp_image_tensor = svg_loader.load_alpha_bitmap()
+# Initialize renderer based on loss type
+renderer_type = opt_conf.get("renderer_type", "mse")
+renderer_class = {
+    "mse": MseRenderer,
+    "lpips": LpipsRenderer,
+    "mix": MixRenderer
+}.get(renderer_type.lower())
 
-# Initialize with Structure-Aware method
+if renderer_class is None:
+    raise ValueError(f"Invalid renderer type: {renderer_type}")
+
+renderer = renderer_class(
+    canvas_size=(H, W),
+    alpha_upper_bound=opt_conf.get("alpha_upper_bound", 0.5),
+    device=device
+)
+
+print(f"Using {renderer_class.__name__} for optimization")
+
+# Initialize parameters
 print("---Initializing vector graphics with Structure-Aware method---")
 init_conf = config["initialization"]
 if init_conf.get("initializer", "none") == "structure_aware":
     initializer = StructureAwareInitializer(
         num_init=init_conf.get("N", 10000),
-        alpha=init_conf.get("alpha", 0.3),  # Structure adjustment strength from config
+        alpha=init_conf.get("alpha", 0.3),
         min_distance=init_conf.get("min_distance", 5),
         peak_threshold=init_conf.get("peak_threshold", 0.5),
         radii_min=init_conf.get("radii_min", 2),
@@ -86,12 +107,12 @@ if init_conf.get("initializer", "none") == "structure_aware":
         v_init_slope=init_conf.get("v_init_slope", 10.0),
         keypoint_extracting=init_conf.get("keypoint_extracting", False),
         whole_random=init_conf.get("whole_random", False),
-        debug_mode=init_conf.get("debug_mode", False)  # Add debug mode parameter
+        debug_mode=init_conf.get("debug_mode", False)
     )
 elif init_conf.get("initializer", "none") == "op_size_lv_aware":
     initializer = OpSizeLvAwareInitializer(
         num_init=init_conf.get("N", 10000),
-        alpha=init_conf.get("alpha", 0.3),  # Structure adjustment strength from config
+        alpha=init_conf.get("alpha", 0.3),
         min_distance=init_conf.get("min_distance", 5),
         peak_threshold=init_conf.get("peak_threshold", 0.5),
         radii_min=init_conf.get("radii_min", 2),
@@ -100,233 +121,33 @@ elif init_conf.get("initializer", "none") == "op_size_lv_aware":
         v_init_slope=init_conf.get("v_init_slope", 10.0),
         keypoint_extracting=init_conf.get("keypoint_extracting", False),
         whole_random=init_conf.get("whole_random", False),
-        debug_mode=init_conf.get("debug_mode", False)  # Add debug mode parameter
+        debug_mode=init_conf.get("debug_mode", False)
     )
 else:
     raise ValueError(f"Invalid initializer: {init_conf.get('initializer', 'none')}")
 
-# Initialize from SVG - all parameters are now learnable
-x, y, r, v, theta, c = initializer.initialize(I_target)
-N = len(x)
+# Initialize parameters
+x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target)
 
-# Convert to leaf tensors for optimization
-x = x.detach().clone().requires_grad_(True)
-y = y.detach().clone().requires_grad_(True)
-r = r.detach().clone().requires_grad_(True)
-v = v.detach().clone().requires_grad_(True)
-theta = theta.detach().clone().requires_grad_(True)
-c = c.detach().clone().requires_grad_(True)
+bmp_image_tensor = svg_loader.load_alpha_bitmap()
 
-# Initialize learnable parameters c (3-vector color)
-# c = torch.rand(N, 3, device=device, requires_grad=True)  # Color, initially in [0,1] range
+# Optimize parameters
+x, y, r, v, theta, c = renderer.optimize_parameters(
+    x, y, r, v, theta, c,
+    I_target, bmp_image_tensor,
+    opt_conf
+)
 
-# Pre-compute pixel coordinates
-X, Y = torch.meshgrid(torch.arange(W, device=device),
-                      torch.arange(H, device=device), indexing='xy')
-X, Y = X.unsqueeze(0), Y.unsqueeze(0)  # (1, H, W)
-
-alpha_upper_bound = opt_conf.get("alpha_upper_bound", 0.5)
-
-def batched_soft_rasterize(bmp_image, X, Y, x, y, r, theta, sigma=0.0):
-    """
-    bmp_image: (H_bmp, W_bmp) tensor in [0,1]
-    X, Y: (1, H, W) coordinate grids
-    x, y, r, theta: each is tensor of shape (B,)
-    sigma: Gaussian blur standard deviation for softening the mask
-    Returns:
-        (B, H, W) soft masks
-    """
-    B = len(x)
-    _, H, W = X.shape
-
-    # 1) 입력 bmp_image에 Gaussian blur 적용 (soft rasterization 효과)
-    if sigma > 0.0:
-        # bmp_image: (H_bmp, W_bmp) -> (1,H_bmp,W_bmp)
-        bmp = bmp_image.unsqueeze(0)
-        # gaussian_blur: (N, H, W) 형태를 기대하므로 N=1
-        bmp = gaussian_blur(bmp, sigma)  # (N, H_bmp, W_bmp)
-        bmp_image = bmp.squeeze(0)       # (H_bmp, W_bmp)
-
-    # 2) 그리드와 파라미터를 배치 크기에 맞춰 확장
-    X_exp = X.expand(B, H, W)
-    Y_exp = Y.expand(B, H, W)
-    x_exp = x.view(B,1,1).expand(B, H, W)
-    y_exp = y.view(B,1,1).expand(B, H, W)
-    r_exp = r.view(B,1,1).expand(B, H, W)
-
-    # 3) 위치 정규화 및 회전
-    pos = torch.stack([X_exp - x_exp, Y_exp - y_exp], dim=1) / r_exp.unsqueeze(1)
-    cos_t = torch.cos(theta)
-    sin_t = torch.sin(theta)
-    R_inv = torch.zeros(B, 2, 2, device=X.device)
-    R_inv[:,0,0] = cos_t; R_inv[:,0,1] = sin_t
-    R_inv[:,1,0] = -sin_t; R_inv[:,1,1] = cos_t
-    uv = torch.einsum('bij,bjhw->bihw', R_inv, pos)
-
-    # 4) grid_sample을 위한 형태 조정
-    grid = uv.permute(0,2,3,1)  # (B, H, W, 2)
-    bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, -1, -1, -1)  # (B,1,H_bmp,W_bmp)
-
-    # 5) bilinear sampling
-    sampled = F.grid_sample(bmp_exp, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
-
-    return sampled.squeeze(1)  # (B, H, W)
-
-# Over Operator functions
-def over_pair(m1, a1, m2, a2):
-    m_out = m1 + (1 - a1).unsqueeze(-1) * m2
-    a_out = a1 + (1 - a1) * a2
-    return m_out, a_out
-
-def tree_over(m, a):
-    while m.size(0) > 1:
-        n = m.size(0)
-        if n % 2 == 1:
-            pad_m = torch.zeros((1, *m.shape[1:]), device=m.device, dtype=m.dtype)
-            pad_a = torch.zeros((1, *a.shape[1:]), device=a.device, dtype=a.dtype)
-            m = torch.cat([m, pad_m], dim=0)
-            a = torch.cat([a, pad_a], dim=0)
-            n = m.size(0)
-        new_n = n // 2
-        m = m.reshape(new_n, 2, m.size(1), m.size(2), 3)
-        a = a.reshape(new_n, 2, a.size(1), a.size(2))
-        m = m[:, 0] + (1 - a[:, 0]).unsqueeze(-1) * m[:, 1]
-        a = a[:, 0] + (1 - a[:, 0]) * a[:, 1]
-    return m.squeeze(0), a.squeeze(0)
-
-# Rendering function
-def render_image_vector_cached(cached_masks, v, c, X, Y):
-    N = v.shape[0]
-    v_alpha = alpha_upper_bound * torch.sigmoid(v).view(N, 1, 1)
-    a = v_alpha * cached_masks
-    c_eff = torch.sigmoid(c).view(N, 1, 1, 3)
-    m = a.unsqueeze(-1) * c_eff
-    comp_m, comp_a = tree_over(m, a)
-    background = torch.ones_like(comp_m)
-    final = comp_m + (1 - comp_a).unsqueeze(-1) * background
-    return final  # (H, W, 3)
-
-# Training loop
-num_iterations = opt_conf.get("num_iterations", 300)
-learning_rate = opt_conf.get("learning_rate", 0.1)
-
-# sigma 스케줄: config 에서 초기와 최종 값 가져옴 (기본값: 2.0 -> 1.0)
-do_gaussian_blur = opt_conf.get("do_gaussian_blur", False)
-sigma_start = opt_conf.get("blur_sigma_start", 2.0) # 
-sigma_end = opt_conf.get("blur_sigma_end", 1.0)
-
-# Create optimizer for all learnable parameters
-lr_conf = opt_conf["learning_rate"]
-lr = lr_conf.get("default", 0.1)
-do_decay = opt_conf.get("do_decay", False)
-optimizer_xyr = torch.optim.Adam([
-    {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
-    {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
-    {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},  
-])
-
-optimizer_rest = torch.optim.Adam([
-    {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},  
-    {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
-    {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)}, 
-])
-sched_xyr = torch.optim.lr_scheduler.ExponentialLR(
-    optimizer_xyr, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
-
-
-sparsify_conf = opt_conf["sparsifying"]
-do_sparsify = sparsify_conf.get("do_sparsify", False)
-
-if do_sparsify:
-    z = torch.zeros_like(v, requires_grad=False)
-    lam = torch.zeros_like(v, requires_grad=False)
-    iters_warmup = sparsify_conf.get("sparsify_warmup", num_iterations//3)
-    sparsify_duration = sparsify_conf.get("sparsify_duration", num_iterations//3)
-    sparsify_loss_coeff = sparsify_conf.get("sparsify_loss_coeff", 0.5)
-    sparsifying_period = sparsify_conf.get("sparsifying_period", 20)
-    sparsified_N = int(sparsify_conf.get("sparsified_N", 0.6 * N))
-    assert sparsified_N < N, "sparsified_N must be less than N"
-    assert num_iterations > iters_warmup + sparsify_duration, "num_iterations must be greater than warmup + duration"
-
-print(f"Starting optimization for {num_iterations} iterations...")
-for epoch in tqdm(range(num_iterations)):
-    optimizer_xyr.zero_grad()
-    optimizer_rest.zero_grad()
-
-    # 현재 epoch에 따른 sigma (선형 보간)
-    sigma = sigma_start * (1 - epoch / num_iterations) + sigma_end * (epoch / num_iterations) if do_gaussian_blur else 0.0
-    
-    # Recompute masks for current parameters
-    _cached_masks = batched_soft_rasterize(bmp_image_tensor, X, Y, x, y, r, theta, sigma=sigma)
-
-    I_hat = render_image_vector_cached(_cached_masks, v, c, X, Y)
-    loss = F.mse_loss(I_hat, I_target)
-    if do_sparsify and epoch >= iters_warmup and epoch < iters_warmup+sparsify_duration:
-        _alpha      = alpha_upper_bound * torch.sigmoid(v)
-        loss  += 0.5 * sparsify_loss_coeff * F.mse_loss(_alpha, z - lam) # Sparsification loss
-    loss.backward()
-
-    # step the optimizers
-    optimizer_xyr.step()
-    optimizer_rest.step()
-    if do_decay and sched_xyr is not None:
-        sched_xyr.step()
-    
-    # Clamp parameters to valid ranges
-    with torch.no_grad():
-        x.clamp_(0, W)
-        y.clamp_(0, H)
-        r.clamp_(init_conf.get("radii_min", 2), init_conf.get("radii_max", min(H, W) // 4))
-        theta.clamp_(0, 2 * np.pi)
-    
-    if epoch % 20 == 0:
-        print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
-    
-    if do_sparsify:
-        with torch.no_grad():
-            if (epoch>= iters_warmup and epoch <= iters_warmup+sparsify_duration):
-                if epoch % sparsifying_period == 0:
-                    # Sparsification step
-                    _alpha = alpha_upper_bound * torch.sigmoid(v.detach())
-                    keep_idx = torch.topk(_alpha, sparsified_N).indices
-                    mask     = torch.zeros_like(_alpha, dtype=torch.bool)
-                    mask[keep_idx] = True
-                    
-                    z.zero_(); z[mask] = _alpha[mask]        # z ← sparse projection
-                    lam += (_alpha - z)             
-                
-                if epoch == iters_warmup+sparsify_duration:
-                    # actual sparsification
-                    # 1) helper: 기존 tensor -> 잘라낸 tensor(requires_grad 유지)
-                    def _prune(t):
-                        t_new = t[keep_idx].clone().detach()
-                        if t.requires_grad:
-                            t_new.requires_grad_(True)
-                        return t_new
-
-                    # 2) 실제 파라미터·보조변수 잘라내기
-                    x, y, r, theta, v, c = map(_prune, (x, y, r, theta, v, c))
-                    z, lam               = map(_prune, (z, lam))
-
-                    # 3) optimizer 재생성 (Adam state 깔끔히 초기화)
-                    optimizer_xyr = torch.optim.Adam([
-                        {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
-                        {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
-                        {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},  
-                    ])
-
-                    optimizer_rest = torch.optim.Adam([
-                        {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},  
-                        {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
-                        {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)}, 
-                    ])
-                    sched_xyr = torch.optim.lr_scheduler.ExponentialLR(
-                    optimizer_xyr, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
+# Generate final masks and render
+cached_masks = renderer._batched_soft_rasterize(
+    bmp_image_tensor, x, y, r, theta,
+    sigma=opt_conf.get("blur_sigma_end", 1.0)
+)
 
 # Save the final rendered image
-final_render = render_image_vector_cached(_cached_masks, v, c, X, Y)
-final_render_np = final_render.detach().cpu().numpy()
-final_render_np = (final_render_np * 255).astype(np.uint8)
+output_path = config["postprocessing"].get("output_folder", "./outputs/")
+output_path = output_path + "output.png"
+renderer.save_rendered_image(cached_masks, v, c, output_path)
 
 # Create combined visualization with point debug if debug mode was enabled
 if init_conf.get("debug_mode", False):
@@ -334,64 +155,21 @@ if init_conf.get("debug_mode", False):
     os.makedirs('outputs', exist_ok=True)
     
     # Save the final render
-    cv2.imwrite('outputs/final_render.png', cv2.cvtColor(final_render_np, cv2.COLOR_RGB2BGR))
+    cv2.imwrite('outputs/final_render.png', cv2.cvtColor(cached_masks.detach().cpu().numpy() * 255, cv2.COLOR_RGB2BGR))
     
     # Load point debug visualization
     point_debug = cv2.imread('outputs/point_debug.png')
     
     # Resize if dimensions don't match
-    if point_debug.shape[:2] != final_render_np.shape[:2]:
-        point_debug = cv2.resize(point_debug, (final_render_np.shape[1], final_render_np.shape[0]))
+    if point_debug.shape[:2] != cached_masks.shape[:2]:
+        point_debug = cv2.resize(point_debug, (cached_masks.shape[1], cached_masks.shape[0]))
     
     # Load original visualization if it exists
     if os.path.exists('outputs/side_by_side_debug.png'):
         side_by_side = cv2.imread('outputs/side_by_side_debug.png')
         
         # Create a new row with final render
-        final_render_bgr = cv2.cvtColor(final_render_np, cv2.COLOR_RGB2BGR)
-        
-        # Extract original and point debug from side_by_side
-        mid_point = side_by_side.shape[1] // 2
-        original = side_by_side[:, :mid_point]
-        points = side_by_side[:, mid_point:]
-        
-        # Resize final render to match original and points
-        final_render_bgr = cv2.resize(final_render_bgr, (mid_point, side_by_side.shape[0]))
-        
-        # Create three-panel image: original, points, final render
-        combined = np.hstack((original, points, final_render_bgr))
-        
-        timestamp_str = datetime.now().strftime("%m-%d-%H-%M-%S")
-        print(timestamp_str)
-        cv2.imwrite('outputs/combined_visualization_' + timestamp_str + '.png', combined)
-        print("Combined visualization saved to outputs/combined_visualization.png")
-
-# Save the final rendered image
-final_render = render_image_vector_cached(_cached_masks, v, c, X, Y)
-final_render_np = final_render.detach().cpu().numpy()
-final_render_np = (final_render_np * 255).astype(np.uint8)
-
-# Create combined visualization with point debug if debug mode was enabled
-if init_conf.get("debug_mode", False):
-    # Ensure outputs directory exists
-    os.makedirs('outputs', exist_ok=True)
-    
-    # Save the final render
-    cv2.imwrite('outputs/final_render.png', cv2.cvtColor(final_render_np, cv2.COLOR_RGB2BGR))
-    
-    # Load point debug visualization
-    point_debug = cv2.imread('outputs/point_debug.png')
-    
-    # Resize if dimensions don't match
-    if point_debug.shape[:2] != final_render_np.shape[:2]:
-        point_debug = cv2.resize(point_debug, (final_render_np.shape[1], final_render_np.shape[0]))
-    
-    # Load original visualization if it exists
-    if os.path.exists('outputs/side_by_side_debug.png'):
-        side_by_side = cv2.imread('outputs/side_by_side_debug.png')
-        
-        # Create a new row with final render
-        final_render_bgr = cv2.cvtColor(final_render_np, cv2.COLOR_RGB2BGR)
+        final_render_bgr = cv2.cvtColor(cached_masks.detach().cpu().numpy() * 255, cv2.COLOR_RGB2BGR)
         
         # Extract original and point debug from side_by_side
         mid_point = side_by_side.shape[1] // 2
@@ -410,12 +188,12 @@ if init_conf.get("debug_mode", False):
         print("Combined visualization saved to outputs/combined_visualization.png")
 
 filename_only = os.path.splitext(os.path.basename(config['preprocessing']['img_path']))[0]
-output_path=config['postprocessing']['output_folder'] + filename_only + "_N" + str(init_conf.get("N", 1000)) + "_ITER" + str(num_iterations) \
+output_path=config['postprocessing']['output_folder'] + filename_only + "_N" + str(init_conf.get("N", 1000)) + "_ITER" + str(config["optimization"]["num_iterations"]) \
     + "_" + str(config['optimization']['sparsifying']['do_sparsify'])[0] + "_SPN" + str(config['optimization']['sparsifying']['sparsified_N']) + ".pdf"
 config['postprocessing']['output_path'] = output_path
 
 exporter = PDFExporter(svg_loader.svg_path, canvas_size=(W, H), viewbox_size=(svg_loader.get_svg_size()),
-                       alpha_upper_bound=alpha_upper_bound, stroke_width=config["postprocessing"].get("linewidth", 3.0))
+                       alpha_upper_bound=config["optimization"]["alpha_upper_bound"], stroke_width=config["postprocessing"].get("linewidth", 3.0))
 
 exporter.export(x, y, r, theta, v, c,
                 output_path=config['postprocessing']['output_path'], 
