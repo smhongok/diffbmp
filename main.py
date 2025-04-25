@@ -17,9 +17,10 @@ from datetime import datetime
 
 # Import our modules
 from preprocessing import Preprocessor
-from svgsplat_initialization import StructureAwareInitializer
-from utils import set_global_seed, gaussian_blur, compute_psnr
-from svg_loader import SVGLoader
+from core.opsizelv_initialization import OpSizeLvAwareInitializer
+from core.svgsplat_initialization import StructureAwareInitializer
+from util.utils import set_global_seed, gaussian_blur, compute_psnr
+from util.svg_loader import SVGLoader
 from pdf_exporter import PDFExporter
 from util.font_to_svg import FontParser
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -57,7 +58,7 @@ svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
 
 if (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
     font_parser = FontParser(config["svg"].get("svg_file"))
-    svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode="text"))
+    svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode="opt-path"))
 else:
     svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
 
@@ -73,31 +74,47 @@ bmp_image_tensor = svg_loader.load_alpha_bitmap()
 # Initialize with Structure-Aware method
 print("---Initializing vector graphics with Structure-Aware method---")
 init_conf = config["initialization"]
-initializer = StructureAwareInitializer(
-    num_init=init_conf.get("N", 10000),
-    alpha=init_conf.get("alpha", 0.3),  # Structure adjustment strength from config
-    min_distance=init_conf.get("min_distance", 5),
-    peak_threshold=init_conf.get("peak_threshold", 0.5),
-    radii_min=init_conf.get("radii_min", 2),
-    radii_max=init_conf.get("radii_max", None),
-    v_init_bias=init_conf.get("v_init_bias", -5.0),
-    v_init_slope=init_conf.get("v_init_slope", 10.0),
-    keypoint_extracting=init_conf.get("keypoint_extracting", False),
-    whole_random=init_conf.get("whole_random", False),
-    debug_mode=init_conf.get("debug_mode", False)  # Add debug mode parameter
-)
+if init_conf.get("initializer", "none") == "structure_aware":
+    initializer = StructureAwareInitializer(
+        num_init=init_conf.get("N", 10000),
+        alpha=init_conf.get("alpha", 0.3),  # Structure adjustment strength from config
+        min_distance=init_conf.get("min_distance", 5),
+        peak_threshold=init_conf.get("peak_threshold", 0.5),
+        radii_min=init_conf.get("radii_min", 2),
+        radii_max=init_conf.get("radii_max", None),
+        v_init_bias=init_conf.get("v_init_bias", -5.0),
+        v_init_slope=init_conf.get("v_init_slope", 10.0),
+        keypoint_extracting=init_conf.get("keypoint_extracting", False),
+        whole_random=init_conf.get("whole_random", False),
+        debug_mode=init_conf.get("debug_mode", False)  # Add debug mode parameter
+    )
+elif init_conf.get("initializer", "none") == "op_size_lv_aware":
+    initializer = OpSizeLvAwareInitializer(
+        num_init=init_conf.get("N", 10000),
+        alpha=init_conf.get("alpha", 0.3),  # Structure adjustment strength from config
+        min_distance=init_conf.get("min_distance", 5),
+        peak_threshold=init_conf.get("peak_threshold", 0.5),
+        radii_min=init_conf.get("radii_min", 2),
+        radii_max=init_conf.get("radii_max", None),
+        v_init_bias=init_conf.get("v_init_bias", -5.0),
+        v_init_slope=init_conf.get("v_init_slope", 10.0),
+        keypoint_extracting=init_conf.get("keypoint_extracting", False),
+        whole_random=init_conf.get("whole_random", False),
+        debug_mode=init_conf.get("debug_mode", False)  # Add debug mode parameter
+else:
+    raise ValueError(f"Invalid initializer: {init_conf.get('initializer', 'none')}")
 
 # Initialize from SVG - all parameters are now learnable
-x, y, r, v, theta, c = initializer.initialize_for_svg(I_target)
+x, y, r, v, theta, c = initializer.initialize(I_target)
 N = len(x)
 
-# # Convert to leaf tensors for optimization
-# x = x.detach().clone().requires_grad_(True)
-# y = y.detach().clone().requires_grad_(True)
-# r = r.detach().clone().requires_grad_(True)
-# v = v.detach().clone().requires_grad_(True)
-# theta = theta.detach().clone().requires_grad_(True)
-# c = c.detach().clone().requires_grad_(True)
+# Convert to leaf tensors for optimization
+x = x.detach().clone().requires_grad_(True)
+y = y.detach().clone().requires_grad_(True)
+r = r.detach().clone().requires_grad_(True)
+v = v.detach().clone().requires_grad_(True)
+theta = theta.detach().clone().requires_grad_(True)
+c = c.detach().clone().requires_grad_(True)
 
 # Initialize learnable parameters c (3-vector color)
 # c = torch.rand(N, 3, device=device, requires_grad=True)  # Color, initially in [0,1] range

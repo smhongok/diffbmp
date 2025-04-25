@@ -10,7 +10,7 @@ images/*
 configs/*
 !configs/jylee_svg_hollow.json
 !configs/smhong-dev.json
-
+!configs/smhong-dev-font.json
 main_text.py
 main_rgb.py
 *ignore.py
