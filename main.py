@@ -101,6 +101,7 @@ elif init_conf.get("initializer", "none") == "op_size_lv_aware":
         keypoint_extracting=init_conf.get("keypoint_extracting", False),
         whole_random=init_conf.get("whole_random", False),
         debug_mode=init_conf.get("debug_mode", False)  # Add debug mode parameter
+    )
 else:
     raise ValueError(f"Invalid initializer: {init_conf.get('initializer', 'none')}")
 
