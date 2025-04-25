@@ -19,8 +19,8 @@ from core.renderer.lpips_renderer import LpipsRenderer
 from core.renderer.mix_renderer import MixRenderer
 from util.svg_loader import SVGLoader
 from util.font_to_svg import FontParser
-from core.initializer.svgsplat_initialization import StructureAwareInitializer
-from core.initializer.opsizelv_initialization import OpSizeLvAwareInitializer
+from core.initializer.svgsplat_initializater import StructureAwareInitializer
+from core.initializer.opsizelv_initializater import OpSizeLvAwareInitializer
 
 # Import our modules
 from preprocessing import Preprocessor
