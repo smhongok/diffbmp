@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import os
 import time
 from datetime import timedelta
-from .base_initializer import BaseInitializer, _rand_leaf
+from .base_initializer import BaseInitializer
 # 시작 시간 기록
 
 class StructureAwareInitializer(BaseInitializer):
@@ -135,67 +135,6 @@ class StructureAwareInitializer(BaseInitializer):
 
         print(f"Using level={best_level}, min_distance={best_min_distance:.2f}")
         return best_points
-
-    def visualize_points(self, image, init_pts, densified_pts, adjusted_pts, filename='point_visualization.png'):
-        """
-        Visualize initial, densified, and adjusted points with color-coded overlaps.
-        - Red: initial only
-        - Green: densified only
-        - Blue: adjusted only
-        - Magenta: initial + densified
-        - Yellow: initial + adjusted
-        - Cyan: densified + adjusted
-        - Black: all three overlap
-        """
-        
-        def point_key(p):
-            return (int(p[0]), int(p[1]))
-
-        # Create white canvas
-        H, W = image.shape[:2] if len(image.shape) > 2 else image.shape
-        canvas = np.ones((H, W, 3), dtype=np.uint8) * 255
-
-        # Convert to sets of int tuples for easy comparison
-        init_set = set(map(point_key, init_pts))
-        dens_set = set(map(point_key, densified_pts))
-        adj_set  = set(map(point_key, adjusted_pts))
-
-        all_keys = init_set | dens_set | adj_set
-
-        for x, y in all_keys:
-            in_init = (x, y) in init_set
-            in_dens = (x, y) in dens_set
-            in_adj  = (x, y) in adj_set
-
-            # Skip points outside canvas
-            if not (0 <= x < W and 0 <= y < H):
-                continue
-
-            # Determine color based on combination
-            if in_init and in_dens and in_adj:
-                color = (0, 0, 0)           # Black
-            elif in_init and in_dens:
-                color = (255, 0, 255)       # Magenta
-            elif in_init and in_adj:
-                color = (0, 255, 255)       # Yellow
-            elif in_dens and in_adj:
-                color = (255, 255, 0)       # Cyan
-            elif in_init:
-                color = (0, 0, 255)         # Red
-            elif in_dens:
-                color = (0, 255, 0)         # Green
-            elif in_adj:
-                color = (255, 0, 0)         # Blue
-            else:
-                continue  # Should not happen
-
-            cv2.circle(canvas, (int(x), int(y)), 1, color, -1)
-
-        # Save the visualization
-        cv2.imwrite(filename, canvas)
-        print(f"Point visualization saved to {filename}")
-        
-        return canvas
    
     def initialize(self, I_target):
         """

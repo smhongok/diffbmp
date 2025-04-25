@@ -189,7 +189,8 @@ if init_conf.get("debug_mode", False):
 
 filename_only = os.path.splitext(os.path.basename(config['preprocessing']['img_path']))[0]
 output_path=config['postprocessing']['output_folder'] + filename_only + "_N" + str(init_conf.get("N", 1000)) + "_ITER" + str(config["optimization"]["num_iterations"]) \
-    + "_" + str(config['optimization']['sparsifying']['do_sparsify'])[0] + "_SPN" + str(config['optimization']['sparsifying']['sparsified_N']) + ".pdf"
+    + "_" + str(config['optimization']['sparsifying']['do_sparsify'])[0] + "_SPN" + str(config['optimization']['sparsifying']['sparsified_N']) \
+    + "_" + str(config['initialization']['initializer'])[0:2] + "_" + str(config['optimization']['renderer_type']) + ".pdf"
 config['postprocessing']['output_path'] = output_path
 
 exporter = PDFExporter(svg_loader.svg_path, canvas_size=(W, H), viewbox_size=(svg_loader.get_svg_size()),
