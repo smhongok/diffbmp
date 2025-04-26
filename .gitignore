@@ -7,6 +7,9 @@ images/*
 !images/girl.png
 !images/jylee.png
 !images/trump.png
+!images/BSDS500/*
+!images/CelebA/*
+!images/MoviePosters/*
 configs/*
 !configs/jylee_svg_hollow.json
 !configs/smhong-dev.json
