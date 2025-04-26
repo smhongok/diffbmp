@@ -270,11 +270,13 @@ def main():
     
     init_groups = [[init_params, init] for init_params, init in zip(initial_params_list, initializers)]
     
+    classify_svg = svg_loader.classify_svg()
+    print(f"SVG is classified as: {classify_svg}")
     # Create instances of renderers
     renderers = [
         MseRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
-        LpipsRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
-        MixRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device)
+        #LpipsRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
+        MixRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device, classify_svg=classify_svg)
     ]
     
     # Process combinations one at a time to save memory
