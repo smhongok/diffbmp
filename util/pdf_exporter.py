@@ -113,10 +113,10 @@ class PDFExporter:
         W = self.canvas_w
 
         with torch.no_grad():
-            keep_left = x < (2 * W / 3)
+            keep_left = x < ( W / 2)
             prob      = torch.where(keep_left,
                                     torch.ones_like(x),
-                                    (W - x) / (W / 3))  # x 증가할수록 감소
+                                    (W - x) / (W / 2))  # x 증가할수록 감소
             keep_idx  = keep_left | (torch.rand_like(prob) < prob)
 
             # 필터링된 파라미터
