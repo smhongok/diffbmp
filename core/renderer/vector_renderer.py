@@ -114,7 +114,8 @@ class VectorRenderer:
             sampled = torch.utils.checkpoint.checkpoint(
                 grid_sample_func,
                 bmp_exp,
-                grid
+                grid,
+                use_reentrant=False
             )
         else:
             sampled = F.grid_sample(
@@ -178,7 +179,7 @@ class VectorRenderer:
         if self.use_checkpointing:
             def tree_over_func(x, y):
                 return self._tree_over(x, y)
-            comp_m, comp_a = torch.utils.checkpoint.checkpoint(tree_over_func, m, a)
+            comp_m, comp_a = torch.utils.checkpoint.checkpoint(tree_over_func, m, a, use_reentrant=False)
         else:
             comp_m, comp_a = self._tree_over(m, a)
             

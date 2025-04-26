@@ -44,11 +44,11 @@
         "num_iterations": 100,
         "learning_rate": {
             "default": 0.05, 
-            "gain_x": 10.0,
-            "gain_y": 10.0,
-            "gain_r": 10.0,
+            "gain_x": 5.0,
+            "gain_y": 5.0,
+            "gain_r": 20.0,
             "gain_v": 1.0,
-            "gain_theta": 10.0,
+            "gain_theta": 5.0,
             "gain_c": 1.0
         },
         "do_decay": true,
