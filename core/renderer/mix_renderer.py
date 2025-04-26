@@ -66,6 +66,36 @@ class MixRenderer(VectorRenderer):
         # Normalize by number of pixels in target mask
         num_mask_pixels = torch.sum(target_mask) + 1e-8
         return total_diff / num_mask_pixels
+    
+    def compute_edge_loss(self, rendered: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Sobel edge L1 loss on grayscale renders.
+        """
+        # to shape (1,1,H,W)
+        def to_gray(x):
+            # x: (H,W,3) in [0,1]
+            gray = 0.2989*x[...,0] + 0.5870*x[...,1] + 0.1140*x[...,2]
+            return gray.unsqueeze(0).unsqueeze(0)
+        r_gray = to_gray(rendered)
+        t_gray = to_gray(target)
+
+        # define sobel kernels
+        device = rendered.device
+        kx = torch.tensor([[-1,0,1],[-2,0,2],[-1,0,1]], dtype=torch.float32, device=device)
+        ky = torch.tensor([[-1,-2,-1],[0,0,0],[1,2,1]], dtype=torch.float32, device=device)
+        kx = kx.view(1,1,3,3)
+        ky = ky.view(1,1,3,3)
+
+        # convolve (padding=1 to keep size)
+        grad_r_x = F.conv2d(r_gray, kx, padding=1)
+        grad_r_y = F.conv2d(r_gray, ky, padding=1)
+        grad_t_x = F.conv2d(t_gray, kx, padding=1)
+        grad_t_y = F.conv2d(t_gray, ky, padding=1)
+
+        # L1 difference
+        loss_x = torch.abs(grad_r_x - grad_t_x).mean()
+        loss_y = torch.abs(grad_r_y - grad_t_y).mean()
+        return loss_x + loss_y
 
     def compute_loss(self, 
                     rendered: torch.Tensor, 
@@ -95,17 +125,23 @@ class MixRenderer(VectorRenderer):
         target_mask = target[..., 0]
         
         # Compute shape alignment loss (affects x, y, r, theta)
-        shape_loss = self.compute_shape_alignment_loss(cached_masks, target_mask)
-        
+        #shape_loss = self.compute_shape_alignment_loss(cached_masks, target_mask)
         # Compute color/alpha loss (affects c, v)
         color_loss = self.compute_color_alpha_loss(rendered, target, target_mask)
-        
+        # Compute edge loss (affects x, y, r, theta)
+        #edge_loss  = self.compute_edge_loss(rendered, target)
+        mse_loss = F.mse_loss(rendered, target)
+
         # Combine losses with weighting
-        shape_weight = 0.7
-        color_weight = 0.3
-        total_loss = shape_weight * shape_loss + color_weight * color_loss
+        #shape_weight = 0.7
+        color_weight = 0.2
+        #edge_weight = 0.1
+        mse_weight = 0.8
+        #total_loss = shape_weight * shape_loss + color_weight * color_loss + edge_weight * edge_loss
+        total_loss = mse_weight * mse_loss + color_weight * color_loss
         
-        return total_loss, shape_loss, color_loss
+        #return total_loss, shape_loss, color_loss
+        return total_loss, mse_loss, color_loss
 
     def optimize_parameters(self,
                           x: torch.Tensor,
@@ -164,7 +200,7 @@ class MixRenderer(VectorRenderer):
             rendered = self.render(cached_masks, v, c)
             
             # Compute losses
-            total_loss, shape_loss, color_loss = self.compute_loss(
+            total_loss, mse_loss, color_loss = self.compute_loss(
                 rendered, target_image, cached_masks,
                 x, y, r, v, theta, c
             )
@@ -185,7 +221,7 @@ class MixRenderer(VectorRenderer):
             
             if epoch % 20 == 0:
                 print(f"Epoch {epoch}, Total Loss: {total_loss.item():.4f}, "
-                      f"Shape Loss: {shape_loss.item():.4f}, "
+                      f"MSE Loss: {mse_loss.item():.4f}, "
                       f"Color Loss: {color_loss.item():.4f}")
         
         return x, y, r, v, theta, c 

@@ -27,10 +27,19 @@ class VectorRenderer:
         self.H, self.W = canvas_size
         self.alpha_upper_bound = alpha_upper_bound
         self.device = device
+        self.use_checkpointing = False
         
         # Pre-compute pixel coordinates
         self.X, self.Y = self._create_coordinate_grid()
-        
+    
+    def enable_checkpointing(self):
+        """Enable gradient checkpointing for memory efficiency."""
+        self.use_checkpointing = True
+    
+    def disable_checkpointing(self):
+        """Disable gradient checkpointing."""
+        self.use_checkpointing = False
+    
     def _create_coordinate_grid(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """Create the coordinate grid for rendering."""
         X, Y = torch.meshgrid(
@@ -91,14 +100,30 @@ class VectorRenderer:
         grid = uv.permute(0, 2, 3, 1)  # (B, H, W, 2)
         bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, -1, -1, -1)
         
-        # Perform bilinear sampling
-        sampled = F.grid_sample(
-            bmp_exp,
-            grid,
-            mode='bilinear',
-            padding_mode='zeros',
-            align_corners=True
-        )
+        # Use gradient checkpointing if enabled
+        if self.use_checkpointing:
+            def grid_sample_func(x, grid):
+                return F.grid_sample(
+                    x,
+                    grid,
+                    mode='bilinear',
+                    padding_mode='zeros',
+                    align_corners=True
+                )
+
+            sampled = torch.utils.checkpoint.checkpoint(
+                grid_sample_func,
+                bmp_exp,
+                grid
+            )
+        else:
+            sampled = F.grid_sample(
+                bmp_exp,
+                grid,
+                mode='bilinear',
+                padding_mode='zeros',
+                align_corners=True
+            )
         
         return sampled.squeeze(1)  # (B, H, W)
     
@@ -148,7 +173,15 @@ class VectorRenderer:
         a = v_alpha * cached_masks
         c_eff = torch.sigmoid(c).view(N, 1, 1, 3)
         m = a.unsqueeze(-1) * c_eff
-        comp_m, comp_a = self._tree_over(m, a)
+        
+        # Use gradient checkpointing if enabled
+        if self.use_checkpointing:
+            def tree_over_func(x, y):
+                return self._tree_over(x, y)
+            comp_m, comp_a = torch.utils.checkpoint.checkpoint(tree_over_func, m, a)
+        else:
+            comp_m, comp_a = self._tree_over(m, a)
+            
         background = torch.ones_like(comp_m)
         final = comp_m + (1 - comp_a).unsqueeze(-1) * background
         return final
