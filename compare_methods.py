@@ -21,6 +21,7 @@ from util.pdf_exporter import PDFExporter
 
 from core.initializer.random_initializater import RandomInitializer
 from core.initializer.svgsplat_initializater import StructureAwareInitializer
+from core.initializer.multilevel_initializer import MultiLevelInitializer
 
 from core.renderer.vector_renderer import VectorRenderer
 from core.renderer.mse_renderer import MseRenderer
@@ -62,7 +63,26 @@ def compute_metrics(pred: torch.Tensor, target: torch.Tensor) -> Dict[str, float
 
 def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np.ndarray, config: Dict[str, Any]):
     """Plot results in a 2x3 grid with metrics."""
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    # Determine the number of rows and columns based on the number of results
+    num_results = len(results)
+    if num_results <= 3:
+        rows, cols = 1, num_results
+    elif num_results == 4:
+        rows, cols = 2, 2
+    elif num_results <= 6:
+        rows, cols = 2, 3
+    elif num_results == 8:
+        rows, cols = 4, 2
+    elif num_results <= 9:
+        rows, cols = 3, 3
+    else:
+        rows, cols = 4, 3
+    
+    # Calculate figure size based on the number of results
+    fig_width = 5 * cols
+    fig_height = 5 * rows
+    
+    fig, axes = plt.subplots(rows, cols, figsize=(fig_width, fig_height))
     plt.subplots_adjust(hspace=0.4, top=0.85)  # Increase top margin for config text
     
     # Add configuration information at the top
@@ -80,8 +100,8 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
                    f'r={lr_conf.get("gain_r", "N/A")}, v={lr_conf.get("gain_v", "N/A")}, ' \
                    f'theta={lr_conf.get("gain_theta", "N/A")}, c={lr_conf.get("gain_c", "N/A")}'
     
-    plt.figtext(0.5, 0.95, config_line1, ha='center', va='center', fontsize=8)
-    plt.figtext(0.5, 0.93, config_line2, ha='center', va='center', fontsize=8)
+    plt.figtext(0.5, 0.96, config_line1, ha='center', va='center', fontsize=8)
+    plt.figtext(0.5, 0.94, config_line2, ha='center', va='center', fontsize=8)
     
     # Add target image as a small inset in the top-right corner
     ax_inset = fig.add_axes([0.85, 0.85, 0.1, 0.1])
@@ -89,9 +109,18 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
     ax_inset.axis('off')
     ax_inset.set_title('Target', fontsize=8)
     
+    # Handle different grid layouts
+    if rows == 1 and cols == 1:
+        axes = np.array([axes])
+    elif rows == 1:
+        axes = axes.reshape(1, -1)
+    
     for idx, result in enumerate(results):
-        row = idx // 3
-        col = idx % 3
+        if idx >= rows * cols:
+            break
+            
+        row = idx // cols
+        col = idx % cols
         ax = axes[row, col]
         
         # Plot image
@@ -105,7 +134,13 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
         title += f"VIF: {metrics['VIF']:.2f}, LPIPS: {metrics['LPIPS']:.2f}"
         ax.set_title(title, fontsize=8)
     
-    # Save plots
+    # Hide empty subplots if any
+    for idx in range(num_results, rows * cols):
+        row = idx // cols
+        col = idx % cols
+        axes[row, col].axis('off')
+    
+    # Save plots with high resolution
     plt.savefig(f"{save_path}.png", dpi=300, bbox_inches='tight')
     plt.savefig(f"{save_path}.pdf", bbox_inches='tight')
     plt.close()
@@ -128,7 +163,6 @@ def process_combination(args):
     if hasattr(renderer, 'enable_checkpointing'):
         renderer.enable_checkpointing()
     
-    # Optimize
     x, y, r, v, theta, c = renderer.optimize_parameters(
         x, y, r, v, theta, c,
         I_target, bmp_tensor,
@@ -231,34 +265,25 @@ def main():
     )
     bmp_tensor = svg_loader.load_alpha_bitmap()
     
+    common_init_params = {
+        "num_init": config["initialization"].get("N", 10000),
+        "alpha": config["initialization"].get("alpha", 0.3),
+        "min_distance": config["initialization"].get("min_distance", 5),
+        "peak_threshold": config["initialization"].get("peak_threshold", 0.5),
+        "radii_min": config["initialization"].get("radii_min", 2),
+        "radii_max": config["initialization"].get("radii_max", None),
+        "v_init_bias": config["initialization"].get("v_init_bias", -5.0),
+        "v_init_slope": config["initialization"].get("v_init_slope", 10.0),
+        "keypoint_extracting": config["initialization"].get("keypoint_extracting", False),
+        "debug_mode": config["initialization"].get("debug_mode", False)
+    }
     # Create instances of initializers
     initializers = [
-        RandomInitializer(
-            num_init=config["initialization"].get("N", 10000),
-            alpha=config["initialization"].get("alpha", 0.3),
-            min_distance=config["initialization"].get("min_distance", 5),
-            peak_threshold=config["initialization"].get("peak_threshold", 0.5),
-            radii_min=config["initialization"].get("radii_min", 2),
-            radii_max=config["initialization"].get("radii_max", None),
-            v_init_bias=config["initialization"].get("v_init_bias", -5.0),
-            v_init_slope=config["initialization"].get("v_init_slope", 10.0),
-            keypoint_extracting=config["initialization"].get("keypoint_extracting", False),
-            debug_mode=config["initialization"].get("debug_mode", False)
-        ),
-        StructureAwareInitializer(
-            num_init=config["initialization"].get("N", 10000),
-            alpha=config["initialization"].get("alpha", 0.3),
-            min_distance=config["initialization"].get("min_distance", 5),
-            peak_threshold=config["initialization"].get("peak_threshold", 0.5),
-            radii_min=config["initialization"].get("radii_min", 2),
-            radii_max=config["initialization"].get("radii_max", None),
-            v_init_bias=config["initialization"].get("v_init_bias", -5.0),
-            v_init_slope=config["initialization"].get("v_init_slope", 10.0),
-            keypoint_extracting=config["initialization"].get("keypoint_extracting", False),
-            debug_mode=config["initialization"].get("debug_mode", False)
-        )
+        RandomInitializer(**common_init_params),
+        StructureAwareInitializer(**common_init_params),
+        MultiLevelInitializer(**common_init_params)
     ]
-    
+        
     # Process initializers one at a time to save memory
     initial_params_list = []
     for init in initializers:
@@ -275,7 +300,7 @@ def main():
     # Create instances of renderers
     renderers = [
         MseRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
-        #LpipsRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
+        LpipsRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
         MixRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device, classify_svg=classify_svg)
     ]
     
