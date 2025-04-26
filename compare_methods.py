@@ -11,6 +11,7 @@ import json
 from datetime import datetime, timedelta
 import os
 from itertools import product
+import gc
 
 from core.preprocessing import Preprocessor
 from util.svg_loader import SVGLoader
@@ -25,6 +26,10 @@ from core.renderer.vector_renderer import VectorRenderer
 from core.renderer.mse_renderer import MseRenderer
 from core.renderer.lpips_renderer import LpipsRenderer
 from core.renderer.mix_renderer import MixRenderer
+
+# Enable gradient checkpointing for memory efficiency
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.deterministic = True
 
 def compute_metrics(pred: torch.Tensor, target: torch.Tensor) -> Dict[str, float]:
     """Compute image quality metrics."""
@@ -43,6 +48,10 @@ def compute_metrics(pred: torch.Tensor, target: torch.Tensor) -> Dict[str, float
     vif = piq.vif_p(pred_t, target_t, data_range=1.0).item()
     # LPIPS expects [-1, 1] range
     lpips = piq.LPIPS()(pred_lpips, target_lpips).item()
+    
+    # Clear memory
+    del pred_t, target_t, pred_lpips, target_lpips
+    torch.cuda.empty_cache()
     
     return {
         'PSNR': psnr,
@@ -103,7 +112,7 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
 
 def process_combination(args):
     """Process a single initializer-renderer combination."""
-    init, renderer, config, I_target, bmp_tensor, svg_path, svg_loader = args
+    initial_params, init, renderer, config, I_target, bmp_tensor, svg_path, svg_loader = args
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Move tensors to device
@@ -112,11 +121,12 @@ def process_combination(args):
     
     print(f"\nUsing {init.__class__.__name__} with {renderer.__class__.__name__}")
     
-    # Get initial parameters
-    initial_params = init.initialize(I_target)
-    
     # Reset parameters to initial values
     x, y, r, v, theta, c = [t.clone().detach().requires_grad_(True) for t in initial_params]
+    
+    # Enable gradient checkpointing for memory efficiency
+    if hasattr(renderer, 'enable_checkpointing'):
+        renderer.enable_checkpointing()
     
     # Optimize
     x, y, r, v, theta, c = renderer.optimize_parameters(
@@ -126,14 +136,24 @@ def process_combination(args):
     )
     
     # Generate final render
-    cached_masks = renderer._batched_soft_rasterize(
-        bmp_tensor, x, y, r, theta,
-        sigma=config["optimization"].get("blur_sigma_end", 1.0)
-    )
-    rendered = renderer.render(cached_masks, v, c)
+    with torch.no_grad():  # Disable gradient computation for final render
+        cached_masks = renderer._batched_soft_rasterize(
+            bmp_tensor, x, y, r, theta,
+            sigma=config["optimization"].get("blur_sigma_end", 1.0)
+        )
+        rendered = renderer.render(cached_masks, v, c)
+    
+    # Move tensors to CPU for metrics computation
+    rendered_cpu = rendered.cpu()
+    I_target_cpu = I_target.cpu()
     
     # Compute metrics
-    metrics = compute_metrics(rendered.cpu(), I_target.cpu())
+    metrics = compute_metrics(rendered_cpu, I_target_cpu)
+    
+    # Clear GPU memory
+    del rendered, cached_masks, I_target, bmp_tensor
+    torch.cuda.empty_cache()
+    gc.collect()
     
     # Export PDF
     output_dir = config["postprocessing"].get("output_folder", "./outputs/")
@@ -159,7 +179,7 @@ def process_combination(args):
     return {
         'initializer': init.__class__.__name__,
         'renderer': renderer.__class__.__name__,
-        'rendered': rendered.detach().cpu().numpy(),
+        'rendered': rendered_cpu.numpy(),
         'metrics': metrics,
         'params': (x, y, r, v, theta, c)
     }
@@ -172,7 +192,6 @@ def main():
     # Load configuration
     with open(args.config, "r", encoding="utf-8") as f:
         config = json.load(f)
-    
     
     # Set random seed
     set_global_seed(config.get("seed", 42))
@@ -240,15 +259,34 @@ def main():
         )
     ]
     
+    # Process initializers one at a time to save memory
+    initial_params_list = []
+    for init in initializers:
+        params = init.initialize(I_target)
+        initial_params_list.append(params)
+        # Clear memory after each initialization
+        torch.cuda.empty_cache()
+        gc.collect()
+    
+    init_groups = [[init_params, init] for init_params, init in zip(initial_params_list, initializers)]
+    
+    classify_svg = svg_loader.classify_svg()
+    print(f"SVG is classified as: {classify_svg}")
     # Create instances of renderers
     renderers = [
         MseRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
-        LpipsRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
-        MixRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device)
+        #LpipsRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
+        MixRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device, classify_svg=classify_svg)
     ]
     
-    results = [process_combination((init, renderer, config, I_target, bmp_tensor, svg_path, svg_loader))
-                for init, renderer in product(initializers, renderers)]
+    # Process combinations one at a time to save memory
+    results = []
+    for init_group, renderer in product(init_groups, renderers):
+        result = process_combination((init_group[0], init_group[1], renderer, config, I_target, bmp_tensor, svg_path, svg_loader))
+        results.append(result)
+        # Clear memory after each combination
+        torch.cuda.empty_cache()
+        gc.collect()
     
     # Create timestamp for unique filename
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
