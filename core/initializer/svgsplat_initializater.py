@@ -207,32 +207,6 @@ class StructureAwareInitializer(BaseInitializer):
         c_init += np.random.normal(0.0, 0.02, c_init.shape)
         c_init = np.clip(c_init, 0.0, 1.0)              # 안전 클립
         
-        # Visualize points if debug mode is enabled
-        if self.debug_mode:
-            vis_canvas = self.visualize_points(I_np, init_pts, densified_pts, adjusted_pts, 'outputs/point_debug.png')
-            
-            # Create side-by-side visualization with original image
-            if isinstance(I_target, torch.Tensor):
-                orig_img = I_target.cpu().numpy()
-                if orig_img.ndim == 2:
-                    orig_img = np.stack([orig_img] * 3, axis=-1)
-                elif orig_img.max() <= 1.0:
-                    orig_img = (orig_img * 255).astype(np.uint8)
-            else:
-                orig_img = I_np
-                if orig_img.ndim == 2:
-                    orig_img = np.stack([orig_img] * 3, axis=-1)
-            
-            orig_img = orig_img[:, :, ::-1]
-            # Create side-by-side image
-            combined = np.hstack((orig_img, vis_canvas))
-            
-            # Ensure outputs directory exists
-            os.makedirs('outputs', exist_ok=True)
-            
-            cv2.imwrite('outputs/side_by_side_debug.png', combined)
-            print("Side-by-side visualization saved to outputs/side_by_side_debug.png")
-        
         # -------------------- radius 샘플 & 정렬 -------------------- #
         num_points = adjusted_pts.shape[0]
         r_np = np.random.rand(num_points) * min(H, W) / 4 + self.radii_min   # (N,)
