@@ -4,6 +4,8 @@ from typing import Tuple, List
 from core.initializer.base_initializer import BaseInitializer
 from core.renderer.vector_renderer import VectorRenderer
 import numpy as np
+import cv2
+import random
 
 class MultiLevelInitializer(BaseInitializer):
     """
@@ -27,8 +29,9 @@ class MultiLevelInitializer(BaseInitializer):
         #self.per_quad_frac = self.level_fracs[0] / 4
         self.num_levels = 2
         self.level_fracs = [0.4, 0.4]  
-        self.per_quad_frac = self.level_fracs[0] / 2
+        self.per_quad_frac = self.level_fracs[0] / self.num_levels
         self.residual_frac = 0.2
+        self.base_init_mode = "svgsplat"
 
     def _divide_into_quadrants(self, image: torch.Tensor):
         H, W, C = image.shape
@@ -191,6 +194,193 @@ class MultiLevelInitializer(BaseInitializer):
         
         return x, y, r, v, theta, c
 
+    def _structure_aware_initialize(self, I_target, num_init):
+        """
+        Initialize parameters using structure-aware approach.
+        """
+        
+        device = I_target.device
+        # Extract image dimensions
+        if I_target.ndim == 3:
+            H, W, _ = I_target.shape
+            try:
+                I_color = I_target.cpu().numpy()            # (H,W,3), 0~1
+            except:
+                I_color = I_target.detach().cpu().numpy()            # (H,W,3), 0~1
+        else:
+            H, W = I_target.shape
+            gray = np.expand_dims(I_np / 255.0, axis=-1)
+            I_color = np.repeat(gray, 3, axis=-1)
+
+        # Convert to grayscale for structure analysis
+        if isinstance(I_target, torch.Tensor):
+            try:
+                I_np = I_target.cpu().numpy()
+            except:
+                I_np = I_target.detach().cpu().numpy()
+            if I_np.ndim == 3:
+                I_np = np.mean(I_np, axis=2)
+        else:
+            I_np = I_target
+            if I_np.ndim == 3:
+                I_np = cv2.cvtColor(I_np, cv2.COLOR_RGB2GRAY)
+            
+        # Ensure image is in correct format
+        if I_np.dtype != np.uint8:
+            I_np = (I_np * 255).astype(np.uint8)
+
+        # Use structure-aware initialization
+        edges = cv2.Canny(I_np, 100, 200)
+        grad_y, grad_x = np.gradient(I_np.astype(np.float32))
+        
+        # Start with ORB points
+        num_kp = 0
+        if self.keypoint_extracting:
+            orb = cv2.ORB_create(nfeatures=num_init, scaleFactor=1.2, nlevels=8, edgeThreshold=15, firstLevel=0, WTA_K=2, patchSize=31, fastThreshold=20)
+            keypoints = orb.detect(I_np, None)
+        else:
+            keypoints = False
+        
+        # If no keypoints found, do random initialization
+        if not keypoints:
+            if self.keypoint_extracting:
+                print("No ORB keypoints. using coarse-to-fine initialization.")
+            else:
+                print("keypoint_extracting off. using random initialization.")
+            init_pts = np.random.rand(num_kp, 2) * np.array([W, H])
+        else:
+            # Sort based on less strength and pick top N//5
+            sorted_kp = sorted(keypoints, key=lambda kp: -kp.response, reverse=True)
+            print("num_kp: ", num_kp)
+            init_pts = np.array([kp.pt for kp in sorted_kp[:num_kp]])  # (x, y)
+        
+        # Apply structure-aware techniques
+        densified_pts = self.find_best_densification(edges, num_init)
+        adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y)
+        print("len(densified_pts): ", len(densified_pts), ", len(adjusted_pts): ", len(adjusted_pts))
+
+        # Color initialization
+        idx_x = np.clip(np.round(adjusted_pts[:, 0]).astype(int), 0, W - 1)
+        idx_y = np.clip(np.round(adjusted_pts[:, 1]).astype(int), 0, H - 1)
+        c_init = I_color[idx_y, idx_x]                  # (N,3) float32
+
+        # Add slight noise for parameter diversity
+        c_init += np.random.normal(0.0, 0.02, c_init.shape)
+        c_init = np.clip(c_init, 0.0, 1.0)              # Safe clip
+        
+        # Sample and sort radius
+        num_points = adjusted_pts.shape[0]
+        r_np = np.random.rand(num_points) * min(H, W) / 4 + self.radii_min   # (N,)
+        sort_idx = np.argsort(r_np)           # Ascending (+) → larger r later
+
+        # Reorder coordinates, colors, and radii in the same order
+        adjusted_pts = adjusted_pts[sort_idx]
+        r_np = r_np[sort_idx]
+        c_init = c_init[sort_idx]
+
+        # Convert to tensors
+        x = torch.tensor(adjusted_pts[:, 0], dtype=torch.float32, device=device, requires_grad=True)
+        y = torch.tensor(adjusted_pts[:, 1], dtype=torch.float32, device=device, requires_grad=True)
+        r = torch.tensor(r_np, dtype=torch.float32, device=device, requires_grad=True)
+
+        # Initialize opacity v (layer matching)
+        rank = torch.linspace(0.0, 1.0, steps=num_points, device=device)     # 0(bottom)→1(top)
+        v = (self.v_init_bias + self.v_init_slope * rank).clone().detach()
+        v += torch.empty_like(v).normal_(mean=0.0, std=0.05)
+        v.requires_grad_(True)
+
+        theta = torch.rand(num_points, device=device, requires_grad=True) * 2 * np.pi
+        c = torch.tensor(c_init, dtype=torch.float32,
+                         device=device, requires_grad=True)
+        print("len(x): ", len(x))
+        
+        return x, y, r, v, theta, c
+
+    def _calculate_high_frequency_ratio(self, image):
+        """
+        이미지의 고주파 성분 비율을 계산합니다.
+        
+        Args:
+            image: 분석할 이미지 (numpy array)
+            
+        Returns:
+            고주파 성분 비율 (0~1 사이 값)
+        """
+        # 이미지가 3차원(컬러)인 경우 그레이스케일로 변환
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = image
+        
+        # 이미지가 float 타입인 경우 uint8로 변환
+        if gray.dtype != np.uint8:
+            gray = (gray * 255).astype(np.uint8)
+        
+        # FFT 변환
+        f = np.fft.fft2(gray)
+        fshift = np.fft.fftshift(f)
+        
+        # 주파수 마스크 생성 (중앙 저주파 영역 제외)
+        rows, cols = gray.shape
+        crow, ccol = rows // 2, cols // 2
+        mask = np.ones((rows, cols), np.uint8)
+        center_radius = min(rows, cols) // 4
+        cv2.circle(mask, (ccol, crow), center_radius, 0, -1)
+        
+        # 고주파 성분 추출
+        high_freq = fshift * mask
+        
+        # 고주파 에너지 계산
+        high_freq_energy = np.sum(np.abs(high_freq))
+        total_energy = np.sum(np.abs(fshift))
+        
+        # 고주파 비율 계산 (0~1 사이 값)
+        ratio = high_freq_energy / (total_energy + 1e-10)
+        
+        return ratio
+
+    def _adjust_points_by_frequency(self, quads):
+        """
+        각 사분면의 고주파 비율에 따라 점의 개수를 조정합니다.
+        
+        Args:
+            quads: 사분면 이미지와 좌표 리스트
+            
+        Returns:
+            조정된 점의 개수 리스트
+        """
+        # 각 사분면의 고주파 비율 계산
+        freq_ratios = []
+        for quad_img, _ in quads:
+            ratio = self._calculate_high_frequency_ratio(quad_img.cpu().numpy())
+            freq_ratios.append(ratio)
+        
+        # 고주파 비율 합계
+        total_ratio = sum(freq_ratios)
+        
+        # 기본 점 개수 (전체 점 개수의 1/4)
+        base_points = max(1, int(self.num_init * self.per_quad_frac * (self.num_levels ** 2)))
+        
+        # 각 사분면별 점 개수 조정
+        adjusted_points = []
+        for ratio in freq_ratios:
+            # 고주파 비율에 따라 점 개수 조정 (최소 1개는 보장)
+            points = max(1, int(base_points * (ratio / (total_ratio + 1e-10))))
+            adjusted_points.append(points)
+        
+        # 점 개수가 적으면 더 많이 생성
+        total_points = sum(adjusted_points)
+        print("base_points - total_points: ", base_points - total_points)
+        while total_points < base_points:
+            i = random.randint(0, (self.num_levels ** 2) - 1)
+            adjusted_points[i] += 1
+            total_points += 1
+        
+        print(f"freq_ratios: {freq_ratios}")
+        print(f"adjusted_points: {adjusted_points}")
+        
+        return adjusted_points
+
     def initialize(self, target_image: torch.Tensor) -> Tuple[torch.Tensor,...]:
         # Clean up
         gc.collect()
@@ -210,14 +400,22 @@ class MultiLevelInitializer(BaseInitializer):
         # --- Level 0: quadrants ---
         quads = self._divide_into_quadrants(target_image)
         rendered_quads = []
-        per_quad = max(1, int(self.num_init * self.per_quad_frac))
+        
+        # 고주파 비율에 따라 각 사분면별 점 개수 조정
+        per_quad_points = self._adjust_points_by_frequency(quads)
 
-        for quad_img, (ys, ye, xs, xe) in quads:
+        for i, (quad_img, (ys, ye, xs, xe)) in enumerate(quads):
             # Get the expected size for this quadrant
             expected_h, expected_w = ye - ys, xe - xs
             
+            # 고주파 비율에 따라 조정된 점 개수 사용
+            per_quad = per_quad_points[i]
+            
             # initialize this quadrant
-            x, y, r, v, theta, c = self._random_initialize(quad_img, num_init=per_quad)
+            if self.base_init_mode == "svgsplat":
+                x, y, r, v, theta, c = self._structure_aware_initialize(quad_img, num_init=per_quad)
+            else:
+                x, y, r, v, theta, c = self._random_splat_params(per_quad, ys, xs, expected_h, expected_w, self.device)
             # shift into full-image coords
             x = x + xs; y = y + ys
 
@@ -244,7 +442,10 @@ class MultiLevelInitializer(BaseInitializer):
         if residual.norm() >= self.residual_frac:
             # primitives for this level: decay by quadrant_scale_factor each level
             nr = max(1, int(self.num_init * self.residual_frac))
-            x, y, r, v, theta, c = self._random_initialize(residual, num_init=nr)
+            if self.base_init_mode == "svgsplat":
+                x, y, r, v, theta, c = self._structure_aware_initialize(residual, num_init=nr)
+            else:
+                x, y, r, v, theta, c = self._random_splat_params(residual, num_init=nr)
 
             # render full-resolution residual primitives
             rendered_res = self._render_image(renderer, (x, y, r, v, theta, c), bmp_whole)

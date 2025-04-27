@@ -22,6 +22,7 @@ from util.pdf_exporter import PDFExporter
 from core.initializer.random_initializater import RandomInitializer
 from core.initializer.svgsplat_initializater import StructureAwareInitializer
 from core.initializer.multilevel_initializer import MultiLevelInitializer
+from core.initializer.base_initializer import BaseInitializer
 
 from core.renderer.vector_renderer import VectorRenderer
 from core.renderer.mse_renderer import MseRenderer
@@ -78,6 +79,10 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
     else:
         rows, cols = 4, 3
     
+    # Add an extra column for point visualizations if debug_mode is True
+    if config.get("initialization", {}).get("debug_mode", False):
+        cols += 1
+    
     # Calculate figure size based on the number of results
     fig_width = 5 * cols
     fig_height = 5 * rows
@@ -115,15 +120,30 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
     elif rows == 1:
         axes = axes.reshape(1, -1)
     
+    # Track which initializer we're currently processing
+    current_initializer = None
+    current_row = 0
+    
     for idx, result in enumerate(results):
-        if idx >= rows * cols:
+        if idx >= rows * (cols - 1):  # Adjust for the extra column
             break
             
-        row = idx // cols
-        col = idx % cols
-        ax = axes[row, col]
+        # Determine row and column
+        if config.get("initialization", {}).get("debug_mode", False):
+            # When debug_mode is True, we have an extra column for point visualization
+            row = idx // (cols - 1)
+            col = (idx % (cols - 1)) + 1  # Start from column 1 (0 is for point visualization)
+        else:
+            row = idx // cols
+            col = idx % cols
         
-        # Plot image
+        # Check if we're starting a new initializer
+        if result['initializer'] != current_initializer:
+            current_initializer = result['initializer']
+            current_row = row
+        
+        # Plot the rendered image
+        ax = axes[row, col]
         ax.imshow(result['rendered'])
         ax.axis('off')
         
@@ -133,12 +153,57 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
         title += f"PSNR: {metrics['PSNR']:.2f}, SSIM: {metrics['SSIM']:.2f}\n"
         title += f"VIF: {metrics['VIF']:.2f}, LPIPS: {metrics['LPIPS']:.2f}"
         ax.set_title(title, fontsize=8)
+        
+        # Generate point visualization if debug_mode is True
+        if config.get("initialization", {}).get("debug_mode", False):
+            # Only create point visualization for the first renderer of each initializer
+            if row == current_row and col == 1:
+                # Extract parameters
+                x, y, r, v, theta, c = result['params']
+                
+                # Convert parameters to numpy arrays for visualization
+                x_np = x.detach().cpu().numpy()
+                y_np = y.detach().cpu().numpy()
+                
+                # Create initial points array
+                init_pts = np.column_stack((x_np, y_np))
+                
+                # Use empty arrays for densified and adjusted points since we don't have them
+                densified_pts = np.array([])
+                adjusted_pts = np.array([])
+                
+                # Plot point visualization in the first column of the row
+                point_ax = axes[row, 0]
+                point_ax.imshow(target_image)
+                point_ax.scatter(x_np, y_np, c='red', s=1, alpha=0.5)
+                point_ax.set_title(f"{result['initializer']} Points", fontsize=8)
+                point_ax.axis('off')
+                
+                # Also save individual point visualization files
+                result_path = f"{save_path}_{result['initializer']}_{result['renderer']}"
+                
+                # Use BaseInitializer's visualize_points method
+                BaseInitializer.visualize_points(
+                    target_image, 
+                    init_pts, 
+                    densified_pts, 
+                    adjusted_pts, 
+                    filename=f"{result_path}_points.png"
+                )
+                
+                # Also save as PDF
+                plt.figure(figsize=(10, 10))
+                plt.imshow(target_image)
+                plt.scatter(x_np, y_np, c='red', s=1, alpha=0.5)
+                plt.title(f"{result['initializer']}/{result['renderer']} Points")
+                plt.savefig(f"{result_path}_points.pdf", bbox_inches='tight')
+                plt.close()
     
     # Hide empty subplots if any
-    for idx in range(num_results, rows * cols):
-        row = idx // cols
-        col = idx % cols
-        axes[row, col].axis('off')
+    for row in range(rows):
+        for col in range(cols):
+            if (row * (cols - 1) + col - 1) >= num_results:
+                axes[row, col].axis('off')
     
     # Save plots with high resolution
     plt.savefig(f"{save_path}.png", dpi=300, bbox_inches='tight')
