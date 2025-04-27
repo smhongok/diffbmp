@@ -21,6 +21,8 @@ from util.pdf_exporter import PDFExporter
 
 from core.initializer.random_initializater import RandomInitializer
 from core.initializer.svgsplat_initializater import StructureAwareInitializer
+from core.initializer.multilevel_initializer import MultiLevelInitializer
+from core.initializer.base_initializer import BaseInitializer
 
 from core.renderer.vector_renderer import VectorRenderer
 from core.renderer.mse_renderer import MseRenderer
@@ -62,7 +64,30 @@ def compute_metrics(pred: torch.Tensor, target: torch.Tensor) -> Dict[str, float
 
 def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np.ndarray, config: Dict[str, Any]):
     """Plot results in a 2x3 grid with metrics."""
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    # Determine the number of rows and columns based on the number of results
+    num_results = len(results)
+    if num_results <= 3:
+        rows, cols = 1, num_results
+    elif num_results == 4:
+        rows, cols = 2, 2
+    elif num_results <= 6:
+        rows, cols = 2, 3
+    elif num_results == 8:
+        rows, cols = 4, 2
+    elif num_results <= 9:
+        rows, cols = 3, 3
+    else:
+        rows, cols = 4, 3
+    
+    # Add an extra column for point visualizations if debug_mode is True
+    if config.get("initialization", {}).get("debug_mode", False):
+        cols += 1
+    
+    # Calculate figure size based on the number of results
+    fig_width = 5 * cols
+    fig_height = 5 * rows
+    
+    fig, axes = plt.subplots(rows, cols, figsize=(fig_width, fig_height))
     plt.subplots_adjust(hspace=0.4, top=0.85)  # Increase top margin for config text
     
     # Add configuration information at the top
@@ -80,8 +105,8 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
                    f'r={lr_conf.get("gain_r", "N/A")}, v={lr_conf.get("gain_v", "N/A")}, ' \
                    f'theta={lr_conf.get("gain_theta", "N/A")}, c={lr_conf.get("gain_c", "N/A")}'
     
-    plt.figtext(0.5, 0.95, config_line1, ha='center', va='center', fontsize=8)
-    plt.figtext(0.5, 0.93, config_line2, ha='center', va='center', fontsize=8)
+    plt.figtext(0.5, 0.96, config_line1, ha='center', va='center', fontsize=8)
+    plt.figtext(0.5, 0.94, config_line2, ha='center', va='center', fontsize=8)
     
     # Add target image as a small inset in the top-right corner
     ax_inset = fig.add_axes([0.85, 0.85, 0.1, 0.1])
@@ -89,12 +114,36 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
     ax_inset.axis('off')
     ax_inset.set_title('Target', fontsize=8)
     
+    # Handle different grid layouts
+    if rows == 1 and cols == 1:
+        axes = np.array([axes])
+    elif rows == 1:
+        axes = axes.reshape(1, -1)
+    
+    # Track which initializer we're currently processing
+    current_initializer = None
+    current_row = 0
+    
     for idx, result in enumerate(results):
-        row = idx // 3
-        col = idx % 3
-        ax = axes[row, col]
+        if idx >= rows * (cols - 1):  # Adjust for the extra column
+            break
+            
+        # Determine row and column
+        if config.get("initialization", {}).get("debug_mode", False):
+            # When debug_mode is True, we have an extra column for point visualization
+            row = idx // (cols - 1)
+            col = (idx % (cols - 1)) + 1  # Start from column 1 (0 is for point visualization)
+        else:
+            row = idx // cols
+            col = idx % cols
         
-        # Plot image
+        # Check if we're starting a new initializer
+        if result['initializer'] != current_initializer:
+            current_initializer = result['initializer']
+            current_row = row
+        
+        # Plot the rendered image
+        ax = axes[row, col]
         ax.imshow(result['rendered'])
         ax.axis('off')
         
@@ -104,8 +153,59 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
         title += f"PSNR: {metrics['PSNR']:.2f}, SSIM: {metrics['SSIM']:.2f}\n"
         title += f"VIF: {metrics['VIF']:.2f}, LPIPS: {metrics['LPIPS']:.2f}"
         ax.set_title(title, fontsize=8)
+        
+        # Generate point visualization if debug_mode is True
+        if config.get("initialization", {}).get("debug_mode", False):
+            # Only create point visualization for the first renderer of each initializer
+            if row == current_row and col == 1:
+                # Extract parameters
+                x, y, r, v, theta, c = result['params']
+                
+                # Convert parameters to numpy arrays for visualization
+                x_np = x.detach().cpu().numpy()
+                y_np = y.detach().cpu().numpy()
+                
+                # Create initial points array
+                init_pts = np.column_stack((x_np, y_np))
+                
+                # Use empty arrays for densified and adjusted points since we don't have them
+                densified_pts = np.array([])
+                adjusted_pts = np.array([])
+                
+                # Plot point visualization in the first column of the row
+                point_ax = axes[row, 0]
+                point_ax.imshow(target_image)
+                point_ax.scatter(x_np, y_np, c='red', s=1, alpha=0.5)
+                point_ax.set_title(f"{result['initializer']} Points", fontsize=8)
+                point_ax.axis('off')
+                
+                # Also save individual point visualization files
+                result_path = f"{save_path}_{result['initializer']}_{result['renderer']}"
+                
+                # Use BaseInitializer's visualize_points method
+                BaseInitializer.visualize_points(
+                    target_image, 
+                    init_pts, 
+                    densified_pts, 
+                    adjusted_pts, 
+                    filename=f"{result_path}_points.png"
+                )
+                
+                # Also save as PDF
+                plt.figure(figsize=(10, 10))
+                plt.imshow(target_image)
+                plt.scatter(x_np, y_np, c='red', s=1, alpha=0.5)
+                plt.title(f"{result['initializer']}/{result['renderer']} Points")
+                plt.savefig(f"{result_path}_points.pdf", bbox_inches='tight')
+                plt.close()
     
-    # Save plots
+    # Hide empty subplots if any
+    for row in range(rows):
+        for col in range(cols):
+            if (row * (cols - 1) + col - 1) >= num_results:
+                axes[row, col].axis('off')
+    
+    # Save plots with high resolution
     plt.savefig(f"{save_path}.png", dpi=300, bbox_inches='tight')
     plt.savefig(f"{save_path}.pdf", bbox_inches='tight')
     plt.close()
@@ -128,7 +228,6 @@ def process_combination(args):
     if hasattr(renderer, 'enable_checkpointing'):
         renderer.enable_checkpointing()
     
-    # Optimize
     x, y, r, v, theta, c = renderer.optimize_parameters(
         x, y, r, v, theta, c,
         I_target, bmp_tensor,
@@ -231,34 +330,25 @@ def main():
     )
     bmp_tensor = svg_loader.load_alpha_bitmap()
     
+    common_init_params = {
+        "num_init": config["initialization"].get("N", 10000),
+        "alpha": config["initialization"].get("alpha", 0.3),
+        "min_distance": config["initialization"].get("min_distance", 5),
+        "peak_threshold": config["initialization"].get("peak_threshold", 0.5),
+        "radii_min": config["initialization"].get("radii_min", 2),
+        "radii_max": config["initialization"].get("radii_max", None),
+        "v_init_bias": config["initialization"].get("v_init_bias", -5.0),
+        "v_init_slope": config["initialization"].get("v_init_slope", 10.0),
+        "keypoint_extracting": config["initialization"].get("keypoint_extracting", False),
+        "debug_mode": config["initialization"].get("debug_mode", False)
+    }
     # Create instances of initializers
     initializers = [
-        RandomInitializer(
-            num_init=config["initialization"].get("N", 10000),
-            alpha=config["initialization"].get("alpha", 0.3),
-            min_distance=config["initialization"].get("min_distance", 5),
-            peak_threshold=config["initialization"].get("peak_threshold", 0.5),
-            radii_min=config["initialization"].get("radii_min", 2),
-            radii_max=config["initialization"].get("radii_max", None),
-            v_init_bias=config["initialization"].get("v_init_bias", -5.0),
-            v_init_slope=config["initialization"].get("v_init_slope", 10.0),
-            keypoint_extracting=config["initialization"].get("keypoint_extracting", False),
-            debug_mode=config["initialization"].get("debug_mode", False)
-        ),
-        StructureAwareInitializer(
-            num_init=config["initialization"].get("N", 10000),
-            alpha=config["initialization"].get("alpha", 0.3),
-            min_distance=config["initialization"].get("min_distance", 5),
-            peak_threshold=config["initialization"].get("peak_threshold", 0.5),
-            radii_min=config["initialization"].get("radii_min", 2),
-            radii_max=config["initialization"].get("radii_max", None),
-            v_init_bias=config["initialization"].get("v_init_bias", -5.0),
-            v_init_slope=config["initialization"].get("v_init_slope", 10.0),
-            keypoint_extracting=config["initialization"].get("keypoint_extracting", False),
-            debug_mode=config["initialization"].get("debug_mode", False)
-        )
+        RandomInitializer(**common_init_params),
+        StructureAwareInitializer(**common_init_params),
+        MultiLevelInitializer(**common_init_params)
     ]
-    
+        
     # Process initializers one at a time to save memory
     initial_params_list = []
     for init in initializers:
@@ -275,7 +365,7 @@ def main():
     # Create instances of renderers
     renderers = [
         MseRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
-        #LpipsRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
+        LpipsRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
         MixRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device, classify_svg=classify_svg)
     ]
     

@@ -54,17 +54,4 @@ class RandomInitializer(BaseInitializer):
         # adjusted_pts = np.random.rand(N, 2) * np.array([W, H])
         # init_pts = np.empty((0, 2))
         # densified_pts = np.empty((0, 2))
-        return self._random_splat_params(self.num_init, H, W, device)
-        
-    def _random_splat_params(self, N, H, W, device):
-        x = self._rand_leaf((N,), 0, W, device)
-        y = self._rand_leaf((N,), 0, H, device)
-
-        r_min, r_max = self.radii_min, 0.5 * min(H, W)
-        r = self._rand_leaf((N,), r_min, r_max, device)
-
-        v = self._rand_leaf((N,),self.v_init_bias - 0.5, self.v_init_bias + 0.5, device)
-
-        theta = self._rand_leaf((N,), 0, 2 * torch.pi, device)
-        c     = self._rand_leaf((N,3), 0, 1, device)
-        return x, y, r, v, theta, c
+        return self._random_splat_params(self.num_init, 0, 0, H, W, device)

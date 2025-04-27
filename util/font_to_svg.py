@@ -4,6 +4,7 @@ from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.subset import Subsetter, Options
 from pathlib import Path
 from scour import scour
+import torch
 import os
 import unicodedata
 import base64
@@ -361,7 +362,15 @@ class FontParser:
 
 # 예시 사용법
 if __name__ == "__main__":
-    text = "캬"
+    from svg_loader import SVGLoader
+    text = "고"
     font_name = "MaruBuri-Bold.otf"
     font_parser = FontParser(font_name)
-    font_parser.text_to_svg(text, mode='opt-path')
+    svg_path = font_parser.text_to_svg(text, mode='opt-path')
+    svg_loader = SVGLoader(
+        svg_path=svg_path,
+        output_width=128,
+        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    )
+    classify_svg = svg_loader.classify_svg()
+    print(f"SVG is classified as: {classify_svg}")
