@@ -5,24 +5,24 @@ import os
 import time
 from datetime import timedelta
 from abc import ABC, abstractmethod
+from core.renderer.vector_renderer import VectorRenderer
+from typing import Dict, Any
 
 class BaseInitializer(ABC):
-    def __init__(self, num_init=100, alpha=0.3, min_distance=20, 
-                 peak_threshold=0.5, radii_min=2, radii_max=None, 
-                 v_init_bias=-5.0, v_init_slope=0.0, keypoint_extracting=False, debug_mode=False):
-        self.num_init = num_init
-        self.alpha = alpha
-        self.min_distance = min_distance
-        self.peak_threshold = peak_threshold
-        self.radii_min = radii_min
-        self.radii_max = radii_max
-        self.v_init_bias = v_init_bias
-        self.v_init_slope = v_init_slope
-        self.keypoint_extracting = keypoint_extracting
-        self.debug_mode = debug_mode
+    def __init__(self, init_opt:Dict[str, Any]):
+        self.num_init = init_opt.get("N", 100)
+        self.alpha = init_opt.get("alpha", 0.3)
+        self.min_distance = init_opt.get("min_distance", 20)
+        self.peak_threshold = init_opt.get("peak_threshold", 0.5)
+        self.radii_min = init_opt.get("radii_min", 2)
+        self.radii_max = init_opt.get("radii_max", None)
+        self.v_init_bias = init_opt.get("v_init_bias", -5.0)
+        self.v_init_slope = init_opt.get("v_init_slope", 10.0)
+        self.keypoint_extracting = init_opt.get("keypoint_extracting", False)
+        self.debug_mode = init_opt.get("debug_mode", False)
         
     @abstractmethod
-    def initialize(self, I_target):
+    def initialize(self, I_target, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
         pass
     
     def _rand_leaf(self, shape, low, high, device):

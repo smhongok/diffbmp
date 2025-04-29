@@ -8,8 +8,8 @@ from torchvision import models
 import piq
 
 class MixRenderer(VectorRenderer):
-    def __init__(self, canvas_size: Tuple[int, int], alpha_upper_bound: float = 0.5, device: torch.device = None, classify_svg: str = None):
-        super().__init__(canvas_size, alpha_upper_bound, device)
+    def __init__(self, canvas_size: Tuple[int, int], S: torch.Tensor, alpha_upper_bound: float = 0.5, device: torch.device = None, classify_svg: str = None):
+        super().__init__(canvas_size, S, alpha_upper_bound, device)
         self.classify_svg = classify_svg
         vgg = models.vgg16(pretrained=True).features.eval().to(self.device)
         self.perc_layers = [3, 8]  # conv1_2, conv2_2
@@ -241,7 +241,6 @@ class MixRenderer(VectorRenderer):
     def compute_loss(self, 
                     rendered: torch.Tensor, 
                     target: torch.Tensor, 
-                    cached_masks: torch.Tensor,
                     x: torch.Tensor,
                     y: torch.Tensor,
                     r: torch.Tensor,
@@ -326,7 +325,6 @@ class MixRenderer(VectorRenderer):
                           theta: torch.Tensor,
                           c: torch.Tensor,
                           target_image: torch.Tensor,
-                          bmp_image: torch.Tensor,
                           opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
         """
         Override the optimization process to use separate optimizers for shape and appearance parameters.
@@ -336,7 +334,6 @@ class MixRenderer(VectorRenderer):
         Args:
             x, y, r, v, theta, c: Initial parameters
             target_image: Target image to match
-            bmp_image: Base bitmap image for rasterization
             opt_conf: Optimization configuration
             
         Returns:
@@ -367,7 +364,7 @@ class MixRenderer(VectorRenderer):
             
             # Generate masks using shape parameters (x, y, r, theta)
             cached_masks = self._batched_soft_rasterize(
-                bmp_image, x, y, r, theta,
+                x, y, r, theta,
                 sigma=opt_conf.get("blur_sigma", 0.0)
             )
             
@@ -389,7 +386,7 @@ class MixRenderer(VectorRenderer):
             
             # Re-render with updated shape parameters
             cached_masks = self._batched_soft_rasterize(
-                bmp_image, x.detach(), y.detach(), r.detach(), theta.detach(),
+                x.detach(), y.detach(), r.detach(), theta.detach(),
                 sigma=opt_conf.get("blur_sigma", 0.0)
             )
             rendered = self.render(cached_masks, v, c)

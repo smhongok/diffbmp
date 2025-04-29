@@ -4,7 +4,7 @@
         "trim": false,
         "FM_halftone": false,
         "transform": "none",
-        "img_path": "images/jylee.png",
+        "img_path": "images/BSDS500/101087.jpg",
         "bg_threshold": 250,
         "do_equalize": false,
         "do_local_contrast": false,
@@ -37,7 +37,12 @@
         "v_init_bias":  -1.5,
         "v_init_slope": 3.0,
         "keypoint_extracting": false,
-        "debug_mode": false
+        "debug_mode": true,
+        "prune_tau": 0.01,
+        "pruning_enabled": true,
+        "level": 2,
+        "multi_level": true,
+        "hollow": false
     },
     "optimization": {
         "renderer_type": "lpips",
@@ -57,7 +62,7 @@
         "do_gaussian_blur": true,
         "blur_sigma_start": 2.0,
         "blur_sigma_end": 1.0,
-        "sparsifying": {
+        "sparsifying": { 
             "do_sparsify": false,
             "sparsify_warmup": 100,
             "sparsify_duration": 100,
@@ -67,7 +72,7 @@
         }
     },
     "postprocessing": {
-        "output_folder": "outputs/seurat/",
+        "output_folder": "outputs/BSDS500/",
         "linewidth": 3.0,
         "compute_psnr": true
     }

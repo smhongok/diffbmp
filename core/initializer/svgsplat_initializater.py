@@ -8,16 +8,15 @@ import os
 import time
 from datetime import timedelta
 from .base_initializer import BaseInitializer
+from core.renderer.vector_renderer import VectorRenderer
+from typing import Dict, Any
 # 시작 시간 기록
 
 class StructureAwareInitializer(BaseInitializer):
-    def __init__(self, num_init=100, alpha=0.3, min_distance=20, 
-                 peak_threshold=0.5, radii_min=2, radii_max=None, 
-                 v_init_bias=-5.0, v_init_slope=0.0, keypoint_extracting=False, debug_mode=False):
-        super().__init__(num_init, alpha, min_distance, peak_threshold, radii_min, 
-                         radii_max, v_init_bias, v_init_slope, keypoint_extracting, debug_mode)
+    def __init__(self, init_opt:Dict[str, Any]):
+        super().__init__(init_opt)
         
-    def initialize(self, I_target):
+    def initialize(self, I_target, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
         """
         Specialization for SVG input to match the API expected in main_svg.py
         """
@@ -26,7 +25,7 @@ class StructureAwareInitializer(BaseInitializer):
         # Extract image dimensions
         if I_target.ndim == 3:
             H, W, _ = I_target.shape
-            I_color = I_target.cpu().numpy()            # (H,W,3), 0~1
+            I_color = I_target.detach().cpu().numpy()            # (H,W,3), 0~1
         else:
             H, W = I_target.shape
             gray = np.expand_dims(I_np / 255.0, axis=-1)
@@ -36,7 +35,7 @@ class StructureAwareInitializer(BaseInitializer):
 
         # For SVG initialization, we'll use the image structure to guide placement
         if isinstance(I_target, torch.Tensor):
-            I_np = I_target.cpu().numpy()
+            I_np = I_target.detach().cpu().numpy()
             # If it's a color image, convert to grayscale for structure analysis
             if I_np.ndim == 3:
                 I_np = np.mean(I_np, axis=2)
@@ -123,5 +122,7 @@ class StructureAwareInitializer(BaseInitializer):
         formatted_time = str(timedelta(seconds=int(end_time - start_time)))
         # 수행 시간 출력
         print(f"[initialize]total_cost_time: {formatted_time}")
+        
+        print("######################c.shape: ", c.shape)
         
         return x, y, r, v, theta, c
