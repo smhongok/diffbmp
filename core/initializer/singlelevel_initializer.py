@@ -10,10 +10,10 @@ import numpy as np
 class SingleLevelInitializer(StructureAwareInitializer):
     def __init__(self, init_opt:Dict[str, Any]):
         super().__init__(init_opt)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.prune_tau = init_opt.get("prune_tau", 0.01)
         self.pruning_enabled = init_opt.get("pruning_enabled", True)
         self.lpips = piq.LPIPS(reduction='mean').to(self.device)
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     def initialize(self, I_tar, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
         """
@@ -30,7 +30,11 @@ class SingleLevelInitializer(StructureAwareInitializer):
             I_bg = torch.zeros_like(I_tar)
         
         # 1. Structure-aware initialization (use parent class)
-        x, y, r, v, theta, c = renderer.initialize_parameters(self, I_bg)
+        x, y, r, v, theta, c = renderer.initialize_parameters(super(), I_bg)
+        
+        # ---- c shape 보정 ----
+        if c.shape[1] != 3:
+            c = c[:, :3].contiguous().detach().clone().requires_grad_(True)
         
         num_iterations = opt_conf.get("num_iterations", 300)
         lr_conf = opt_conf["learning_rate"]
@@ -61,16 +65,16 @@ class SingleLevelInitializer(StructureAwareInitializer):
             rendered_lpips = I_mix.permute(2,0,1).unsqueeze(0).to(self.device)
             loss += self.lpips(rendered_lpips, target_lpips)
 
-            loss.backward()
+            loss.backward(retain_graph=True)
             
             # Update parameters
             optimizer.step()
             
             # Clamp parameters
             with torch.no_grad():
-                x.clamp_(0, self.W)
-                y.clamp_(0, self.H)
-                r.clamp_(2, min(self.H, self.W) // 4)
+                x.clamp_(0, renderer.W)
+                y.clamp_(0, renderer.H)
+                r.clamp_(2, min(renderer.H, renderer.W) // 4)
                 theta.clamp_(0, 2 * np.pi)
             
             if epoch % 20 == 0:

@@ -325,7 +325,6 @@ class MixRenderer(VectorRenderer):
                           theta: torch.Tensor,
                           c: torch.Tensor,
                           target_image: torch.Tensor,
-                          bg_image: torch.Tensor,
                           opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
         """
         Override the optimization process to use separate optimizers for shape and appearance parameters.
@@ -335,7 +334,6 @@ class MixRenderer(VectorRenderer):
         Args:
             x, y, r, v, theta, c: Initial parameters
             target_image: Target image to match
-            bmp_image: Base bitmap image for rasterization
             opt_conf: Optimization configuration
             
         Returns:

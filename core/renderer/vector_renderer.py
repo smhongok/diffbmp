@@ -77,6 +77,8 @@ class VectorRenderer:
             bmp = self.S.unsqueeze(0)
             bmp = gaussian_blur(bmp, sigma)
             bmp_image = bmp.squeeze(0)
+        else:
+            bmp_image = self.S
         
         # Expand parameters to match grid dimensions
         X_exp = self.X.expand(B, H, W)
@@ -245,7 +247,6 @@ class VectorRenderer:
                           theta: torch.Tensor,
                           c: torch.Tensor,
                           target_image: torch.Tensor,
-                          bg_image: torch.Tensor,
                           opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
         """
         Optimize the rendering parameters to match the target image.
@@ -253,7 +254,6 @@ class VectorRenderer:
         Args:
             x, y, r, v, theta, c: Initial parameters
             target_image: Target image to match
-            bmp_image: Base bitmap image for rasterization
             opt_conf: Optimization configuration
             
         Returns:

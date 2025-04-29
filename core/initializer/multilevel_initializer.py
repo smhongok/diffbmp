@@ -24,6 +24,7 @@ class MultiLevelInitializer(SingleLevelInitializer):
         Implements the MultiLevel-SVGSplat algorithm (Algorithm 1 in the paper).
         Args:
             I_tar: Target image (torch.Tensor)
+            I_bg: Background image (torch.Tensor)
             renderer: VectorRenderer instance
             opt_conf: Dictionary of optimization configuration parameters
         Returns:
@@ -40,15 +41,16 @@ class MultiLevelInitializer(SingleLevelInitializer):
         P_all.append(P_0)
         
         # 3. Update background for next level
-        I_hat = self.renderer.render_image(*P_0)
-        I_1 = self.renderer.over(I_hat, I_bg)
+        I_hat = renderer.render_image(*P_0)
+        I_1 = renderer.over(I_hat, I_bg)
         
         # 4. Multi-level refinement
         # Split into level**2 sections
         # Adjust number of points by frequency
-        sections = self._split_into_level(I_tar, self.level)
-        adjusted_points = self._adjust_points_by_frequency(sections)
-        for bbox_k, num_points in zip(sections, adjusted_points):
+        coords = self._split_into_level(I_tar, self.level)
+        adjusted_points = self._adjust_points_by_frequency(I_tar, coords)
+        print(f"adjusted_points: {adjusted_points}")
+        for bbox_k, num_points in zip(coords, adjusted_points):
             # Crop and resize background and target
             I_bg_k = self._crop_and_resize(I_1, bbox_k)
             I_tar_k = self._crop_and_resize(I_tar, bbox_k)
@@ -67,8 +69,27 @@ class MultiLevelInitializer(SingleLevelInitializer):
             P_k_global = (x, y, r, v, theta, c)
             P_all.append(P_k_global)
             
-        return P_all
-
+        return self._split_params(P_all)
+    
+    def _split_params(self, params_list):
+        x_all, y_all, r_all, v_all, theta_all, c_all = [], [], [], [], [], []
+        for params in params_list:
+            x, y, r, v, theta, c = params
+            x_all.append(x)
+            y_all.append(y)
+            r_all.append(r)
+            v_all.append(v)
+            theta_all.append(theta)
+            c_all.append(c)
+        x = torch.cat(x_all, dim=0)
+        y = torch.cat(y_all, dim=0)
+        r = torch.cat(r_all, dim=0)
+        v = torch.cat(v_all, dim=0)
+        theta = torch.cat(theta_all, dim=0)
+        c = torch.cat(c_all, dim=0)
+        
+        return x, y, r, v, theta, c
+    
     def _split_into_level(self, image: torch.Tensor, level):
         """
         Splits the image into level^2 quadrants and returns list of (cropped_image, bbox) tuples.
@@ -93,6 +114,9 @@ class MultiLevelInitializer(SingleLevelInitializer):
         x0, y0, w, h = bbox
         cropped = image[..., y0:y0+h, x0:x0+w]
         resized = torch.nn.functional.interpolate(cropped.unsqueeze(0), size=(256, 256), mode='bilinear', align_corners=False).squeeze(0)
+        # ---- 채널 보정 ----
+        if resized.shape[-1] != 3:
+            resized = resized[..., :3].contiguous()
         return resized
 
     def _calculate_high_frequency_ratio(self, image):
@@ -105,6 +129,21 @@ class MultiLevelInitializer(SingleLevelInitializer):
         Returns:
             고주파 성분 비율 (0~1 사이 값)
         """
+        # 1) 빈 배열 방지
+        if image is None or image.size == 0:
+            raise ValueError(f"빈 이미지 전달됨: shape={image.shape}")
+
+        # 2) (C,H,W) → (H,W,C)
+        if image.ndim == 3 and image.shape[0] in (1, 3):
+            image = np.transpose(image, (1, 2, 0))
+            
+        if image.dtype != np.uint8:
+            if np.issubdtype(image.dtype, np.floating):
+                # [0..1] 범위라면
+                image = (np.clip(image, 0, 1) * 255).astype(np.uint8)
+            else:
+                image = image.astype(np.uint8)
+            
         # 이미지가 3차원(컬러)인 경우 그레이스케일로 변환
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
@@ -138,7 +177,7 @@ class MultiLevelInitializer(SingleLevelInitializer):
         
         return ratio
 
-    def _adjust_points_by_frequency(self, sections):
+    def _adjust_points_by_frequency(self, image, coords):
         """
         각 사분면의 고주파 비율에 따라 점의 개수를 조정합니다.
         
@@ -148,17 +187,27 @@ class MultiLevelInitializer(SingleLevelInitializer):
         Returns:
             조정된 점의 개수 리스트
         """
+        if isinstance(image, torch.Tensor):
+            img_t = image.detach().cpu()
+            # (C,H,W) 형태면 → (H,W,C)
+            if img_t.ndim == 3 and img_t.shape[0] in (1, 3):
+                img_t = img_t.permute(1, 2, 0)
+            image_np = img_t.numpy()
+        else:
+            image_np = image
+
         # 각 사분면의 고주파 비율 계산
         freq_ratios = []
-        for section in sections:
-            ratio = self._calculate_high_frequency_ratio(section[0].cpu().numpy())
+        for xs, ys, xe, ye in coords:
+            patch = image_np[ys:ys+ye, xs:xs+xe, :]
+            ratio = self._calculate_high_frequency_ratio(patch)
             freq_ratios.append(ratio)
         
         # 고주파 비율 합계
         total_ratio = sum(freq_ratios)
         
         # 기본 점 개수 (전체 점 개수의 1/4)
-        base_points = max(1, int(self.num_init * self.per_quad_frac * (self.num_levels ** 2)))
+        base_points = self.num_init
         
         # 각 사분면별 점 개수 조정
         adjusted_points = []
@@ -171,7 +220,7 @@ class MultiLevelInitializer(SingleLevelInitializer):
         total_points = sum(adjusted_points)
         print("base_points - total_points: ", base_points - total_points)
         while total_points < base_points:
-            i = random.randint(0, (self.num_levels ** 2) - 1)
+            i = random.randint(0, (self.level ** 2) - 1)
             adjusted_points[i] += 1
             total_points += 1
         

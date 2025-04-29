@@ -212,32 +212,32 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
 
 def process_combination(args):
     """Process a single initializer-renderer combination."""
-    initial_params, init, renderer, config, I_target, bmp_tensor, svg_path, svg_loader = args
+    initial_params, init, renderer, config, I_target, svg_path, svg_loader = args
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"\nUsing {init.__class__.__name__} with {renderer.__class__.__name__}")
     
     # Move tensors to device
     I_target = I_target.to(device)
-    bmp_tensor = bmp_tensor.to(device)
-    
-    print(f"\nUsing {init.__class__.__name__} with {renderer.__class__.__name__}")
     
     # Reset parameters to initial values
     x, y, r, v, theta, c = [t.clone().detach().requires_grad_(True) for t in initial_params]
-    
-    # Enable gradient checkpointing for memory efficiency
-    if hasattr(renderer, 'enable_checkpointing'):
-        renderer.enable_checkpointing()
-    
-    x, y, r, v, theta, c = renderer.optimize_parameters(
-        x, y, r, v, theta, c,
-        I_target, bmp_tensor,
-        config['optimization']
-    )
-    
+    if "LevelInitializer" in init.__class__.__name__:
+        print(f"{init.__class__.__name__} init and optim skip since it's already done in main()")    
+    else:
+        # Enable gradient checkpointing for memory efficiency
+        if hasattr(renderer, 'enable_checkpointing'):
+            renderer.enable_checkpointing()
+        
+        x, y, r, v, theta, c = renderer.optimize_parameters(
+            x, y, r, v, theta, c,
+            I_target, 
+            opt_conf=config['optimization']
+        )
+        
     # Generate final render
     with torch.no_grad():  # Disable gradient computation for final render
         cached_masks = renderer._batched_soft_rasterize(
-            bmp_tensor, x, y, r, theta,
+            x, y, r, theta,
             sigma=config["optimization"].get("blur_sigma_end", 1.0)
         )
         rendered = renderer.render(cached_masks, v, c)
@@ -250,7 +250,7 @@ def process_combination(args):
     metrics = compute_metrics(rendered_cpu, I_target_cpu)
     
     # Clear GPU memory
-    del rendered, cached_masks, I_target, bmp_tensor
+    del rendered, cached_masks, I_target
     torch.cuda.empty_cache()
     gc.collect()
     
@@ -328,31 +328,33 @@ def main():
         output_width=config["svg"].get("output_width", 128),
         device=device
     )
+    classify_svg = svg_loader.classify_svg()
+    print(f"SVG is classified as: {classify_svg}")
+    
     bmp_tensor = svg_loader.load_alpha_bitmap()
     
-    common_init_params = {
-        "num_init": config["initialization"].get("N", 10000),
-        "alpha": config["initialization"].get("alpha", 0.3),
-        "min_distance": config["initialization"].get("min_distance", 5),
-        "peak_threshold": config["initialization"].get("peak_threshold", 0.5),
-        "radii_min": config["initialization"].get("radii_min", 2),
-        "radii_max": config["initialization"].get("radii_max", None),
-        "v_init_bias": config["initialization"].get("v_init_bias", -5.0),
-        "v_init_slope": config["initialization"].get("v_init_slope", 10.0),
-        "keypoint_extracting": config["initialization"].get("keypoint_extracting", False),
-        "debug_mode": config["initialization"].get("debug_mode", False)
-    }
     # Create instances of initializers
     initializers = [
-        RandomInitializer(**common_init_params),
-        StructureAwareInitializer(**common_init_params),
-        MultiLevelInitializer(**common_init_params)
+        RandomInitializer(config["initialization"]),
+        StructureAwareInitializer(config["initialization"]),
+        MultiLevelInitializer(config["initialization"])
     ]
-        
+    
+    # Create instances of renderers
+    renderers = [
+        MseRenderer((H, W), S=bmp_tensor, alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
+        LpipsRenderer((H, W), S=bmp_tensor, alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
+        MixRenderer((H, W), S=bmp_tensor, alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device, classify_svg=classify_svg)
+    ]
+    vec_renderer = VectorRenderer((H, W), S=bmp_tensor, alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device)
+    
     # Process initializers one at a time to save memory
     initial_params_list = []
     for init in initializers:
-        params = init.initialize(I_target)
+        if "LevelInitializer" in init.__class__.__name__:
+            params = init.initialize(I_tar=I_target, renderer=vec_renderer, opt_conf=config["optimization"])
+        else:
+            params = init.initialize(I_target)
         initial_params_list.append(params)
         # Clear memory after each initialization
         torch.cuda.empty_cache()
@@ -360,19 +362,10 @@ def main():
     
     init_groups = [[init_params, init] for init_params, init in zip(initial_params_list, initializers)]
     
-    classify_svg = svg_loader.classify_svg()
-    print(f"SVG is classified as: {classify_svg}")
-    # Create instances of renderers
-    renderers = [
-        MseRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
-        LpipsRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device),
-        MixRenderer((H, W), alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), device=device, classify_svg=classify_svg)
-    ]
-    
     # Process combinations one at a time to save memory
     results = []
     for init_group, renderer in product(init_groups, renderers):
-        result = process_combination((init_group[0], init_group[1], renderer, config, I_target, bmp_tensor, svg_path, svg_loader))
+        result = process_combination((init_group[0], init_group[1], renderer, config, I_target, svg_path, svg_loader))
         results.append(result)
         # Clear memory after each combination
         torch.cuda.empty_cache()

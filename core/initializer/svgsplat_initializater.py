@@ -25,7 +25,7 @@ class StructureAwareInitializer(BaseInitializer):
         # Extract image dimensions
         if I_target.ndim == 3:
             H, W, _ = I_target.shape
-            I_color = I_target.cpu().numpy()            # (H,W,3), 0~1
+            I_color = I_target.detach().cpu().numpy()            # (H,W,3), 0~1
         else:
             H, W = I_target.shape
             gray = np.expand_dims(I_np / 255.0, axis=-1)
@@ -35,7 +35,7 @@ class StructureAwareInitializer(BaseInitializer):
 
         # For SVG initialization, we'll use the image structure to guide placement
         if isinstance(I_target, torch.Tensor):
-            I_np = I_target.cpu().numpy()
+            I_np = I_target.detach().cpu().numpy()
             # If it's a color image, convert to grayscale for structure analysis
             if I_np.ndim == 3:
                 I_np = np.mean(I_np, axis=2)
@@ -122,5 +122,7 @@ class StructureAwareInitializer(BaseInitializer):
         formatted_time = str(timedelta(seconds=int(end_time - start_time)))
         # 수행 시간 출력
         print(f"[initialize]total_cost_time: {formatted_time}")
+        
+        print("######################c.shape: ", c.shape)
         
         return x, y, r, v, theta, c
