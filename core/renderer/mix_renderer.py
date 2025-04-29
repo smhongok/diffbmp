@@ -241,7 +241,6 @@ class MixRenderer(VectorRenderer):
     def compute_loss(self, 
                     rendered: torch.Tensor, 
                     target: torch.Tensor, 
-                    cached_masks: torch.Tensor,
                     x: torch.Tensor,
                     y: torch.Tensor,
                     r: torch.Tensor,

@@ -190,7 +190,6 @@ class VectorRenderer:
     def compute_loss(self, 
                     rendered: torch.Tensor, 
                     target: torch.Tensor, 
-                    cached_masks: torch.Tensor,
                     x: torch.Tensor,
                     y: torch.Tensor,
                     r: torch.Tensor,
@@ -278,19 +277,19 @@ class VectorRenderer:
         print(f"Starting optimization for {num_iterations} iterations...")
         for epoch in tqdm(range(num_iterations)):
             optimizer.zero_grad()
-            
-            # Generate masks
-            cached_masks = self._batched_soft_rasterize(
-                bmp_image, x, y, r, theta,
-                sigma=opt_conf.get("blur_sigma", 0.0)
-            )
-            
+           
             # Render image
-            rendered = self.render(cached_masks, v, c)
+            if opt_conf.get("multi_level", False):
+                rendered = self.render(bmp_image, v, c)
+            else:
+                cached_masks = self._batched_soft_rasterize(
+                    bmp_image, x, y, r, theta,
+                    sigma=opt_conf.get("blur_sigma", 0.0)
+                )
+                rendered = self.render(cached_masks, v, c)
             
             # Compute loss
-            loss = self.compute_loss(rendered, target_image, cached_masks,
-                                   x, y, r, v, theta, c)
+            loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
             loss.backward()
             
             # Update parameters
