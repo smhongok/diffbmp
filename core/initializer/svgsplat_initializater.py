@@ -8,16 +8,15 @@ import os
 import time
 from datetime import timedelta
 from .base_initializer import BaseInitializer
+from core.renderer.vector_renderer import VectorRenderer
+from typing import Dict, Any
 # 시작 시간 기록
 
 class StructureAwareInitializer(BaseInitializer):
-    def __init__(self, num_init=100, alpha=0.3, min_distance=20, 
-                 peak_threshold=0.5, radii_min=2, radii_max=None, 
-                 v_init_bias=-5.0, v_init_slope=0.0, keypoint_extracting=False, debug_mode=False):
-        super().__init__(num_init, alpha, min_distance, peak_threshold, radii_min, 
-                         radii_max, v_init_bias, v_init_slope, keypoint_extracting, debug_mode)
+    def __init__(self, init_opt:Dict[str, Any]):
+        super().__init__(init_opt)
         
-    def initialize(self, I_target):
+    def initialize(self, I_target, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
         """
         Specialization for SVG input to match the API expected in main_svg.py
         """

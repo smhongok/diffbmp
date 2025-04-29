@@ -14,6 +14,7 @@ class VectorRenderer:
     """
     def __init__(self, 
                  canvas_size: Tuple[int, int],
+                 S: torch.Tensor,
                  alpha_upper_bound: float = 0.5,
                  device: str = 'cuda'):
         """
@@ -28,6 +29,7 @@ class VectorRenderer:
         self.alpha_upper_bound = alpha_upper_bound
         self.device = device
         self.use_checkpointing = False
+        self.S = S
         
         # Pre-compute pixel coordinates
         self.X, self.Y = self._create_coordinate_grid()
@@ -50,7 +52,6 @@ class VectorRenderer:
         return X.unsqueeze(0), Y.unsqueeze(0)  # (1, H, W)
     
     def _batched_soft_rasterize(self,
-                               bmp_image: torch.Tensor,
                                x: torch.Tensor,
                                y: torch.Tensor,
                                r: torch.Tensor,
@@ -60,7 +61,6 @@ class VectorRenderer:
         Generate soft masks for each primitive.
         
         Args:
-            bmp_image: Base bitmap image tensor
             x, y: Position coordinates
             r: Scale (radius)
             theta: Rotation angle
@@ -74,7 +74,7 @@ class VectorRenderer:
         
         # Apply Gaussian blur if needed
         if sigma > 0.0:
-            bmp = bmp_image.unsqueeze(0)
+            bmp = self.S.unsqueeze(0)
             bmp = gaussian_blur(bmp, sigma)
             bmp_image = bmp.squeeze(0)
         
@@ -245,7 +245,7 @@ class VectorRenderer:
                           theta: torch.Tensor,
                           c: torch.Tensor,
                           target_image: torch.Tensor,
-                          bmp_image: torch.Tensor,
+                          bg_image: torch.Tensor,
                           opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
         """
         Optimize the rendering parameters to match the target image.
@@ -280,10 +280,10 @@ class VectorRenderer:
            
             # Render image
             if opt_conf.get("multi_level", False):
-                rendered = self.render(bmp_image, v, c)
+                rendered = self.render(self.S, v, c)
             else:
                 cached_masks = self._batched_soft_rasterize(
-                    bmp_image, x, y, r, theta,
+                    x, y, r, theta,
                     sigma=opt_conf.get("blur_sigma", 0.0)
                 )
                 rendered = self.render(cached_masks, v, c)
@@ -328,3 +328,34 @@ class VectorRenderer:
         # Save the image using PIL
         from PIL import Image
         Image.fromarray(final_render_np).save(output_path) 
+        
+    def render_image(self, x, y, r, v, theta, c):
+        """
+        Render an image from primitive parameters.
+        Args:
+            x, y, r, v, theta, c: Primitive parameters (torch.Tensor)
+        Returns:
+            Rendered image (H, W, 3)
+        """
+        cached_masks = self._batched_soft_rasterize(x, y, r, theta)
+        return self.render(cached_masks, v, c)
+    
+    def over(self, I_hat, I_bg):
+        """
+        Alpha blending (Porter-Duff 'over') between I_hat and I_bg.
+        I_hat: (H, W, 3) foreground
+        I_bg:  (H, W, 3) background
+        Returns:
+            Blended image (H, W, 3)
+        """
+        # 알파 채널이 있으면 사용, 없으면 1로 가정
+        if I_hat.shape[-1] == 4:
+            alpha = I_hat[..., 3:4]
+            rgb = I_hat[..., :3]
+        else:
+            alpha = torch.ones_like(I_hat[..., :1])
+            rgb = I_hat
+        return rgb * alpha + I_bg * (1 - alpha)
+    
+    
+    
