@@ -123,6 +123,4 @@ class StructureAwareInitializer(BaseInitializer):
         # 수행 시간 출력
         print(f"[initialize]total_cost_time: {formatted_time}")
         
-        print("######################c.shape: ", c.shape)
-        
         return x, y, r, v, theta, c
