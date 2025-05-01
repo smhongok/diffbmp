@@ -3,8 +3,9 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Tuple, Optional, List, Dict, Any
 from tqdm import tqdm
-from util.utils import gaussian_blur
+from util.utils import gaussian_blur, make_batch_indices
 import os
+import gc
 
 class VectorRenderer:
     """
@@ -156,38 +157,54 @@ class VectorRenderer:
             a = a[:, 0] + (1 - a[:, 0]) * a[:, 1]
         return m.squeeze(0), a.squeeze(0)
     
-    def render(self,
-               cached_masks: torch.Tensor,
-               v: torch.Tensor,
-               c: torch.Tensor) -> torch.Tensor:
+    def render(
+            self,
+            cached_masks: torch.Tensor,
+            v: torch.Tensor,
+            c: torch.Tensor,
+            return_alpha: bool = False   # ★ 새 인자
+        ):
         """
-        Render the final image using cached masks and parameters.
-        
+        Render the final image (optionally alpha).
+
         Args:
-            cached_masks: Pre-computed masks for each primitive
-            v: Visibility parameters
-            c: Color parameters
-            
-        Returns:
-            Rendered image tensor of shape (H, W, 3)
+            cached_masks : (N, H, W)   – pre-computed soft masks
+            v            : (N,)        – visibility logits
+            c            : (N, 3)      – RGB logits
+            return_alpha : If True  → (rgb, alpha) 반환
+                        If False → rgb 만 반환
+
+        Returns
+        -------
+        - rgb  : (H, W, 3)  (always)
+        - alpha: (H, W, 1)  (옵션, return_alpha=True일 때)
         """
         N = v.shape[0]
+
+        # 1. per-primitive alpha & color
         v_alpha = self.alpha_upper_bound * torch.sigmoid(v).view(N, 1, 1)
-        a = v_alpha * cached_masks
-        c_eff = torch.sigmoid(c).view(N, 1, 1, 3)
-        m = a.unsqueeze(-1) * c_eff
-        
-        # Use gradient checkpointing if enabled
+        a       = v_alpha * cached_masks                     # (N, H, W)
+        c_eff   = torch.sigmoid(c).view(N, 1, 1, 3)          # (N, 1, 1, 3)
+        m       = a.unsqueeze(-1) * c_eff                    # (N, H, W, 3)
+
+        # 2. Porter–Duff reduction (tree)
         if self.use_checkpointing:
-            def tree_over_func(x, y):
-                return self._tree_over(x, y)
-            comp_m, comp_a = torch.utils.checkpoint.checkpoint(tree_over_func, m, a, use_reentrant=False)
+            comp_m, comp_a = torch.utils.checkpoint.checkpoint(
+                lambda mm, aa: self._tree_over(mm, aa),
+                m, a, use_reentrant=False
+            )
         else:
-            comp_m, comp_a = self._tree_over(m, a)
-            
-        background = torch.ones_like(comp_m)
-        final = comp_m + (1 - comp_a).unsqueeze(-1) * background
+            comp_m, comp_a = self._tree_over(m, a)           # comp_a: (H, W)
+
+        if return_alpha:
+            # (H, W) → (H, W, 1) 로 맞춰 두면 브로드캐스트 편함
+            return comp_m, comp_a.unsqueeze(-1)
+
+        # 3. 흰 배경까지 합성해서 완성 RGB
+        background = torch.ones_like(comp_m)                 # white
+        final = comp_m + (1.0 - comp_a).unsqueeze(-1) * background
         return final
+
     
     def compute_loss(self, 
                     rendered: torch.Tensor, 
@@ -240,6 +257,24 @@ class VectorRenderer:
         return x, y, r, v, theta, c
     
     def optimize_parameters(self,
+                          x: torch.Tensor,
+                          y: torch.Tensor,
+                          r: torch.Tensor,
+                          v: torch.Tensor,
+                          theta: torch.Tensor,
+                          c: torch.Tensor,
+                          target_image: torch.Tensor,
+                          opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
+        if opt_conf.get("batch_optimization", False):
+            return self._optimize_parameters_batched(
+                x, y, r, v, theta, c, target_image, opt_conf
+            )
+        else:
+            return self._optimize_parameters_whole(
+                x, y, r, v, theta, c, target_image, opt_conf
+            )                            
+
+    def _optimize_parameters_whole(self,
                           x: torch.Tensor,
                           y: torch.Tensor,
                           r: torch.Tensor,
@@ -307,6 +342,128 @@ class VectorRenderer:
         
         return x, y, r, v, theta, c
     
+    def _optimize_parameters_batched(self,
+                          x: torch.Tensor,
+                          y: torch.Tensor,
+                          r: torch.Tensor,
+                          v: torch.Tensor,
+                          theta: torch.Tensor,
+                          c: torch.Tensor,
+                          target_image: torch.Tensor,
+                          opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
+        """
+        Optimize the rendering parameters to match the target image.
+        
+        Args:
+            x, y, r, v, theta, c: Initial parameters
+            target_image: Target image to match
+            opt_conf: Optimization configuration
+            
+        Returns:
+            Tuple of optimized parameters (x, y, r, v, theta, c)
+        """
+        # Get optimization parameters from config
+        num_iterations = opt_conf.get("num_iterations", 300)
+
+        chunk = opt_conf.get("batch_size", 256)
+
+        lr_conf = opt_conf["learning_rate"]
+        lr = lr_conf.get("default", 0.1)
+        
+        # Create optimizer
+        optimizer = torch.optim.Adam([
+            {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
+            {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
+            {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
+            {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},
+            {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
+            {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
+        ])
+
+        with torch.no_grad():
+            cached_masks = self._batched_soft_rasterize(
+                x, y, r, theta, sigma=opt_conf.get("blur_sigma", 0.0)
+            )
+
+        N = x.numel()
+        print(f"Starting optimization for Mini-batch GD: N={N}  chunk={chunk}  iterations={num_iterations}...")
+        for step in tqdm(range(num_iterations)):
+            # -------- 0. 앞·배치·뒤 인덱스 슬라이스 --------
+            start = (step * chunk) % N
+            end   = min(start + chunk, N)
+            fg_sl     = slice(0, start)   # 앞쪽(near)
+            batch_sl  = slice(start, end) # 학습 대상
+            bg_sl     = slice(end, N)     # 뒤쪽(far)
+
+
+
+            # -------- 1. no-grad 합성(FG,BG) --------
+            with torch.no_grad():
+                # 앞 레이어 → rgb_fg, alpha_fg
+                if start > 0:
+                    # rgb_fg, alpha_fg = self._tree_over(
+                    #     m      = cached_masks[fg_sl].unsqueeze(-1) *
+                    #             torch.sigmoid(c[fg_sl]).view(-1,1,1,3),
+                    #     a      = self.alpha_upper_bound *
+                    #             torch.sigmoid(v[fg_sl]).view(-1,1,1)
+                    # )
+                    rgb_fg, alpha_fg = self.render(
+                        cached_masks[fg_sl], v[fg_sl], c[fg_sl],
+                        return_alpha=True
+                    )
+                else:  # 아무것도 없으면 투명
+                    rgb_fg  = torch.zeros_like(target_image)
+                    alpha_fg = torch.zeros_like(target_image[..., :1])
+                # 뒤 레이어 → rgb_bg (흰 배경까지 합성, alpha 버림)
+                if end < N:
+                    rgb_bg = self.render(
+                        cached_masks[bg_sl], v[bg_sl], c[bg_sl],
+                        return_alpha=False
+                    )
+                else:
+                    rgb_bg = torch.ones_like(target_image)
+
+            # -------- 2. 학습 배치 forward --------
+            optimizer.zero_grad()
+            # Render image
+            if opt_conf.get("multi_level", False):
+                # rendered = self.render(self.S, v, c)
+                raise NotImplementedError("Multi-level rendering not implemented")
+            else:
+                masks_bt = self._batched_soft_rasterize(
+                    x[batch_sl], y[batch_sl], r[batch_sl], theta[batch_sl],
+                    sigma=opt_conf.get("blur_sigma", 0.0)
+                )
+                rgb_bt, alpha_bt = self.render(
+                        masks_bt, v[batch_sl], c[batch_sl],
+                        return_alpha=True
+                    )
+            # -------- 3. Porter-Duff over(fg → batch → bg) --------
+            comp1 = rgb_fg + (1 - alpha_fg) * rgb_bt
+            final = comp1 + (1 - alpha_fg) * (1 - alpha_bt) * rgb_bg
+
+            loss = self.compute_loss(final, target_image,
+                                    x, y, r, v, theta, c)
+            loss.backward()
+            optimizer.step()            
+            # Clamp parameters
+            with torch.no_grad():
+                x.clamp_(0, self.W)
+                y.clamp_(0, self.H)
+                r.clamp_(2, min(self.H, self.W) // 4)
+                theta.clamp_(0, 2 * np.pi)
+            
+                # ── (NEW) 바뀐 batch 슬라이스만 다시 마스크 계산해서 캐시에 업데이트 ──
+                cached_masks[batch_sl] = self._batched_soft_rasterize(
+                    x[batch_sl], y[batch_sl], r[batch_sl], theta[batch_sl],
+                    sigma=opt_conf.get("blur_sigma", 0.0)        # 동일 블러 파라미터 사용
+                )
+
+            if step % 20 == 0:
+                print(f"Epoch {step}, Loss: {loss.item():.4f}")
+        
+        return x, y, r, v, theta, c
+
     def save_rendered_image(self,
                           cached_masks: torch.Tensor,
                           v: torch.Tensor,
@@ -359,3 +516,45 @@ class VectorRenderer:
     
     
     
+
+from collections import defaultdict
+
+def pretty_mem(x):       # byte → MB 단위 문자열
+    return f"{x/1024/1024:8.2f} MB"
+
+def tensor_vram_report(namespace: dict):
+    """
+    namespace(dict): globals()  또는 locals()
+    Prints a table of all torch.Tensor objects (including .grad) on GPU.
+    """
+    seen_data_ptr = set()
+    rows, total = [], 0
+    for name, obj in namespace.items():
+        if isinstance(obj, torch.Tensor) and obj.is_cuda:
+            # same storage 여러 변수에 공유될 수 있으니 data_ptr 기준 dedup
+            ptr = obj.data_ptr()
+            if ptr in seen_data_ptr:
+                continue
+            seen_data_ptr.add(ptr)
+
+            size_bytes = obj.numel() * obj.element_size()
+            rows.append((name, str(tuple(obj.shape)), obj.dtype, pretty_mem(size_bytes)))
+            total += size_bytes
+
+            # grad 버퍼도 있으면 같이 체크
+            if obj.grad is not None:
+                gbytes = obj.grad.numel() * obj.grad.element_size()
+                rows.append((name + ".grad", str(tuple(obj.grad.shape)),
+                             obj.grad.dtype, pretty_mem(gbytes)))
+                total += gbytes
+
+    # 정렬: 큰 순서
+    rows.sort(key=lambda r: float(r[3].split()[0]), reverse=True)
+
+    print(f"{'tensor':25} {'shape':20} {'dtype':9} {'mem':>10}")
+    print("-"*70)
+    for n,s,d,m in rows:
+        print(f"{n:25} {s:20} {str(d):9} {m:>10}")
+    print("-"*70)
+    print(f"{'TOTAL':25} {'':20} {'':9} {pretty_mem(total):>10}")
+

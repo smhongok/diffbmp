@@ -29,7 +29,7 @@
     },
     "initialization": {
         "initializer": "random",
-        "N": 1500,
+        "N": 5000,
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
@@ -46,7 +46,9 @@
     },
     "optimization": {
         "renderer_type": "lpips",
-        "num_iterations": 100,
+        "num_iterations": 300,
+        "batch_optimization": true,
+        "batch_size": 256,
         "learning_rate": {
             "default": 0.05, 
             "gain_x": 5.0,
