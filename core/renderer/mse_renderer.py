@@ -29,4 +29,12 @@ class MseRenderer(VectorRenderer):
         Returns:
             MSE loss value
         """
+        # Ensure tensors are in consistent precision
+        # If target is in FP32, convert rendered to FP32
+        if target.dtype == torch.float32:
+            rendered = rendered.float()
+        # If rendered is in FP16, convert target to FP16
+        elif rendered.dtype == torch.float16 and target.dtype != torch.float16:
+            target = target.half()
+        
         return F.mse_loss(rendered, target)

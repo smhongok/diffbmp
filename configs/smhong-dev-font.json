@@ -4,7 +4,7 @@
         "trim": false,
         "FM_halftone": false,
         "transform": "none",
-        "img_path": "images/BSDS500/101087.jpg",
+        "img_path": "images/HighFreq/0831.png",
         "bg_threshold": 250,
         "do_equalize": false,
         "do_local_contrast": false,
@@ -29,7 +29,7 @@
     },
     "initialization": {
         "initializer": "random",
-        "N": 5000,
+        "N": 2000,
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
@@ -50,9 +50,9 @@
         "batch_optimization": true,
         "batch_size": 256,
         "learning_rate": {
-            "default": 0.05, 
-            "gain_x": 5.0,
-            "gain_y": 5.0,
+            "default": 1.0, 
+            "gain_x": 20.0,
+            "gain_y": 20.0,
             "gain_r": 20.0,
             "gain_v": 1.0,
             "gain_theta": 5.0,
@@ -72,11 +72,10 @@
             "sparsifying_period": 20,
             "sparsified_N": 1500
         },
-        "raster_chunk_size": 100,
         "strided_rasterization": true
     },
     "postprocessing": {
-        "output_folder": "outputs/BSDS500/",
+        "output_folder": "outputs/HighFreq/",
         "linewidth": 3.0,
         "compute_psnr": true
     }
