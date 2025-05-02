@@ -132,13 +132,13 @@ bmp_image_tensor = svg_loader.load_alpha_bitmap()
 # Optimize parameters
 x, y, r, v, theta, c = renderer.optimize_parameters(
     x, y, r, v, theta, c,
-    I_target, bmp_image_tensor,
-    opt_conf
+    I_target, 
+    opt_conf=opt_conf
 )
 
 # Generate final masks and render
 cached_masks = renderer._batched_soft_rasterize(
-    bmp_image_tensor, x, y, r, theta,
+    x, y, r, theta,
     sigma=opt_conf.get("blur_sigma_end", 1.0)
 )
 

@@ -6,6 +6,7 @@ from core.renderer.vector_renderer import VectorRenderer
 from typing import Tuple, Dict, Any
 from torchvision import models
 import piq
+import torch.utils.checkpoint as checkpoint
 
 class MixRenderer(VectorRenderer):
     def __init__(self, canvas_size: Tuple[int, int], S: torch.Tensor, alpha_upper_bound: float = 0.5, device: torch.device = None, classify_svg: str = None):
@@ -35,6 +36,24 @@ class MixRenderer(VectorRenderer):
                           dtype=torch.float32, device=self.device)
         self.kx = kx.view(1,1,3,3)
         self.ky = ky.view(1,1,3,3)
+        
+        # Checkpointing flags
+        self.use_vgg_checkpointing = False
+        self.use_lpips_checkpointing = False
+
+    def enable_checkpointing(self):
+        """Enable checkpointing for all components."""
+        super().enable_checkpointing()
+        self.use_vgg_checkpointing = True
+        self.use_lpips_checkpointing = True
+        print("VGG and LPIPS gradient checkpointing enabled")
+
+    def disable_checkpointing(self):
+        """Disable checkpointing for all components."""
+        super().disable_checkpointing()
+        self.use_vgg_checkpointing = False
+        self.use_lpips_checkpointing = False
+        print("VGG and LPIPS gradient checkpointing disabled")
 
     """
     Renderer using a combination of shape alignment loss (Mask IoU/Dice) for geometric parameters
@@ -118,7 +137,7 @@ class MixRenderer(VectorRenderer):
     
     def compute_perceptual(self, rendered: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """
-        VGG feature MSE loss. 
+        VGG feature MSE loss with optional gradient checkpointing. 
         rendered, target: (H, W, 3), values in [0,1]
         """
         # (1,3,H,W) 로 포맷
@@ -128,15 +147,35 @@ class MixRenderer(VectorRenderer):
         r = (r - self.vgg_mean) / self.vgg_std
         t = (t - self.vgg_mean) / self.vgg_std
 
-        loss = 0.0
-        x, y = r, t
-        # 한 번만 forward 하며, 지정된 레이어마다 MSE 계산
-        for idx, layer in enumerate(self.vgg):
-            x = layer(x)
-            y = layer(y)
-            if idx in self.perc_layers:
-                loss = loss + F.mse_loss(x, y)
-        return loss
+        if self.use_vgg_checkpointing:
+            # Define checkpointed VGG forward pass
+            def vgg_forward(x, y):
+                loss = 0.0
+                for idx, layer in enumerate(self.vgg):
+                    x = layer(x)
+                    y = layer(y)
+                    if idx in self.perc_layers:
+                        loss = loss + F.mse_loss(x, y)
+                return loss
+            
+            # Apply checkpoint to reduce memory
+            return checkpoint.checkpoint(
+                vgg_forward, 
+                r, 
+                t,
+                use_reentrant=False
+            )
+        else:
+            # Standard VGG forward without checkpointing
+            loss = 0.0
+            x, y = r, t
+            # 한 번만 forward 하며, 지정된 레이어마다 MSE 계산
+            for idx, layer in enumerate(self.vgg):
+                x = layer(x)
+                y = layer(y)
+                if idx in self.perc_layers:
+                    loss = loss + F.mse_loss(x, y)
+            return loss
     
     def compute_ssim_loss(self, rendered, target):
         # 입력: (H,W,3) → (1,3,H,W)
@@ -183,7 +222,7 @@ class MixRenderer(VectorRenderer):
     
     def compute_perceptual_loss(self, rendered: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """
-        Compute perceptual loss using LPIPS.
+        Compute perceptual loss using LPIPS with optional gradient checkpointing.
         
         Args:
             rendered: Rendered image tensor (H, W, 3)
@@ -196,48 +235,22 @@ class MixRenderer(VectorRenderer):
         rendered_nchw = rendered.permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
         target_nchw = target.permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
         
-        # Compute LPIPS loss
-        perceptual_loss = self.lpips(rendered_nchw, target_nchw)
+        # Compute LPIPS loss with optional checkpointing
+        if self.use_lpips_checkpointing:
+            def lpips_func(r, t):
+                return self.lpips(r, t)
+            
+            perceptual_loss = checkpoint.checkpoint(
+                lpips_func,
+                rendered_nchw,
+                target_nchw,
+                use_reentrant=False
+            )
+        else:
+            perceptual_loss = self.lpips(rendered_nchw, target_nchw)
         
         return perceptual_loss
             
-    def compute_boundary_loss(self, mask_pred: torch.Tensor, mask_gt: torch.Tensor) -> torch.Tensor:
-        """
-        Compute boundary loss between rendered and target images.
-        
-        Args:
-            rendered: Rendered image tensor (H, W, 3)
-            target: Target image tensor (H, W, 3)
-            
-        Returns:
-            Boundary loss value
-        """
-        if mask_pred.dim() == 5:
-            # e.g. (B,1,H,W,3) → average over last dim
-            mask_pred = mask_pred.mean(-1)            # now (B,1,H,W)
-            mask_gt   = mask_gt.unsqueeze(0).mean(-1)  # maybe (1,1,H,W)
-        elif mask_pred.dim() == 3:
-            # (H,W,C) → (H,W)
-            mask_pred = mask_pred.mean(-1)
-            mask_gt   = mask_gt.mean(-1)
-        # now handle 2D or 4D as above...
-        if mask_pred.dim() == 2:
-            m_pred = mask_pred.unsqueeze(0).unsqueeze(0)
-            m_gt   = mask_gt.unsqueeze(0).unsqueeze(0)
-        else:  # assume mask_pred.dim()==4
-            m_pred = mask_pred
-            m_gt   = mask_gt
-            
-         # 2) Sobel convolution
-        grad_px = F.conv2d(m_pred, self.kx, padding=1)
-        grad_py = F.conv2d(m_pred, self.ky, padding=1)
-        grad_gx = F.conv2d(m_gt,   self.kx, padding=1)
-        grad_gy = F.conv2d(m_gt,   self.ky, padding=1)
-
-        # 3) L1 차이
-        loss = (grad_px - grad_gx).abs().mean() + (grad_py - grad_gy).abs().mean()
-        return loss
-    
     def compute_loss(self, 
                     rendered: torch.Tensor, 
                     target: torch.Tensor, 
