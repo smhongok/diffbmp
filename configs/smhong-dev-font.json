@@ -50,9 +50,9 @@
         "batch_optimization": true,
         "batch_size": 256,
         "learning_rate": {
-            "default": 1.0, 
-            "gain_x": 20.0,
-            "gain_y": 20.0,
+            "default": 0.5, 
+            "gain_x": 5.0,
+            "gain_y": 5.0,
             "gain_r": 20.0,
             "gain_v": 1.0,
             "gain_theta": 5.0,
