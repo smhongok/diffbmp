@@ -1,6 +1,6 @@
 {
     "preprocessing": {
-        "final_width": 256,
+        "final_width": 1024,
         "trim": false,
         "FM_halftone": false,
         "transform": "none",
@@ -69,7 +69,9 @@
             "sparsify_loss_coeff": 0.5,
             "sparsifying_period": 20,
             "sparsified_N": 1500
-        }
+        },
+        "raster_chunk_size": 100,
+        "strided_rasterization": true
     },
     "postprocessing": {
         "output_folder": "outputs/BSDS500/",

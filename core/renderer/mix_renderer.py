@@ -365,7 +365,8 @@ class MixRenderer(VectorRenderer):
             # Generate masks using shape parameters (x, y, r, theta)
             cached_masks = self._batched_soft_rasterize(
                 x, y, r, theta,
-                sigma=opt_conf.get("blur_sigma", 0.0)
+                sigma=opt_conf.get("blur_sigma", 0.0),
+                raster_chunk_size=opt_conf.get("raster_chunk_size", 100)
             )
             
             # Render image using appearance parameters (v, c)
@@ -387,7 +388,8 @@ class MixRenderer(VectorRenderer):
             # Re-render with updated shape parameters
             cached_masks = self._batched_soft_rasterize(
                 x.detach(), y.detach(), r.detach(), theta.detach(),
-                sigma=opt_conf.get("blur_sigma", 0.0)
+                sigma=opt_conf.get("blur_sigma", 0.0),
+                raster_chunk_size=opt_conf.get("raster_chunk_size", 100)
             )
             rendered = self.render(cached_masks, v, c)
             

@@ -1,5 +1,7 @@
 import torch
 import torch.nn.functional as F
+from torch.cuda.amp import GradScaler, autocast
+import torch.utils.checkpoint as cp
 import numpy as np
 from typing import Tuple, Optional, List, Dict, Any
 from tqdm import tqdm
@@ -56,79 +58,101 @@ class VectorRenderer:
                                y: torch.Tensor,
                                r: torch.Tensor,
                                theta: torch.Tensor,
-                               sigma: float = 0.0) -> torch.Tensor:
+                               sigma: float = 0.0,
+                               raster_chunk_size: int = 100) -> torch.Tensor:
         """
-        Generate soft masks for each primitive.
-        
-        Args:
-            x, y: Position coordinates
-            r: Scale (radius)
-            theta: Rotation angle
-            sigma: Gaussian blur standard deviation
-            
-        Returns:
-            Tensor of shape (B, H, W) containing soft masks
-        """
-        B = len(x)
-        _, H, W = self.X.shape
-        
-        # Apply Gaussian blur if needed
-        if sigma > 0.0:
-            bmp = self.S.unsqueeze(0)
-            bmp = gaussian_blur(bmp, sigma)
-            bmp_image = bmp.squeeze(0)
-        else:
-            bmp_image = self.S
-        
-        # Expand parameters to match grid dimensions
-        X_exp = self.X.expand(B, H, W)
-        Y_exp = self.Y.expand(B, H, W)
-        x_exp = x.view(B, 1, 1).expand(B, H, W)
-        y_exp = y.view(B, 1, 1).expand(B, H, W)
-        r_exp = r.view(B, 1, 1).expand(B, H, W)
-        
-        # Position normalization and rotation
-        pos = torch.stack([X_exp - x_exp, Y_exp - y_exp], dim=1) / r_exp.unsqueeze(1)
-        cos_t = torch.cos(theta)
-        sin_t = torch.sin(theta)
-        R_inv = torch.zeros(B, 2, 2, device=self.device)
-        R_inv[:, 0, 0] = cos_t
-        R_inv[:, 0, 1] = sin_t
-        R_inv[:, 1, 0] = -sin_t
-        R_inv[:, 1, 1] = cos_t
-        uv = torch.einsum('bij,bjhw->bihw', R_inv, pos)
-        
-        # Prepare for grid sampling
-        grid = uv.permute(0, 2, 3, 1)  # (B, H, W, 2)
-        bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, -1, -1, -1)
-        
-        # Use gradient checkpointing if enabled
-        if self.use_checkpointing:
-            def grid_sample_func(x, grid):
-                return F.grid_sample(
-                    x,
-                    grid,
-                    mode='bilinear',
-                    padding_mode='zeros',
-                    align_corners=True
-                )
+        Generate soft masks for each primitive, either all-at-once or in chunks.
 
-            sampled = torch.utils.checkpoint.checkpoint(
-                grid_sample_func,
-                bmp_exp,
-                grid,
-                use_reentrant=False
-            )
+        Args:
+            x, y:       [N] position coordinates for N shapes
+            r:          [N] scales
+            theta:      [N] rotations
+            sigma:      Gaussian blur std
+            raster_chunk_size: if >0, process shapes in chunks of this size
+        Returns:
+            masks:     [N, H, W]  (one soft mask per shape)
+        """
+        # --- 1) 원래 블러 처리 블락 ---
+        N = x.shape[0]
+        _, H, W = self.X.shape
+        if sigma > 0.0:
+            bmp = self.S.unsqueeze(0)           # [1, C_bmp, H, W]
+            bmp = gaussian_blur(bmp, sigma)
+            bmp_image = bmp.squeeze(0)          # [C_bmp, H, W]
         else:
-            sampled = F.grid_sample(
-                bmp_exp,
-                grid,
-                mode='bilinear',
-                padding_mode='zeros',
-                align_corners=True
-            )
-        
-        return sampled.squeeze(1)  # (B, H, W)
+            bmp_image = self.S                  # [C_bmp, H, W]
+            
+        masks = torch.empty((N, H, W), device=x.device, dtype=torch.float16)
+
+        # --- 2) Chunk 모드: raster_chunk_size > 0 ---
+        for start in range(0, N, raster_chunk_size):
+            end = min(start + raster_chunk_size, N)
+            x_c     = x[start:end]
+            y_c     = y[start:end]
+            r_c     = r[start:end]
+            theta_c = theta[start:end]
+            C = end - start
+
+            X_exp = self.X.expand(C, H, W)   # FP32
+            Y_exp = self.Y.expand(C, H, W)
+            
+            def _raster_chunk():
+                # 모두 autocast 하에 FP16으로 수행
+                with autocast():
+                    # 파라미터 확장
+                    x_exp = x_c.view(C,1,1).expand(C, H, W)
+                    y_exp = y_c.view(C,1,1).expand(C, H, W)
+                    r_exp = r_c.view(C,1,1).expand(C, H, W)
+
+                    # 위치 정규화 + rotation
+                    pos = torch.stack([X_exp - x_exp, Y_exp - y_exp], dim=1)
+                    pos = pos / (r_exp.unsqueeze(1) + 1e-6)
+                    cos_t = torch.cos(theta_c)
+                    sin_t = torch.sin(theta_c)
+                    R_inv = torch.zeros(C,2,2,
+                                        device=pos.device,
+                                        dtype=pos.dtype)
+                    R_inv[:,0,0] = cos_t
+                    R_inv[:,0,1] = sin_t
+                    R_inv[:,1,0] = -sin_t
+                    R_inv[:,1,1] = cos_t
+
+                    uv = torch.einsum('bij,bjhw->bihw', R_inv, pos)  # [C,2,H,W]
+                    grid = uv.permute(0,2,3,1)                       # [C,H,W,2]
+
+                    # bitmap 확장 & 샘플링
+                    bmp_exp = bmp_image.unsqueeze(0).expand(C, -1, -1, -1)
+                    sampled = F.grid_sample(
+                        bmp_exp, grid,
+                        mode='bilinear',
+                        padding_mode='zeros',
+                        align_corners=True
+                    )
+                    if sampled.shape[1] == 1:
+                        sampled = sampled.squeeze(1)  # [C, H, W]
+
+                    # optional blur
+                    if sigma > 0.0:
+                        sampled = gaussian_blur(sampled.unsqueeze(1), sigma).squeeze(1)
+
+                    # autocast 덕분에 sampled는 FP16
+                    return sampled  # [C, H, W]
+            
+            # checkpointing 선택
+            if self.use_checkpointing:
+                chunk_masks = cp.checkpoint(_raster_chunk)
+            else:
+                chunk_masks = _raster_chunk()
+
+            # pre-allocated output에 복사
+            masks[start:end] = chunk_masks
+
+            # 메모리 정리
+            del x_c, y_c, r_c, theta_c, chunk_masks
+            torch.cuda.empty_cache()
+
+        return masks
+
     
     def _tree_over(self, m: torch.Tensor, a: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -141,6 +165,20 @@ class VectorRenderer:
         Returns:
             Tuple of (composited color, composited alpha)
         """
+        m = m.half()
+        a = a.half()
+        N, H, W, _ = m.shape
+        comp_m = torch.zeros(H, W, 3, device=m.device, dtype=m.dtype)
+        comp_a = torch.zeros(H, W,   device=m.device, dtype=m.dtype)
+        for i in range(N):
+            ai = a[i]                          # [H, W]
+            mi = m[i]                          # [H, W, 3]
+            comp_m = mi + (1 - ai).unsqueeze(-1) * comp_m
+            comp_a = ai + (1 - ai) * comp_a
+        final_m = comp_m
+        final_a = comp_a
+        return final_m, final_a
+        '''
         while m.size(0) > 1:
             n = m.size(0)
             if n % 2 == 1:
@@ -155,6 +193,7 @@ class VectorRenderer:
             m = m[:, 0] + (1 - a[:, 0]).unsqueeze(-1) * m[:, 1]
             a = a[:, 0] + (1 - a[:, 0]) * a[:, 1]
         return m.squeeze(0), a.squeeze(0)
+        '''
     
     def render(self,
                cached_masks: torch.Tensor,
@@ -171,6 +210,11 @@ class VectorRenderer:
         Returns:
             Rendered image tensor of shape (H, W, 3)
         """
+        
+        cached_masks = cached_masks.half()
+        c = c.half()
+        v = v.half()
+            
         N = v.shape[0]
         v_alpha = self.alpha_upper_bound * torch.sigmoid(v).view(N, 1, 1)
         a = v_alpha * cached_masks
@@ -187,6 +231,67 @@ class VectorRenderer:
             
         background = torch.ones_like(comp_m)
         final = comp_m + (1 - comp_a).unsqueeze(-1) * background
+        return final
+    
+    def _stream_render(self,
+                    x: torch.Tensor,
+                    y: torch.Tensor,
+                    r: torch.Tensor,
+                    theta: torch.Tensor,
+                    v: torch.Tensor,
+                    c: torch.Tensor,
+                    sigma: float = 0.0,
+                    raster_chunk_size: int = 50) -> torch.Tensor:
+        """
+        Streaming‐composite render: rasterize in small chunks and
+        composite immediately, never buffering all N masks.
+        """
+        N = x.shape[0]
+        H, W = self.H, self.W
+        device = x.device
+
+        # 1) Pre-blur the source bitmap once (FP32), then to FP16
+        bmp = self.S.unsqueeze(0)
+        if sigma > 0:
+            bmp = gaussian_blur(bmp, sigma)
+        bmp16 = bmp.half().squeeze(0)  # [C_bmp, H, W]
+
+        # 2) Prepare alphas & colors
+        v_alpha = (self.alpha_upper_bound * torch.sigmoid(v)).view(N,1,1).half()   # [N,1,1]
+        c_eff   = torch.sigmoid(c).view(N,1,1,3).half()                            # [N,1,1,3]
+
+        # 3) Running composite buffers (FP16)
+        comp_m = torch.zeros((H, W, 3), device=device, dtype=torch.float16)
+        comp_a = torch.zeros((H, W),    device=device, dtype=torch.float16)
+
+        # 4) Process in small shape‐chunks
+        for i in range(0, N, raster_chunk_size):
+            j = min(i + raster_chunk_size, N)
+
+            # a) Rasterize just this subset, force raster_chunk_size=0 internally
+            masks_chunk = self._batched_soft_rasterize(
+                x[i:j], y[i:j],
+                r[i:j], theta[i:j],
+                sigma=0.0,                # 이미 bmp16에 블러 적용됨
+                raster_chunk_size=raster_chunk_size       # all‐at‐once for this small subset
+            ).half()                      # [C, H, W], FP16
+
+            # b) Composite each shape in this chunk sequentially
+            v_c = v_alpha[i:j]           # [C,1,1]
+            c_c = c_eff[i:j]             # [C,1,1,3]
+            for k in range(masks_chunk.shape[0]):
+                a_k = v_c[k] * masks_chunk[k]          # [H, W]
+                m_k = a_k.unsqueeze(-1) * c_c[k]       # [H, W, 3]
+                # front‐to‐back composite
+                comp_m = m_k + (1 - a_k).unsqueeze(-1) * comp_m
+                comp_a = a_k + (1 - a_k) * comp_a
+
+            # free chunk
+            del masks_chunk, v_c, c_c
+            torch.cuda.empty_cache()
+
+        # 5) finalize with white background
+        final = comp_m + (1 - comp_a).unsqueeze(-1)
         return final
     
     def compute_loss(self, 
@@ -264,6 +369,8 @@ class VectorRenderer:
         lr_conf = opt_conf["learning_rate"]
         lr = lr_conf.get("default", 0.1)
         
+        # Mixed-precision용 Scaler
+        scaler = GradScaler()
         # Create optimizer
         optimizer = torch.optim.Adam([
             {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
@@ -279,21 +386,38 @@ class VectorRenderer:
             optimizer.zero_grad()
            
             # Render image
-            if opt_conf.get("multi_level", False):
-                rendered = self.render(self.S, v, c)
-            else:
-                cached_masks = self._batched_soft_rasterize(
-                    x, y, r, theta,
-                    sigma=opt_conf.get("blur_sigma", 0.0)
-                )
-                rendered = self.render(cached_masks, v, c)
+            with autocast():
+                if opt_conf.get("multi_level", False):
+                    rendered = self.render(self.S, v, c)
+                else:
+                    if opt_conf.get("streaming_render", True):
+                        rendered = self._stream_render(
+                            x, y, r, theta,
+                            v, c,
+                            sigma=opt_conf.get("blur_sigma", 0.0),
+                            raster_chunk_size=opt_conf.get("raster_chunk_size", 50)
+                        )
+                    else:
+                        cached_masks = self._batched_soft_rasterize(
+                            x, y, r, theta,
+                            sigma=opt_conf.get("blur_sigma", 0.0),
+                            raster_chunk_size=opt_conf.get("raster_chunk_size", 100)
+                        )
+                        rendered = self.render(cached_masks, v, c)
             
             # Compute loss
             loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
-            loss.backward()
-            
+        
             # Update parameters
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            
+            # Clear memory
+            if not opt_conf.get("multi_level", False):
+                del cached_masks  
+            del rendered, loss
+            torch.cuda.empty_cache()
             
             # Clamp parameters
             with torch.no_grad():
@@ -301,10 +425,12 @@ class VectorRenderer:
                 y.clamp_(0, self.H)
                 r.clamp_(2, min(self.H, self.W) // 4)
                 theta.clamp_(0, 2 * np.pi)
+                c.clamp_(0.0, 1.0)
+                v.clamp_(0.0, 1.0)
             
             if epoch % 20 == 0:
                 print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
-        
+                    
         return x, y, r, v, theta, c
     
     def save_rendered_image(self,

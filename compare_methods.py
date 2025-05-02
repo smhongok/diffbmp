@@ -1,6 +1,7 @@
 import argparse
 import time
 import torch
+from torch.cuda.amp import GradScaler, autocast
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
@@ -19,9 +20,9 @@ from util.font_to_svg import FontParser
 from util.utils import set_global_seed, gaussian_blur
 from util.pdf_exporter import PDFExporter
 
-from core.initializer.random_initializater import RandomInitializer
+#from core.initializer.random_initializater import RandomInitializer
 from core.initializer.svgsplat_initializater import StructureAwareInitializer
-from core.initializer.multilevel_initializer import MultiLevelInitializer
+#from core.initializer.multilevel_initializer import MultiLevelInitializer
 from core.initializer.base_initializer import BaseInitializer
 
 from core.renderer.vector_renderer import VectorRenderer
@@ -219,29 +220,32 @@ def process_combination(args):
     # Move tensors to device
     I_target = I_target.to(device)
     
-    # Reset parameters to initial values
-    x, y, r, v, theta, c = [t.clone().detach().requires_grad_(True) for t in initial_params]
-    if "LevelInitializer" in init.__class__.__name__:
-        print(f"{init.__class__.__name__} init and optim skip since it's already done in main()")    
-    else:
-        # Enable gradient checkpointing for memory efficiency
-        if hasattr(renderer, 'enable_checkpointing'):
-            renderer.enable_checkpointing()
+    with autocast():
+        # Reset parameters to initial values
+        x, y, r, v, theta, c = [t.clone().detach().requires_grad_(True) for t in initial_params]
+        if "LevelInitializer" in init.__class__.__name__:
+            print(f"{init.__class__.__name__} init and optim skip since it's already done in main()")    
+        else:
+            # Enable gradient checkpointing for memory efficiency
+            if hasattr(renderer, 'enable_checkpointing'):
+                renderer.enable_checkpointing()
+            
+            
+            x, y, r, v, theta, c = renderer.optimize_parameters(
+                x, y, r, v, theta, c,
+                I_target, 
+                opt_conf=config['optimization']
+            )
+            
+        # Generate final render
+        with torch.no_grad():  # Disable gradient computation for final render
+            cached_masks = renderer._batched_soft_rasterize(
+                x, y, r, theta,
+                sigma=config["optimization"].get("blur_sigma_end", 1.0),
+                raster_chunk_size=config["optimization"].get("raster_chunk_size", 100)
+            )
+            rendered = renderer.render(cached_masks, v, c)
         
-        x, y, r, v, theta, c = renderer.optimize_parameters(
-            x, y, r, v, theta, c,
-            I_target, 
-            opt_conf=config['optimization']
-        )
-        
-    # Generate final render
-    with torch.no_grad():  # Disable gradient computation for final render
-        cached_masks = renderer._batched_soft_rasterize(
-            x, y, r, theta,
-            sigma=config["optimization"].get("blur_sigma_end", 1.0)
-        )
-        rendered = renderer.render(cached_masks, v, c)
-    
     # Move tensors to CPU for metrics computation
     rendered_cpu = rendered.cpu()
     I_target_cpu = I_target.cpu()
@@ -335,9 +339,9 @@ def main():
     
     # Create instances of initializers
     initializers = [
-        RandomInitializer(config["initialization"]),
+        #RandomInitializer(config["initialization"]),
         StructureAwareInitializer(config["initialization"]),
-        MultiLevelInitializer(config["initialization"])
+        #MultiLevelInitializer(config["initialization"])
     ]
     
     # Create instances of renderers
