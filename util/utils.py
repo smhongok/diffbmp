@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torchvision
 import torch.nn.functional as F
+from typing import Tuple
 
 def set_global_seed(seed: int = 42):
     """
@@ -43,3 +44,17 @@ def gaussian_blur(input_tensor, sigma):
 def compute_psnr(img1, img2, max_val=1.0):
     mse = F.mse_loss(img1, img2)
     return 10 * torch.log10(max_val**2 / mse)
+
+def make_batch_indices(N: int, chunk: int, step: int) -> Tuple[slice, slice, slice]:
+    """
+    깊이 정렬된 [0…N-1]를
+        앞쪽(F) | 학습 대상(B_t) | 뒤쪽(B)
+    세 덩어리(slice)로 나눈다.
+    """
+    start = (step * chunk) % N
+    end   = min(start + chunk, N)
+    # 마지막 배치가 N을 넘어갈 때는 circular 하지 않고 그대로 작은 덩어리
+    batch = slice(start, end)                # 학습할 구간
+    fg    = slice(0, start)                  # 화면 앞
+    bg    = slice(end, N)                    # 화면 뒤
+    return fg, batch, bg
