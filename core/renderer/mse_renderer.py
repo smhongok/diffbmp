@@ -8,6 +8,9 @@ class MseRenderer(VectorRenderer):
     Renderer using MSE loss for optimization.
     This is the same as the base VectorRenderer implementation.
     """
+    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True):
+        super().__init__(canvas_size, S, alpha_upper_bound, device, use_fp16)
+        
     def compute_loss(self, 
                     rendered: torch.Tensor, 
                     target: torch.Tensor, 
@@ -30,11 +33,16 @@ class MseRenderer(VectorRenderer):
             MSE loss value
         """
         # Ensure tensors are in consistent precision
-        # If target is in FP32, convert rendered to FP32
-        if target.dtype == torch.float32:
+        if self.use_fp16:
+            # If target is in FP32, convert rendered to FP32
+            if target.dtype == torch.float32:
+                rendered = rendered.float()
+            # If rendered is in FP16, convert target to FP16
+            elif rendered.dtype == torch.float16 and target.dtype != torch.float16:
+                target = target.half()
+        else:
+            # In FP32 mode, ensure everything is float32
             rendered = rendered.float()
-        # If rendered is in FP16, convert target to FP16
-        elif rendered.dtype == torch.float16 and target.dtype != torch.float16:
-            target = target.half()
+            target = target.float()
         
         return F.mse_loss(rendered, target)

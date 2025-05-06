@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 import torch
 import torch.nn.functional as F
 from torch.cuda.amp import GradScaler, autocast
@@ -21,7 +22,8 @@ class VectorRenderer:
                  canvas_size: Tuple[int, int],
                  S: torch.Tensor,
                  alpha_upper_bound: float = 0.5,
-                 device: str = 'cuda'):
+                 device: str = 'cuda',
+                 use_fp16: bool = False):
         """
         Initialize the vector renderer.
         
@@ -29,13 +31,19 @@ class VectorRenderer:
             canvas_size: Tuple of (height, width) for the output canvas
             alpha_upper_bound: Maximum alpha value for rendering (default: 0.5)
             device: Device to use for computation ('cuda' or 'cpu')
+            use_fp16: Whether to use half precision (FP16) for memory efficiency
         """
         self.H, self.W = canvas_size
         self.alpha_upper_bound = alpha_upper_bound
         self.device = device
         self.use_checkpointing = False
-        # Convert S to half precision during initialization
-        self.S = S.to(dtype=torch.float16)
+        self.use_fp16 = use_fp16
+        
+        # Convert S to appropriate precision during initialization
+        if self.use_fp16:
+            self.S = S.to(dtype=torch.float16)
+        else:
+            self.S = S
         
         # Pre-compute pixel coordinates
         self.X, self.Y = self._create_coordinate_grid()
@@ -50,11 +58,18 @@ class VectorRenderer:
     
     def _create_coordinate_grid(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """Create the coordinate grid for rendering."""
-        X, Y = torch.meshgrid(
-            torch.arange(self.W, device=self.device, dtype=torch.float16),
-            torch.arange(self.H, device=self.device, dtype=torch.float16),
-            indexing='xy'
-        )
+        if self.use_fp16:
+            X, Y = torch.meshgrid(
+                torch.arange(self.W, device=self.device, dtype=torch.float16),
+                torch.arange(self.H, device=self.device, dtype=torch.float16),
+                indexing='xy'
+            )
+        else:
+            X, Y = torch.meshgrid(
+                torch.arange(self.W, device=self.device),
+                torch.arange(self.H, device=self.device),
+                indexing='xy'
+            )
         return X.unsqueeze(0), Y.unsqueeze(0)  # (1, H, W)
     
     def _batched_soft_rasterize(self,
@@ -74,7 +89,10 @@ class VectorRenderer:
         Returns:
             masks:     [N, H, W]  (one soft mask per shape)
         """
-        with autocast():
+        # Choose context manager based on precision mode
+        context = autocast() if self.use_fp16 else nullcontext()
+        
+        with context:
             B = len(x)
             _, H, W = self.X.shape
             
@@ -86,18 +104,21 @@ class VectorRenderer:
             else:
                 bmp_image = self.S
             
-            # Expand parameters to match grid dimensions and convert to half precision
-            X_exp = self.X.expand(B, H, W).half()
-            Y_exp = self.Y.expand(B, H, W).half()
-            x_exp = x.view(B, 1, 1).expand(B, H, W).half()
-            y_exp = y.view(B, 1, 1).expand(B, H, W).half()
-            r_exp = r.view(B, 1, 1).expand(B, H, W).half()
+            # Get target dtype based on use_fp16 flag
+            target_dtype = torch.float16 if self.use_fp16 else torch.float32
+            
+            # Expand parameters to match grid dimensions and convert to appropriate precision
+            X_exp = self.X.expand(B, H, W)#.to(dtype=target_dtype)
+            Y_exp = self.Y.expand(B, H, W)#.to(dtype=target_dtype)
+            x_exp = x.view(B, 1, 1).expand(B, H, W)#.to(dtype=target_dtype)
+            y_exp = y.view(B, 1, 1).expand(B, H, W)#.to(dtype=target_dtype)
+            r_exp = r.view(B, 1, 1).expand(B, H, W)#.to(dtype=target_dtype)
             
             # Position normalization and rotation
             pos = torch.stack([X_exp - x_exp, Y_exp - y_exp], dim=1) / r_exp.unsqueeze(1)
-            cos_t = torch.cos(theta).half()
-            sin_t = torch.sin(theta).half()
-            R_inv = torch.zeros(B, 2, 2, device=self.device, dtype=torch.float16)
+            cos_t = torch.cos(theta)#.to(dtype=target_dtype)
+            sin_t = torch.sin(theta)#.to(dtype=target_dtype)
+            R_inv = torch.zeros(B, 2, 2, device=self.device)#, dtype=target_dtype)
             R_inv[:, 0, 0] = cos_t
             R_inv[:, 0, 1] = sin_t
             R_inv[:, 1, 0] = -sin_t
@@ -106,7 +127,7 @@ class VectorRenderer:
             
             # Prepare for grid sampling
             grid = uv.permute(0, 2, 3, 1)  # (B, H, W, 2)
-            bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, -1, -1, -1).half()
+            bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, -1, -1, -1)#.to(dtype=target_dtype)
             
             # Use gradient checkpointing if enabled
             if self.use_checkpointing:
@@ -135,8 +156,6 @@ class VectorRenderer:
                 )
             
             return sampled.squeeze(1)  # (B, H, W)
-            B = len(x)
-            _, H, W = self.X.shape
     
     def _tree_over(self, m: torch.Tensor, a: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -149,36 +168,52 @@ class VectorRenderer:
         Returns:
             Tuple of (composited color, composited alpha)
         """
-        with autocast():
-            # Convert to half precision to save memory
-            m = m.half()
-            a = a.half()
-            N, H, W, _ = m.shape
-            
-            # 인스턴스 버퍼 대신 로컬 버퍼를 사용하여 체크포인팅 호환성 보장
-            comp_m = torch.zeros(H, W, 3, device=m.device, dtype=torch.float16)
-            comp_a = torch.zeros(H, W, device=m.device, dtype=torch.float16)
+        if self.use_fp16:
+            with autocast():
+                target_dtype = torch.float16 if self.use_fp16 else torch.float32
+                m = m#.to(dtype=target_dtype)
+                a = a#.to(dtype=target_dtype)
+                N, H, W, _ = m.shape
                 
- 
-            for i in range(N):
-                ai = a[i]
-                mi = m[i]
+                # Use local buffer to ensure checkpointing compatibility
+                comp_m = torch.zeros(H, W, 3, device=m.device, dtype=m.dtype)
+                comp_a = torch.zeros(H, W, device=m.device, dtype=a.dtype)
+    
+                for i in range(N):
+                    ai = a[i]
+                    mi = m[i]
+                    
+                    # Pre-compute 1-ai for reuse
+                    inv_ai = 1.0 - ai
+                    
+                    # Use inplace operations to optimize memory
+                    comp_m *= inv_ai.unsqueeze(-1)
+                    comp_m += mi
+                    
+                    comp_a *= inv_ai
+                    comp_a += ai
+                    
+                    # Free temporary tensors immediately
+                    if self.use_fp16:
+                        del ai, mi, inv_ai
                 
-                # 1-ai를 미리 계산하여 재사용
-                inv_ai = 1.0 - ai
+                return comp_m, comp_a
+        else:
+            while m.size(0) > 1:
+                n = m.size(0)
+                if n % 2 == 1:
+                    pad_m = torch.zeros((1, *m.shape[1:]), device=m.device, dtype=m.dtype)
+                    pad_a = torch.zeros((1, *a.shape[1:]), device=a.device, dtype=a.dtype)
+                    m = torch.cat([m, pad_m], dim=0)
+                    a = torch.cat([a, pad_a], dim=0)
+                    n = m.size(0)
+                new_n = n // 2
+                m = m.reshape(new_n, 2, m.size(1), m.size(2), 3)
+                a = a.reshape(new_n, 2, a.size(1), a.size(2))
+                m = m[:, 0] + (1 - a[:, 0]).unsqueeze(-1) * m[:, 1]
+                a = a[:, 0] + (1 - a[:, 0]) * a[:, 1]
                 
-                # inplace 연산을 사용하여 메모리 사용 최적화
-                comp_m *= inv_ai.unsqueeze(-1)
-                comp_m += mi
-                
-                comp_a *= inv_ai
-                comp_a += ai
-                
-                # 임시 텐서 즉시 해제
-                del ai, mi, inv_ai
-                
-            
-            return comp_m, comp_a
+            return m.squeeze(0), a.squeeze(0)
     
     def _get_checkpoint_kwargs(self):
         """
@@ -208,7 +243,7 @@ class VectorRenderer:
             cached_masks: torch.Tensor,
             v: torch.Tensor,
             c: torch.Tensor,
-            return_alpha: bool = False   # ★ 새 인자
+            return_alpha: bool = False
         ):
         """
         Render the final image (optionally alpha).
@@ -217,21 +252,21 @@ class VectorRenderer:
             cached_masks : (N, H, W)   – pre-computed soft masks
             v            : (N,)        – visibility logits
             c            : (N, 3)      – RGB logits
-            return_alpha : If True  → (rgb, alpha) 반환
-                        If False → rgb 만 반환
+            return_alpha : If True  → (rgb, alpha) returned
+                        If False → rgb only returned
 
         Returns
         -------
         - rgb  : (H, W, 3)  (always)
-        - alpha: (H, W, 1)  (옵션, return_alpha=True일 때)
+        - alpha: (H, W, 1)  (optional, when return_alpha=True)
         """
-        with autocast():    
-            # Ensure all inputs have consistent types
-            input_dtype = cached_masks.dtype
-            cached_masks = cached_masks.to(dtype=input_dtype)
-            v = v.to(dtype=input_dtype)
-            c = c.to(dtype=input_dtype)
-            
+        context = autocast() if self.use_fp16 else nullcontext()
+        
+        with context:    
+            target_dtype = torch.float16 if self.use_fp16 else torch.float32
+            cached_masks = cached_masks#.to(dtype=target_dtype)
+            v = v#.to(dtype=target_dtype)
+            c = c#.to(dtype=target_dtype)
             N = v.shape[0]
 
             # 1. per-primitive alpha & color
@@ -251,19 +286,21 @@ class VectorRenderer:
             else:
                 comp_m, comp_a = self._tree_over(m, a)    
             
-            # Free large tensors as soon as possible
-            del m, a, v_alpha, c_eff
+            # Free large tensors as soon as possible if in FP16 mode
+            if self.use_fp16:
+                del m, a, v_alpha, c_eff
             
             if return_alpha:
-                # (H, W) → (H, W, 1) 로 맞춰 두면 브로드캐스트 편함
+                # (H, W) → (H, W, 1) to match for broadcasting
                 return comp_m, comp_a.unsqueeze(-1)
 
-            # 3. 흰 배경까지 합성해서 완성 RGB
+            # 3. Composite with white background
             ones = torch.ones_like(comp_m)
             final = comp_m + (1.0 - comp_a).unsqueeze(-1) * ones
             
-            # Free temporary tensors
-            del comp_m, comp_a, ones
+            # Free temporary tensors if in FP16 mode
+            if self.use_fp16:
+                del comp_m, comp_a, ones
             
             return final
 
@@ -284,89 +321,96 @@ class VectorRenderer:
         N = x.shape[0]
         H, W = self.H, self.W
         device = x.device
+        target_dtype = x.dtype  # Use the same dtype as input tensors
 
-        # 1) Pre-blur the source bitmap once (FP32), then to FP16
-        with torch.no_grad(), autocast():
+        # 1) Pre-blur the source bitmap once
+        with torch.no_grad():
             bmp = self.S.unsqueeze(0)
             if sigma > 0:
                 bmp = gaussian_blur(bmp, sigma)
-                bmp16 = bmp.half().squeeze(0)  # [C_bmp, H, W]
+                #bmp_processed = bmp.to(dtype=target_dtype).squeeze(0)  # [C_bmp, H, W]
+                bmp_processed = bmp.squeeze(0)  # [C_bmp, H, W]
             else:
-                bmp16 = self.S.half()
+                bmp_processed = self.S#.to(dtype=target_dtype)
             del bmp
 
         # 2) Prepare alphas & colors
-        with torch.no_grad(), autocast():
-            # 더 작은 청크로 v와 c를 처리
+        with torch.no_grad():
+            # Process v and c in smaller chunks
             chunk_size = min(100, max(1, N // 2))
             
-            # 3) Running composite buffers (FP16) - 로컬 변수로 전환
-            comp_m = torch.zeros((H, W, 3), device=device, dtype=torch.float16)
-            comp_a = torch.zeros((H, W), device=device, dtype=torch.float16)
+            # 3) Running composite buffers - use local variables for checkpointing compatibility
+            comp_m = torch.zeros((H, W, 3), device=device, dtype=target_dtype)
+            comp_a = torch.zeros((H, W), device=device, dtype=target_dtype)
         
         # 4) Process in small shape‐chunks
         for i in range(0, N, raster_chunk_size):
             j = min(i + raster_chunk_size, N)
             curr_chunk_size = j - i
             
-            # 현재 청크의 가시성과 색상 계산
-            with torch.no_grad(), autocast():
-                v_chunk = v[i:j].half()
-                c_chunk = c[i:j].half()
-                v_alpha = (self.alpha_upper_bound * torch.sigmoid(v_chunk)).view(curr_chunk_size, 1, 1).half()
-                c_eff = torch.sigmoid(c_chunk).view(curr_chunk_size, 1, 1, 3).half()
+            # Calculate visibility and color for current chunk
+            with torch.no_grad():
+                v_chunk = v[i:j]#.to(dtype=target_dtype)
+                c_chunk = c[i:j]#.to(dtype=target_dtype)
+                v_alpha = (self.alpha_upper_bound * torch.sigmoid(v_chunk)).view(curr_chunk_size, 1, 1)#.to(dtype=target_dtype)
+                c_eff = torch.sigmoid(c_chunk).view(curr_chunk_size, 1, 1, 3)#.to(dtype=target_dtype)
                 
-                # Convert position parameters to half precision
-                x_chunk = x[i:j].half()
-                y_chunk = y[i:j].half()
-                r_chunk = r[i:j].half()
-                theta_chunk = theta[i:j].half()
+                # Get position parameters
+                x_chunk = x[i:j]#.to(dtype=target_dtype)
+                y_chunk = y[i:j]#.to(dtype=target_dtype)
+                r_chunk = r[i:j]#.to(dtype=target_dtype)
+                theta_chunk = theta[i:j]#.to(dtype=target_dtype)
                 
-            # a) Rasterize just this subset with autocast
-            with autocast():
+            # a) Rasterize just this subset
+            context = autocast() if self.use_fp16 else nullcontext()
+            with context:
                 masks_chunk = self._batched_soft_rasterize(
                     x_chunk, y_chunk,
                     r_chunk, theta_chunk,
-                    sigma=0.0                # 이미 bmp16에 블러 적용됨
-                ).half()                     # [C, H, W], FP16
+                    sigma=0.0                # already applied blur to bmp_processed
+                )#.to(dtype=target_dtype)     # [C, H, W]
                 
-                # b) 한 번에 모든 마스크 합성하지 않고 더 작은 하위 청크로 분할
-                sub_chunk_size = 5  # 작은 하위 청크 크기
+                # b) Split into smaller sub-chunks instead of compositing all masks at once
+                sub_chunk_size = 5  # small sub-chunk size
                 
                 for k in range(0, curr_chunk_size, sub_chunk_size):
                     end_k = min(k + sub_chunk_size, curr_chunk_size)
                     
-                    # 현재 하위 청크의 마스크, 알파, 색상
+                    # Current sub-chunk masks, alphas, colors
                     masks_subchunk = masks_chunk[k:end_k]
                     v_subchunk = v_alpha[k:end_k]
                     c_subchunk = c_eff[k:end_k]
                     
-                    # 각 모양 순차 합성
+                    # Sequential compositing for each shape
                     for s in range(end_k - k):
                         a_s = v_subchunk[s] * masks_subchunk[s]          # [H, W]
                         m_s = a_s.unsqueeze(-1) * c_subchunk[s]       # [H, W, 3]
                         
-                        # inplace 연산 사용
+                        # Use inplace operations
                         inv_a_s = 1.0 - a_s
                         comp_m = m_s + inv_a_s.unsqueeze(-1) * comp_m
                         comp_a = a_s + inv_a_s * comp_a
                         
-                        # 임시 텐서 즉시 해제
-                        del a_s, m_s, inv_a_s
+                        # Free temporary tensors immediately if in FP16 mode
+                        if self.use_fp16:
+                            del a_s, m_s, inv_a_s
                     
-                    # 하위 청크 텐서 해제
-                    del masks_subchunk, v_subchunk, c_subchunk
-                    torch.cuda.empty_cache()
+                    # Free sub-chunk tensors if in FP16 mode
+                    if self.use_fp16:
+                        del masks_subchunk, v_subchunk, c_subchunk
+                        torch.cuda.empty_cache()
 
-            # 청크 텐서 해제
-            del masks_chunk, v_chunk, c_chunk, v_alpha, c_eff, x_chunk, y_chunk, r_chunk, theta_chunk
-            torch.cuda.empty_cache()
+            # Free chunk tensors if in FP16 mode
+            if self.use_fp16:
+                del masks_chunk, v_chunk, c_chunk, v_alpha, c_eff, x_chunk, y_chunk, r_chunk, theta_chunk
+                torch.cuda.empty_cache()
 
-        # 5) finalize with white background
-        with torch.no_grad(), autocast():
+        # 5) Finalize with white background
+        with torch.no_grad():
             final = comp_m + (1 - comp_a).unsqueeze(-1)
-            # Free memory before return
-            del comp_m, comp_a
+            # Free memory before return if in FP16 mode
+            if self.use_fp16:
+                del comp_m, comp_a
         
         return final
     
@@ -459,7 +503,7 @@ class VectorRenderer:
             Tuple of optimized parameters (x, y, r, v, theta, c)
         """
         # Get optimization parameters from config
-        num_iterations = opt_conf.get("num_iterations", 300)
+        num_iterations = opt_conf.get("num_iterations", 100)
         lr_conf = opt_conf["learning_rate"]
         lr = lr_conf.get("default", 0.1)
         
@@ -467,40 +511,39 @@ class VectorRenderer:
         if opt_conf.get("debug_memory", False):
             self.memory_report("Before optimization")
         
-        # Mixed-precision용 Scaler
-        scaler = GradScaler()
+        # Mixed-precision scaler (only used if use_fp16 is True)
+        scaler = GradScaler() if self.use_fp16 else None
         
         # Pre-calculate configurations
         blur_sigma = opt_conf.get("blur_sigma", 0.0)
-        streaming_render = opt_conf.get("streaming_render", False)
-        raster_chunk_size = opt_conf.get("raster_chunk_size", 20)  # 더 작은 청크 크기로 변경
+        streaming_render = opt_conf.get("streaming_render", False) and self.use_fp16  # Only use streaming render in FP16 mode
+        raster_chunk_size = opt_conf.get("raster_chunk_size", 20)
         
-        # 메모리 효율성을 위해 그룹별로 최적화
-        # 그룹 1: 위치 매개변수 (x, y)
-        # 그룹 2: 크기 및 회전 매개변수 (r, theta)
-        # 그룹 3: 외관 매개변수 (v, c)
-        param_groups = [
-            {'params': [x, y], 'names': ['x', 'y'], 'lr': lr * lr_conf.get("gain_x", 1.0)},
-            {'params': [r, theta], 'names': ['r', 'theta'], 'lr': lr * lr_conf.get("gain_r", 1.0)},
-            {'params': [v, c], 'names': ['v', 'c'], 'lr': lr * lr_conf.get("gain_v", 1.0)}
-        ]
+        # Ensure all parameters require gradients
+        #x.requires_grad_(True)
+        #y.requires_grad_(True)
+        #r.requires_grad_(True)
+        #v.requires_grad_(True)
+        #theta.requires_grad_(True)
+        #c.requires_grad_(True)
         
-        optimizers = []
-        for group in param_groups:
-            optimizers.append(torch.optim.Adam(group['params'], lr=group['lr']))
+        # Create optimizer
+        optimizer = torch.optim.Adam([
+            {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
+            {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
+            {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
+            {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},
+            {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
+            {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
+        ])
         
-        # Gradient accumulation steps (더 작은 배치로 메모리 사용량 감소)
-        accum_steps = opt_conf.get("gradient_accumulation_steps", 1)
-        
-        print(f"Starting optimization with {len(param_groups)} parameter groups, {accum_steps} accumulation steps for {num_iterations} iterations...")
+        print(f"Starting optimization, {num_iterations} iterations...")
         for epoch in tqdm(range(num_iterations)):
-            # 그래디언트 누적 스텝을 통한 메모리 최적화
-            for accum_step in range(accum_steps):
-                # 모든 최적화기의 그래디언트 초기화
-                for optimizer in optimizers:
-                    optimizer.zero_grad()
-                
-                # Render image
+            # Reset gradients
+            optimizer.zero_grad()
+            
+            # Render image - use different approaches based on precision mode
+            if self.use_fp16:
                 with autocast():
                     if opt_conf.get("multi_level", False):
                         rendered = self.render(self.S, v, c)
@@ -513,55 +556,70 @@ class VectorRenderer:
                                 raster_chunk_size=raster_chunk_size
                             )
                         else:
-                            # 소량 마스크 생성 (메모리 효율성)
+                            # Generate masks (memory efficient)
                             cached_masks = self._batched_soft_rasterize(
                                 x, y, r, theta,
                                 sigma=blur_sigma
                             )
                             
                             # Memory report after mask generation
-                            if opt_conf.get("debug_memory", False) and epoch == 0 and accum_step == 0:
+                            if opt_conf.get("debug_memory", False) and epoch == 0:
                                 self.memory_report("After mask generation")
                             
                             rendered = self.render(cached_masks, v, c)
                             
-                            # Immediately free memory
+                            # Save reference for cleanup
                             cached_masks_ref = cached_masks
                             cached_masks = None
                     
                     # Memory report after rendering
-                    if opt_conf.get("debug_memory", False) and epoch == 0 and accum_step == 0:
+                    if opt_conf.get("debug_memory", False) and epoch == 0:
                         self.memory_report("After rendering")
-                
-                    # Compute loss (still within autocast)
-                    loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
                     
-                    # 그래디언트 누적을 위해 loss 스케일링
-                    scaled_loss = loss / accum_steps
+                    # Compute loss
+                    loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
                 
-                # 그래디언트 계산 (각 스텝에서 누적)
-                scaler.scale(scaled_loss).backward()
+                    # Calculate gradients (accumulate per step)
+                    scaler.scale(loss).backward()
                 
-                # 메모리 즉시 해제
-                del rendered, scaled_loss
-                if not streaming_render and not opt_conf.get("multi_level", False):
-                    del cached_masks_ref
-                torch.cuda.empty_cache()
-            
-            # Memory report after backward
-            if opt_conf.get("debug_memory", False) and epoch == 0:
-                self.memory_report("After gradient accumulation")
-            
-            # 누적된 그래디언트로 매개변수 업데이트
-            for optimizer in optimizers:
+                    # Free memory immediately
+                    del rendered
+                    if not streaming_render and not opt_conf.get("multi_level", False) and 'cached_masks_ref' in locals():
+                        del cached_masks_ref
+                    if self.use_fp16:
+                        torch.cuda.empty_cache()
+                         
+                # Update parameters with accumulated gradients
                 scaler.step(optimizer)
-            
-            scaler.update()
-            
-            # Loss값 기록 (다음 epoch 로깅용)
+                scaler.update()
+            else:
+                # Non-FP16 mode - standard approach without autocast or scaler
+                if opt_conf.get("multi_level", False):
+                    rendered = self.render(self.S, v, c)
+                else:
+                    # Generate masks
+                    cached_masks = self._batched_soft_rasterize(
+                        x, y, r, theta,
+                        sigma=blur_sigma
+                    )
+                    
+                    # Render with masks
+                    rendered = self.render(cached_masks, v, c)
+                
+                # Compute loss
+                loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
+                
+                # Calculate gradients
+                loss.backward()
+                
+                # Update parameters
+                optimizer.step()
+                
+            # Record loss value for next epoch logging
             loss_value = loss.item()
-            del loss
-            torch.cuda.empty_cache()
+            if self.use_fp16:
+                del loss
+                torch.cuda.empty_cache()
             
             # Memory report after cleanup
             if opt_conf.get("debug_memory", False) and epoch == 0:
@@ -573,8 +631,6 @@ class VectorRenderer:
                 y.clamp_(0, self.H)
                 r.clamp_(2, min(self.H, self.W) // 4)
                 theta.clamp_(0, 2 * np.pi)
-                c.clamp_(0.0, 1.0)
-                v.clamp_(0.0, 1.0)
             
             if epoch % 20 == 0:
                 print(f"Epoch {epoch}, Loss: {loss_value:.4f}")
@@ -606,7 +662,7 @@ class VectorRenderer:
             Tuple of optimized parameters (x, y, r, v, theta, c)
         """
         # Get optimization parameters from config
-        num_iterations = opt_conf.get("num_iterations", 300)
+        num_iterations = opt_conf.get("num_iterations", 100)
         chunk = opt_conf.get("batch_size", 256)
         lr_conf = opt_conf["learning_rate"]
         lr = lr_conf.get("default", 0.1)

@@ -147,8 +147,9 @@ class BaseInitializer(ABC):
         return np.array(adjusted)
     
     def coarse_to_fine_densification(self, edge_map, N, levels, refine_min_dist=False):
-        def densify_at_levels(edge_map, N, levels, initial_points, base_min_dist):
+        def densify_at_levels(edge_map, N, levels, initial_points, initial_levels, base_min_dist):
             points = initial_points.copy()
+            point_levels = initial_levels.copy() if initial_levels is not None else np.array([])
 
             for level in range(0, levels + 1):
                 scale = 2 ** -(levels - level)
@@ -159,44 +160,70 @@ class BaseInitializer(ABC):
                 densified = self.curvature_aware_densification(small_edge, small_points, N, scaled_min_dist)
 
                 # Add only newly added points (after scaling back)
-                new_pts = densified[len(small_points):] / scale
-                points = np.vstack([points, new_pts])
+                num_new_points = len(densified) - len(small_points)
+                if num_new_points > 0:
+                    new_pts = densified[len(small_points):] / scale
+                    points = np.vstack([points, new_pts])
 
-                # Deduplicate by integer rounding
-                points = np.unique(points.astype(np.int32), axis=0).astype(np.float32)
+                    # Track level information for each new point
+                    new_levels = np.ones(num_new_points, dtype=np.int32) * level
+                    point_levels = np.concatenate([point_levels, new_levels])
+
+                # Deduplicate by integer rounding and maintain level information
+                if len(points) > 0:
+                    int_points = points.astype(np.int32)
+                    unique_indices = []
+                    seen = set()
+                    
+                    for i, pt in enumerate(int_points):
+                        pt_tuple = (pt[0], pt[1])
+                        if pt_tuple not in seen:
+                            seen.add(pt_tuple)
+                            unique_indices.append(i)
+                    
+                    points = points[unique_indices]
+                    point_levels = point_levels[unique_indices]
 
                 if len(points) >= N:
                     break
 
-            return points
+            return points, point_levels
 
         print("edge_map.shape: ", edge_map.shape)
         points = np.empty((0, 2), dtype=np.float32)
+        point_levels = np.array([], dtype=np.int32)
 
         # Step 1: Coarse-to-fine densification with default min_distance
-        points = densify_at_levels(edge_map, N, levels, points, self.min_distance)
+        points, point_levels = densify_at_levels(edge_map, N, levels, points, point_levels, self.min_distance)
 
         # Step 2 (optional): refine with smaller min_distance
         if refine_min_dist and len(points) < N:
-            points = densify_at_levels(edge_map, N, levels, points, base_min_dist=1.0)
+            points, point_levels = densify_at_levels(edge_map, N, levels, points, point_levels, base_min_dist=1.0)
             if len(points) < N:
-                points = densify_at_levels(edge_map, N, levels, points, base_min_dist=0.9)
+                points, point_levels = densify_at_levels(edge_map, N, levels, points, point_levels, base_min_dist=0.9)
 
-        return points[:N]
+        # Return both points and their level information
+        if len(points) > N:
+            points = points[:N]
+            point_levels = point_levels[:N]
+
+        return points, point_levels
     
     def find_best_densification(self, edge_map, N):
         best_points = None
-        best_level = 7
+        best_levels = None
+        best_level = 8
         best_min_distance = None
         max_len = -1
 
-        for min_dist in range(20, 1, -2):
+        for min_dist in [1.9, 1.5, 1.0]:
             self.min_distance = min_dist
-            points = self.coarse_to_fine_densification(edge_map, N, best_level)
+            points, point_levels = self.coarse_to_fine_densification(edge_map, N, best_level)
             if len(points) > max_len:
                 print("len(points): ", len(points), ", N: ", N, ", level: ", best_level, ", min_dist: ", min_dist)
                 max_len = len(points)
                 best_points = points[:N]
+                best_levels = point_levels[:N]
                 best_min_distance = min_dist
                 if len(points) >= N:
                     break  # good enough, go shallower
@@ -204,10 +231,10 @@ class BaseInitializer(ABC):
         if len(points) < N:
             print("Couldn't generate enough points with given constraints. Try again with min_distance 1.")
             self.min_distance = best_min_distance
-            best_points = self.coarse_to_fine_densification(edge_map, N, best_level, refine_min_dist=True)
+            best_points, best_levels = self.coarse_to_fine_densification(edge_map, N, best_level, refine_min_dist=True)
 
         print(f"Using level={best_level}, min_distance={best_min_distance:.2f}")
-        return best_points
+        return best_points, best_levels
     
     def _random_splat_params(self, N, y_init, x_init, H, W, device):
         x = self._rand_leaf((N,), x_init, x_init + W, device)

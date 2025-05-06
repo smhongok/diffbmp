@@ -1,6 +1,7 @@
 {
     "preprocessing": {
-        "final_width": 1024,
+        "final_width": 256,
+        "use_fp16": false,
         "trim": false,
         "FM_halftone": false,
         "transform": "none",
@@ -29,11 +30,11 @@
     },
     "initialization": {
         "initializer": "random",
-        "N": 2000,
+        "N": 1000,
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
-        "radii_min": 2,
+        "radii_min": 10,
         "v_init_bias":  -1.5,
         "v_init_slope": 3.0,
         "keypoint_extracting": false,
@@ -46,8 +47,8 @@
     },
     "optimization": {
         "renderer_type": "lpips",
-        "num_iterations": 300,
-        "batch_optimization": true,
+        "num_iterations": 100,
+        "batch_optimization": false,
         "batch_size": 256,
         "learning_rate": {
             "default": 0.5, 
@@ -71,8 +72,7 @@
             "sparsify_loss_coeff": 0.5,
             "sparsifying_period": 20,
             "sparsified_N": 1500
-        },
-        "strided_rasterization": true
+        }
     },
     "postprocessing": {
         "output_folder": "outputs/HighFreq/",
