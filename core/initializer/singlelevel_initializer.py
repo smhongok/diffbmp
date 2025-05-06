@@ -36,7 +36,7 @@ class SingleLevelInitializer(StructureAwareInitializer):
         if c.shape[1] != 3:
             c = c[:, :3].contiguous().detach().clone().requires_grad_(True)
         
-        num_iterations = opt_conf.get("num_iterations", 300)
+        num_iterations = opt_conf.get("num_iterations", 100)
         lr_conf = opt_conf["learning_rate"]
         lr = lr_conf.get("default", 0.1)
         

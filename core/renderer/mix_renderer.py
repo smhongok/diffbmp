@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -7,25 +8,26 @@ from typing import Tuple, Dict, Any
 from torchvision import models
 import piq
 import torch.utils.checkpoint as checkpoint
+from torch.cuda.amp import GradScaler, autocast
 
 class MixRenderer(VectorRenderer):
-    def __init__(self, canvas_size: Tuple[int, int], S: torch.Tensor, alpha_upper_bound: float = 0.5, device: torch.device = None, classify_svg: str = None):
-        super().__init__(canvas_size, S, alpha_upper_bound, device)
+    def __init__(self, canvas_size: Tuple[int, int], S: torch.Tensor, alpha_upper_bound: float = 0.5, device: torch.device = None, classify_svg: str = None, use_fp16: bool = False):
+        super().__init__(canvas_size, S, alpha_upper_bound, device, use_fp16)
         self.classify_svg = classify_svg
         vgg = models.vgg16(pretrained=True).features.eval().to(self.device)
         self.perc_layers = [3, 8]  # conv1_2, conv2_2
         self.vgg = vgg
-        # ImageNet mean/std: [C,H,W] 후에 (1,3,1,1)로 브로드캐스트
+        # ImageNet mean/std: [C,H,W] for later (1,3,1,1) broadcast
         mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32)
         std  = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32)
-        # 속성으로 저장하고 device로 이동
+        # Store as attributes and move to device
         self.vgg_mean = mean.view(1,3,1,1).to(self.device)
         self.vgg_std  = std .view(1,3,1,1).to(self.device)
         self.ssim = piq.SSIMLoss(kernel_size=11, reduction='mean').to(self.device)
         # Initialize LPIPS model for perceptual loss
         self.lpips = piq.LPIPS(reduction='mean').to(self.device)
         
-        # 1차 미분용 Sobel 커널 정의
+        # Define Sobel kernels for 1st derivatives
         kx = torch.tensor([[1, 0, -1],
                            [2, 0, -2],
                            [1, 0, -1]],
@@ -44,9 +46,10 @@ class MixRenderer(VectorRenderer):
     def enable_checkpointing(self):
         """Enable checkpointing for all components."""
         super().enable_checkpointing()
-        self.use_vgg_checkpointing = True
-        self.use_lpips_checkpointing = True
-        print("VGG and LPIPS gradient checkpointing enabled")
+        self.use_vgg_checkpointing = self.use_fp16  # Only use if in FP16 mode
+        self.use_lpips_checkpointing = self.use_fp16  # Only use if in FP16 mode
+        if self.use_fp16:
+            print("VGG and LPIPS gradient checkpointing enabled")
 
     def disable_checkpointing(self):
         """Disable checkpointing for all components."""
@@ -140,14 +143,14 @@ class MixRenderer(VectorRenderer):
         VGG feature MSE loss with optional gradient checkpointing. 
         rendered, target: (H, W, 3), values in [0,1]
         """
-        # (1,3,H,W) 로 포맷
+        # Format to (1,3,H,W)
         r = rendered.permute(2,0,1).unsqueeze(0)
         t = target  .permute(2,0,1).unsqueeze(0)
-        # ImageNet 정규화
+        # ImageNet normalization
         r = (r - self.vgg_mean) / self.vgg_std
         t = (t - self.vgg_mean) / self.vgg_std
 
-        if self.use_vgg_checkpointing:
+        if self.use_vgg_checkpointing and self.use_fp16:
             # Define checkpointed VGG forward pass
             def vgg_forward(x, y):
                 loss = 0.0
@@ -169,7 +172,7 @@ class MixRenderer(VectorRenderer):
             # Standard VGG forward without checkpointing
             loss = 0.0
             x, y = r, t
-            # 한 번만 forward 하며, 지정된 레이어마다 MSE 계산
+            # Process forward once, calculating MSE at specified layers
             for idx, layer in enumerate(self.vgg):
                 x = layer(x)
                 y = layer(y)
@@ -236,7 +239,7 @@ class MixRenderer(VectorRenderer):
         target_nchw = target.permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
         
         # Compute LPIPS loss with optional checkpointing
-        if self.use_lpips_checkpointing:
+        if self.use_lpips_checkpointing and self.use_fp16:
             def lpips_func(r, t):
                 return self.lpips(r, t)
             
@@ -324,11 +327,9 @@ class MixRenderer(VectorRenderer):
             Appearance loss value
         """
         gt_mask   = (target[...,0] > 0).float()    # 2D: H×W
-        color_loss = self.compute_color_alpha_loss(rendered, target, gt_mask)
+        total_loss = self.compute_color_alpha_loss(rendered, target, gt_mask)
         
-        total_loss = color_loss
-        
-        return total_loss, color_loss
+        return total_loss
 
     def optimize_parameters(self,
                           x: torch.Tensor,
@@ -353,7 +354,7 @@ class MixRenderer(VectorRenderer):
             Tuple of optimized parameters (x, y, r, v, theta, c)
         """
         # Get optimization parameters from config
-        num_iterations = opt_conf.get("num_iterations", 300)
+        num_iterations = opt_conf.get("num_iterations", 100)
         lr_conf = opt_conf["learning_rate"]
         lr = lr_conf.get("default", 0.1)
         
@@ -370,48 +371,77 @@ class MixRenderer(VectorRenderer):
             {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
         ])
         
+        # Only use mixed precision in FP16 mode
+        shape_scaler = GradScaler() if self.use_fp16 else None
+        appearance_scaler = GradScaler() if self.use_fp16 else None
+        
         print(f"Starting optimization for {num_iterations} iterations...")
         for epoch in tqdm(range(num_iterations)):
+            # Define context manager based on precision mode
+            shape_context = autocast() if self.use_fp16 else nullcontext()
+            appearance_context = autocast() if self.use_fp16 else nullcontext()
+            
             # Step 1: Optimize shape parameters
             shape_optimizer.zero_grad()
+            with shape_context:
+                if opt_conf.get("multi_level", False):
+                    rendered = self.render(self.S, v, c)
+                else:
+                    # Generate masks using shape parameters (x, y, r, theta)
+                    cached_masks = self._batched_soft_rasterize(
+                        x, y, r, theta,
+                        sigma=opt_conf.get("blur_sigma", 0.0)
+                    )
+                    
+                    # Render image using appearance parameters (v, c)
+                    rendered = self.render(cached_masks, v, c)
             
-            # Generate masks using shape parameters (x, y, r, theta)
-            cached_masks = self._batched_soft_rasterize(
-                x, y, r, theta,
-                sigma=opt_conf.get("blur_sigma", 0.0)
-            )
-            
-            # Render image using appearance parameters (v, c)
-            rendered = self.render(cached_masks, v, c)
-            #rendered = self.render(cached_masks, v.detach(), c.detach())
-            
-            # Compute shape loss
-            shape_loss = self.compute_shape_loss(
-                rendered, target_image#, cached_masks
-            )
-            
-            # Backward pass for shape parameters
-            shape_loss.backward(retain_graph=True)
-            shape_optimizer.step()
+                # Compute shape loss
+                shape_loss = self.compute_shape_loss(
+                    rendered, target_image
+                )
+                
+                # Backward pass for shape parameters - handled differently based on precision mode
+                if self.use_fp16:
+                    shape_scaler.scale(shape_loss).backward(retain_graph=True)
+                    shape_scaler.step(shape_optimizer)
+                    shape_scaler.update()
+                else:
+                    shape_loss.backward(retain_graph=True)
+                    shape_optimizer.step()
             
             # Step 2: Optimize appearance parameters
             appearance_optimizer.zero_grad()
             
-            # Re-render with updated shape parameters
-            cached_masks = self._batched_soft_rasterize(
-                x.detach(), y.detach(), r.detach(), theta.detach(),
-                sigma=opt_conf.get("blur_sigma", 0.0)
-            )
-            rendered = self.render(cached_masks, v, c)
+            with appearance_context:
+                if opt_conf.get("multi_level", False):
+                    rendered = self.render(self.S, v, c)
+                else:
+                    # Re-render with updated shape parameters
+                    cached_masks = self._batched_soft_rasterize(
+                        x.detach(), y.detach(), r.detach(), theta.detach(),
+                        sigma=opt_conf.get("blur_sigma", 0.0)
+                    )
+                    rendered = self.render(cached_masks, v, c)
+                
+                # Compute appearance loss
+                appearance_loss = self.compute_perceptual_loss(
+                    rendered, target_image
+                )
+                
+                # Backward pass for appearance parameters
+                if self.use_fp16:
+                    appearance_scaler.scale(appearance_loss).backward()
+                    appearance_scaler.step(appearance_optimizer)
+                    appearance_scaler.update()
+                else:
+                    appearance_loss.backward()
+                    appearance_optimizer.step()
             
-            # Compute appearance loss
-            appearance_loss, color_loss = self.compute_appearance_loss(
-                rendered, target_image
-            )
-            
-            # Backward pass for appearance parameters
-            appearance_loss.backward()
-            appearance_optimizer.step()
+            # Clean up memory if using FP16
+            if self.use_fp16:
+                del rendered, cached_masks
+                torch.cuda.empty_cache()
             
             # Clamp parameters
             with torch.no_grad():

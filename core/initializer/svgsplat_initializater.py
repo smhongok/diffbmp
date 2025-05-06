@@ -74,31 +74,50 @@ class StructureAwareInitializer(BaseInitializer):
             init_pts = np.array([kp.pt for kp in sorted_kp[:num_kp]])  # (x, y)
         
         # Apply our structure-aware techniques
-        densified_pts = self.find_best_densification(edges, N)
+        densified_pts, point_levels = self.find_best_densification(edges, N)
         adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y)
         print("len(densified_pts): ", len(densified_pts), ", len(adjusted_pts): ", len(adjusted_pts))
 
+        # Print distribution of levels
+        unique_levels, counts = np.unique(point_levels, return_counts=True)
+        print("Level distribution:")
+        for level, count in zip(unique_levels, counts):
+            print(f"  Level {level}: {count} points")
+
         # Color initialization
-        # 스플랫 좌표에 해당하는 픽셀 색 샘플
+        # Sample pixel colors at splat coordinates
         idx_x = np.clip(np.round(adjusted_pts[:, 0]).astype(int), 0, W - 1)
         idx_y = np.clip(np.round(adjusted_pts[:, 1]).astype(int), 0, H - 1)
         c_init = I_color[idx_y, idx_x]                  # (N,3) float32
 
-        # 약간의 노이즈로 파라미터 다양화
+        # Add slight noise to diversify parameters
         c_init += np.random.normal(0.0, 0.02, c_init.shape)
-        c_init = np.clip(c_init, 0.0, 1.0)              # 안전 클립
+        c_init = np.clip(c_init, 0.0, 1.0)              # Safely clip values
         
-        # -------------------- radius 샘플 & 정렬 -------------------- #
+        # -------------------- Radius initialization based on levels -------------------- #
         num_points = adjusted_pts.shape[0]
-        r_np = np.random.rand(num_points) * min(H, W) / 4 + self.radii_min   # (N,)
-        sort_idx = np.argsort(r_np)           # 오름차순 (+)  → 큰 r 이 나중
+        
+        # Calculate max level for normalization
+        max_level = np.max(point_levels) if len(point_levels) > 0 else 1
+        
+        # Determine radius based on level - coarser level (smaller value) gets larger radius
+        # The formula: r = max_radius * (1 - level/max_level) + min_radius
+        max_radius = min(H, W) / 4
+        min_radius = self.radii_min
+        
+        # Calculate radius for each point - invert the level so lower levels get larger radii
+        normalized_levels = 1.0 - (point_levels / max_level)
+        r_np = min_radius + normalized_levels * (max_radius - min_radius)
+        
+        # Add some noise for variety while preserving the coarse-to-fine relationship
+        noise_scale = 0.15  # Scale of noise relative to radius range
+        noise = np.random.normal(0, noise_scale * (max_radius - min_radius), num_points)
+        r_np = np.clip(r_np + noise, min_radius, max_radius)
+        
+        # No sorting - keep the original order from the coarse-to-fine process
+        # This preserves the natural ordering where coarser level points come first
 
-        # 좌표·색·반경 모두 같은 순서로 재정렬
-        adjusted_pts = adjusted_pts[sort_idx]
-        r_np         = r_np[sort_idx]
-        c_init       = c_init[sort_idx]
-
-        # -------------------- tensor 변환 --------------------------- #
+        # -------------------- Convert to tensors -------------------- #
         x = torch.tensor(adjusted_pts[:, 0], dtype=torch.float32,
                          device=device, requires_grad=True)
         y = torch.tensor(adjusted_pts[:, 1], dtype=torch.float32,
@@ -107,8 +126,8 @@ class StructureAwareInitializer(BaseInitializer):
         r = torch.tensor(r_np, dtype=torch.float32,
                          device=device, requires_grad=True)
 
-        # -------------------- opacity v 초기화 (레이어 일치) -------- #
-        rank = torch.linspace(0.0, 1.0, steps=num_points, device=device)     # 0(아래)→1(위)
+        # -------------------- Initialize opacity v (layer consistent) -------- #
+        rank = torch.linspace(0.0, 1.0, steps=num_points, device=device)     # 0(bottom)→1(top)
         v = (self.v_init_bias + self.v_init_slope * rank).clone().detach()
         v += torch.empty_like(v).normal_(mean=0.0, std=0.05)
         v.requires_grad_(True)
@@ -120,7 +139,6 @@ class StructureAwareInitializer(BaseInitializer):
         
         end_time = time.time()
         formatted_time = str(timedelta(seconds=int(end_time - start_time)))
-        # 수행 시간 출력
         print(f"[initialize]total_cost_time: {formatted_time}")
         
         return x, y, r, v, theta, c

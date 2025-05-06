@@ -1,10 +1,21 @@
 {
     "preprocessing": {
-        "final_width": 1024,
+        "final_width": [256,512],
         "trim": false,
         "FM_halftone": false,
         "transform": "none",
-        "img_path": "images/HighFreq/0831.png",
+        "img_path": [
+            "images/CelebA/182340.png",
+            "images/CelebA/182341.png",
+            "images/CelebA/182342.png",
+            "images/BSDS500/101085.jpg",
+            "images/BSDS500/101087.jpg",
+            "images/BSDS500/102061.jpg",
+            "images/HighFreq/0831.png",
+            "images/MoviePosters/1.6_56415.jpg",
+            "images/MoviePosters/1.6_245943.jpg",
+            "images/MoviePosters/1.9_270846.jpg"
+        ],
         "bg_threshold": 250,
         "do_equalize": false,
         "do_local_contrast": false,
@@ -29,11 +40,11 @@
     },
     "initialization": {
         "initializer": "random",
-        "N": 2000,
+        "N": [1000, 3000, 5000],
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
-        "radii_min": 2,
+        "radii_min": 10,
         "v_init_bias":  -1.5,
         "v_init_slope": 3.0,
         "keypoint_extracting": false,
@@ -45,9 +56,10 @@
         "hollow": false
     },
     "optimization": {
+        "use_fp16": true,
         "renderer_type": "lpips",
-        "num_iterations": 300,
-        "batch_optimization": true,
+        "num_iterations": 100,
+        "batch_optimization": false,
         "batch_size": 256,
         "learning_rate": {
             "default": 0.5, 
@@ -71,11 +83,10 @@
             "sparsify_loss_coeff": 0.5,
             "sparsifying_period": 20,
             "sparsified_N": 1500
-        },
-        "strided_rasterization": true
+        }
     },
     "postprocessing": {
-        "output_folder": "outputs/HighFreq/",
+        "output_folder": "outputs/",
         "linewidth": 3.0,
         "compute_psnr": true
     }
