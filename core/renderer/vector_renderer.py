@@ -168,7 +168,7 @@ class VectorRenderer:
         Returns:
             Tuple of (composited color, composited alpha)
         """
-        if self.use_fp16:
+        if False: #if self.use_fp16:
             with autocast():
                 target_dtype = torch.float16 if self.use_fp16 else torch.float32
                 m = m#.to(dtype=target_dtype)

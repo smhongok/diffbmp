@@ -3,6 +3,7 @@ import cv2
 import torch
 import os
 import time
+import traceback
 from datetime import timedelta
 from abc import ABC, abstractmethod
 from core.renderer.vector_renderer import VectorRenderer
@@ -216,17 +217,28 @@ class BaseInitializer(ABC):
         best_min_distance = None
         max_len = -1
 
-        for min_dist in [1.9, 1.5, 1.0]:
-            self.min_distance = min_dist
-            points, point_levels = self.coarse_to_fine_densification(edge_map, N, best_level)
-            if len(points) > max_len:
-                print("len(points): ", len(points), ", N: ", N, ", level: ", best_level, ", min_dist: ", min_dist)
-                max_len = len(points)
-                best_points = points[:N]
-                best_levels = point_levels[:N]
-                best_min_distance = min_dist
+        while best_level > 0:
+            print("best_level: ", best_level)
+            try:
+                for min_dist in [1.9, 1.5, 1.0, 0.5]:
+                    self.min_distance = min_dist
+                    points, point_levels = self.coarse_to_fine_densification(edge_map, N, best_level)
+                    if len(points) > max_len:
+                        print("len(points): ", len(points), ", N: ", N, ", level: ", best_level, ", min_dist: ", min_dist)
+                        max_len = len(points)
+                        best_points = points[:N]
+                        best_levels = point_levels[:N]
+                        best_min_distance = min_dist
+                        if len(points) >= N:
+                            break  # good enough, go shallower
                 if len(points) >= N:
                     break  # good enough, go shallower
+                
+            except Exception as e:
+                print(f"Error in find_best_densification: {e}")
+                traceback.print_exc()
+                
+            best_level -= 1
             
         if len(points) < N:
             print("Couldn't generate enough points with given constraints. Try again with min_distance 1.")

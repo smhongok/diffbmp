@@ -1,11 +1,21 @@
 {
     "preprocessing": {
-        "final_width": 256,
-        "use_fp16": false,
+        "final_width": [256,512],
         "trim": false,
         "FM_halftone": false,
         "transform": "none",
-        "img_path": "images/HighFreq/0831.png",
+        "img_path": [
+            "images/CelebA/182340.png",
+            "images/CelebA/182341.png",
+            "images/CelebA/182342.png",
+            "images/BSDS500/101085.jpg",
+            "images/BSDS500/101087.jpg",
+            "images/BSDS500/102061.jpg",
+            "images/HighFreq/0831.png",
+            "images/MoviePosters/1.6_56415.jpg",
+            "images/MoviePosters/1.6_245943.jpg",
+            "images/MoviePosters/1.9_270846.jpg"
+        ],
         "bg_threshold": 250,
         "do_equalize": false,
         "do_local_contrast": false,
@@ -30,7 +40,7 @@
     },
     "initialization": {
         "initializer": "random",
-        "N": 1000,
+        "N": [1000, 3000, 5000],
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
@@ -46,6 +56,7 @@
         "hollow": false
     },
     "optimization": {
+        "use_fp16": true,
         "renderer_type": "lpips",
         "num_iterations": 100,
         "batch_optimization": false,
@@ -75,7 +86,7 @@
         }
     },
     "postprocessing": {
-        "output_folder": "outputs/HighFreq/",
+        "output_folder": "outputs/",
         "linewidth": 3.0,
         "compute_psnr": true
     }

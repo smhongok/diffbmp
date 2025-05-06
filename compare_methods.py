@@ -22,6 +22,7 @@ from util.pdf_exporter import PDFExporter
 # Enable gradient checkpointing for memory efficiency
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.deterministic = True
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def compute_metrics(pred: torch.Tensor, target: torch.Tensor) -> Dict[str, float]:
     """Compute image quality metrics."""
@@ -288,15 +289,14 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
 
 def process_combination(args):
     """Process a single initializer-renderer combination."""
-    initial_params, init, renderer_name, config, I_target, svg_path, svg_loader = args
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    initial_params, init, renderer_name, config, I_target, svg_loader = args
     print(f"\nUsing {init.__class__.__name__} with {renderer_name}")
     
     # Move tensors to device
     I_target = I_target.to(device)
     
     # Check if we should use FP16 (half precision) for memory efficiency
-    use_fp16 = config.get("use_fp16", False)  # Default to False for CPU compatibility
+    use_fp16 = config["optimization"].get("use_fp16", False)  # Default to False for CPU compatibility
     
     # Get bitmap tensor for renderer with appropriate precision
     bmp_tensor = svg_loader.load_alpha_bitmap()
@@ -441,7 +441,7 @@ def process_combination(args):
     
     H, W = config['canvas_size']
     exporter = PDFExporter(
-        svg_path, 
+        svg_loader.svg_path, 
         canvas_size=(W, H),
         viewbox_size=svg_loader.get_svg_size(),
         alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
@@ -475,82 +475,9 @@ def process_combination(args):
         'metrics': metrics,
         'params': params_cpu
     }
-
-def main():
-    parser = argparse.ArgumentParser(description="Compare different initializers and renderers")
-    parser.add_argument('--config', type=str, required=True, help='Path to the config file')
-    args = parser.parse_args()
     
-    # Load configuration
-    with open(args.config, "r", encoding="utf-8") as f:
-        config = json.load(f)
-    
-    # Set use_fp16 with a default
-    if "use_fp16" not in config:
-        # Default to False for better compatibility
-        config["use_fp16"] = False
-    
-    print(f"Using FP16 (half precision): {config['use_fp16']}")
-    
-    # Set random seed
-    set_global_seed(config.get("seed", 42))
-    
-    # Setup device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Initialize preprocessor
-    pp_conf = config["preprocessing"]
-    preprocessor = Preprocessor(
-        final_width=pp_conf.get("final_width", 128),
-        trim=pp_conf.get("trim", False),
-        FM_halftone=pp_conf.get("FM_halftone", False),
-        transform_mode=pp_conf.get("transform", "none"),
-    )
-    
-    # Load and preprocess target image
-    I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
-    # Convert to appropriate precision based on config
-    if config["use_fp16"]:
-        I_target = torch.tensor(I_target, dtype=torch.float16).to(device)
-    else:
-        I_target = torch.tensor(I_target, dtype=torch.float32).to(device)
-        
-    H = preprocessor.final_height
-    W = preprocessor.final_width
-    config['canvas_size'] = (H, W)
-    
-    # Clean up preprocessor
-    del preprocessor
-    
-    # Handle SVG file loading
-    svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
-    if (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
-        font_parser = FontParser(config["svg"].get("svg_file"))
-        svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode="opt-path"))
-        # Clean up font parser
-        del font_parser
-    else:
-        svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
-    
-    # Load SVG file
-    svg_loader = SVGLoader(
-        svg_path=svg_path,
-        output_width=config["svg"].get("output_width", 128),
-        device=device
-    )
-    classify_svg = svg_loader.classify_svg()
-    print(f"SVG is classified as: {classify_svg}")
-    
-    # Define renderer names - sorted by memory usage (lowest first)
-    renderer_names = ["MseRenderer", "MixRenderer"]  # Add more as needed
-    
-    # Process initializers one at a time to save memory
-    initializers_configs = [
-        ("StructureAwareInitializer", config["initialization"]),
-        ("RandomInitializer", config["initialization"]),
-        # Add more initializers as needed
-    ]
-    
+def run_comparison(initializers_configs, renderer_names, config, I_target, svg_loader, device):
+    H, W = config['canvas_size']
     results = []
     
     # Process each initializer-renderer combination one at a time
@@ -567,7 +494,7 @@ def main():
         
         # Create VectorRenderer only when needed
         bmp_tensor = svg_loader.load_alpha_bitmap()
-        if config["use_fp16"]:
+        if config["optimization"].get("use_fp16", False):
             bmp_tensor = bmp_tensor.to(dtype=torch.float16)
         else:
             bmp_tensor = bmp_tensor.to(dtype=torch.float32)
@@ -576,7 +503,7 @@ def main():
         vec_renderer = VectorRenderer((H, W), S=bmp_tensor, 
                                     alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
                                     device=device,
-                                    use_fp16=config["use_fp16"])
+                                    use_fp16=config["optimization"].get("use_fp16", False))
         
         # Generate initialization parameters
         if "LevelInitializer" in init_name:
@@ -602,7 +529,7 @@ def main():
             
             # Process each combination and store results
             try:
-                result = process_combination((params, initializer, renderer_name, config, I_target, svg_path, svg_loader))
+                result = process_combination((params, initializer, renderer_name, config, I_target, svg_loader))
                 results.append(result)
                 
                 # Explicit memory cleanup
@@ -659,6 +586,112 @@ def main():
         traceback.print_exc()
     
     print("Comparison complete!")
+
+def main():
+    parser = argparse.ArgumentParser(description="Compare different initializers and renderers")
+    parser.add_argument('--config', type=str, required=True, help='Path to the config file')
+    args = parser.parse_args()
+    
+    # Load configuration
+    with open(args.config, "r", encoding="utf-8") as f:
+        config = json.load(f)
+    
+    print(f"Using FP16 (half precision): {config['optimization'].get('use_fp16', False)}")
+    
+    # Set random seed
+    set_global_seed(config.get("seed", 42))
+        
+    # Initialize preprocessor
+    pp_conf = config["preprocessing"]
+    preprocessor = Preprocessor(
+        final_width=pp_conf.get("final_width", 128),
+        trim=pp_conf.get("trim", False),
+        FM_halftone=pp_conf.get("FM_halftone", False),
+        transform_mode=pp_conf.get("transform", "none"),
+    )
+    
+    # Handle SVG file loading
+    svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
+    if (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
+        font_parser = FontParser(config["svg"].get("svg_file"))
+        svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode="opt-path"))
+        # Clean up font parser
+        del font_parser
+    else:
+        svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
+    
+    # Load SVG file
+    svg_loader = SVGLoader(
+        svg_path=svg_path,
+        output_width=config["svg"].get("output_width", 128),
+        device=device
+    )
+    classify_svg = svg_loader.classify_svg()
+    print(f"SVG is classified as: {classify_svg}")
+    
+    # Define renderer names - sorted by memory usage (lowest first)
+    renderer_names = ["MseRenderer", "MixRenderer"]  # Add more as needed
+    
+    # Process initializers one at a time to save memory
+    initializers_configs = [
+        ("StructureAwareInitializer", config["initialization"]),
+        ("RandomInitializer", config["initialization"]),
+        # Add more initializers as needed
+    ]
+    
+    orig_final_width = config["preprocessing"].get("final_width", 128)
+    if type(orig_final_width) is list:
+        final_width_list = orig_final_width
+    else:
+        final_width_list = [orig_final_width]
+    
+    orig_N = config["initialization"].get("N", 1000)
+    if type(orig_N) is list:
+        N_list = orig_N
+    else:
+        N_list = [orig_N]
+        
+    orig_img_path = config["preprocessing"].get("img_path", "images/HighFreq/0831.png")
+    if type(orig_img_path) is list:
+        img_path_list = orig_img_path
+    else:
+        img_path_list = [orig_img_path]
+        
+    orig_output_folder = config["postprocessing"].get("output_folder", "./outputs/")
+    
+    for final_width in final_width_list:
+        config["preprocessing"]["final_width"] = final_width
+        print(f"final_width: {final_width}")
+        print(f"type(final_width): {type(final_width)}")
+        
+        preprocessor.final_width = final_width
+        for img_path in img_path_list:
+            print(f"img_path: {img_path}")
+            print(f"type(img_path): {type(img_path)}")
+            config["preprocessing"]["img_path"] = img_path
+            
+            # Load and preprocess target image
+            I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
+            # Convert to appropriate precision based on config
+            if config["optimization"].get("use_fp16", False):
+                I_target = torch.tensor(I_target, dtype=torch.float16).to(device)
+            else:
+                I_target = torch.tensor(I_target, dtype=torch.float32).to(device)
+                
+            H = preprocessor.final_height
+            W = preprocessor.final_width
+            config['canvas_size'] = (H, W)
+            
+            for N in N_list:
+                config["initialization"]["N"] = N
+                config["postprocessing"]["output_folder"] = os.path.join(orig_output_folder, img_path.split("/")[-2], "width" + str(final_width), "N" + str(N))
+                run_comparison(initializers_configs, renderer_names, config, I_target, svg_loader, device)
+                torch.cuda.empty_cache()
+                gc.collect()
+        
+        del I_target
+        torch.cuda.empty_cache()
+        gc.collect()
 
 if __name__ == '__main__':
     start_time = time.time()
