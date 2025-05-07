@@ -126,6 +126,9 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
     elif cols == 1:
         axes = axes.reshape(-1, 1)
     
+    if config["optimization"].get("use_fp16", False):
+        target_image = target_image.astype(np.float32)
+
     # Add configuration info
     try:
         preproc_conf = config["preprocessing"]
@@ -174,8 +177,8 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
             rendered_img = rendered_img.float().detach().cpu().numpy()
         
         # Ensure image is float64 for display
-        if rendered_img.dtype != np.float64:
-            rendered_img = rendered_img.astype(np.float64)
+        if rendered_img.dtype != np.float32:
+            rendered_img = rendered_img.astype(np.float32)
         
         # Replace any NaN/Inf values
         if np.isnan(rendered_img).any() or np.isinf(rendered_img).any():
@@ -221,7 +224,7 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
                 try:
                     # Extract parameters
                     x, y, r, v, theta, c = result['params']
-                    
+
                     # Convert to numpy 
                     x_np = x.float().detach().cpu().numpy()
                     y_np = y.float().detach().cpu().numpy()
@@ -612,7 +615,9 @@ def main():
     
     # Handle SVG file loading
     svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
-    if (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
+    if svg_ext == ".svg":
+        svg_path = os.path.join("assets/svg", config["svg"].get("svg_file"))
+    elif (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
         font_parser = FontParser(config["svg"].get("svg_file"))
         svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode="opt-path"))
         # Clean up font parser
@@ -620,6 +625,8 @@ def main():
     else:
         svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
     
+    print(f"SVG path: {svg_path}")
+
     # Load SVG file
     svg_loader = SVGLoader(
         svg_path=svg_path,

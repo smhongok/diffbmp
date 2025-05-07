@@ -363,11 +363,11 @@ class MixRenderer(VectorRenderer):
             {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
             {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
             {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
-            {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
+            {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0) * (1000.0/x.numel())},
         ])
         
         appearance_optimizer = torch.optim.Adam([
-            {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},
+            {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0) * (1000.0/x.numel())},
             {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
         ])
         

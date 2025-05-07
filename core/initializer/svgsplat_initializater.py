@@ -15,6 +15,7 @@ from typing import Dict, Any
 class StructureAwareInitializer(BaseInitializer):
     def __init__(self, init_opt:Dict[str, Any]):
         super().__init__(init_opt)
+        self.size_by_levels = [0] * 10
         
     def initialize(self, I_target, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
         """

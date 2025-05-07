@@ -148,6 +148,9 @@ class BaseInitializer(ABC):
         return np.array(adjusted)
     
     def coarse_to_fine_densification(self, edge_map, N, levels, refine_min_dist=False):
+        size_by_levels = [0] * 10
+        cur_size = 0
+        
         def densify_at_levels(edge_map, N, levels, initial_points, initial_levels, base_min_dist):
             points = initial_points.copy()
             point_levels = initial_levels.copy() if initial_levels is not None else np.array([])

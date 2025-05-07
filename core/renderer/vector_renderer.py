@@ -168,36 +168,50 @@ class VectorRenderer:
         Returns:
             Tuple of (composited color, composited alpha)
         """
-        if False: #if self.use_fp16:
+        if self.use_fp16:
             with autocast():
-                target_dtype = torch.float16 if self.use_fp16 else torch.float32
-                m = m#.to(dtype=target_dtype)
-                a = a#.to(dtype=target_dtype)
-                N, H, W, _ = m.shape
-                
-                # Use local buffer to ensure checkpointing compatibility
-                comp_m = torch.zeros(H, W, 3, device=m.device, dtype=m.dtype)
-                comp_a = torch.zeros(H, W, device=m.device, dtype=a.dtype)
-    
-                for i in range(N):
-                    ai = a[i]
-                    mi = m[i]
-                    
-                    # Pre-compute 1-ai for reuse
-                    inv_ai = 1.0 - ai
-                    
-                    # Use inplace operations to optimize memory
-                    comp_m *= inv_ai.unsqueeze(-1)
-                    comp_m += mi
-                    
-                    comp_a *= inv_ai
-                    comp_a += ai
-                    
-                    # Free temporary tensors immediately
-                    if self.use_fp16:
-                        del ai, mi, inv_ai
-                
-                return comp_m, comp_a
+                '''
+                N0 = m.size(0)
+                # 2의 거듭제곱으로 맞출 크기 계산
+                Npad = 1 << (N0 - 1).bit_length()
+                if Npad != N0:
+                    pad = Npad - N0
+                    pad_m = torch.zeros((pad, *m.shape[1:]), device=m.device, dtype=m.dtype)
+                    pad_a = torch.zeros((pad, *a.shape[1:]), device=a.device, dtype=a.dtype)
+                    m = torch.cat([m, pad_m], dim=0)
+                    a = torch.cat([a, pad_a], dim=0)
+
+                # 반복문 내에선 더 이상 torch.cat/zeros 호출 없음
+                while m.size(0) > 1:
+                    n2 = m.size(0) // 2
+                    m = m.view(n2, 2, *m.shape[1:])  # view: 메모리 추가 없이 reshape
+                    a = a.view(n2, 2, *a.shape[1:])
+                    inv = (1 - a[:, 0]).unsqueeze(-1)  # shape=(n2,H,W,1)
+                    # in-place update
+                    m0 = m[:, 0]
+                    m0.mul_(inv).add_(m[:, 1])
+                    a0 = a[:, 0]
+                    a0.mul_(inv.squeeze(-1)).add_(a[:, 1])
+                    m, a = m0, a0
+
+                return m.squeeze(0), a.squeeze(0)
+                '''
+                while m.size(0) > 1:
+                    n = m.size(0)
+                    if n % 2 == 1:
+                        pad_m = torch.zeros((1, *m.shape[1:]), device=m.device, dtype=m.dtype)
+                        pad_a = torch.zeros((1, *a.shape[1:]), device=a.device, dtype=a.dtype)
+                        m = torch.cat([m, pad_m], dim=0)
+                        a = torch.cat([a, pad_a], dim=0)
+                        n += 1
+                    new_n = n // 2
+                    # reshape은 view → 메모리 추가 없음
+                    m = m.view(new_n, 2, *m.shape[1:])
+                    a = a.view(new_n, 2, *a.shape[1:])
+                    # pairwise compositing (in-place로 덮어쓸 수도 있음)
+                    m = m[:,0] + (1 - a[:,0]).unsqueeze(-1) * m[:,1]
+                    a = a[:,0] + (1 - a[:,0]) * a[:,1]
+                return m.squeeze(0), a.squeeze(0)
         else:
             while m.size(0) > 1:
                 n = m.size(0)
@@ -532,8 +546,8 @@ class VectorRenderer:
             {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
             {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
             {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
-            {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},
-            {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
+            {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0) * (1000.0/x.numel())},
+            {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0) * (1000.0/x.numel())},
             {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
         ])
         
