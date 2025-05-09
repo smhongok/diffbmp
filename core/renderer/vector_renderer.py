@@ -1,7 +1,8 @@
 from contextlib import nullcontext
 import torch
 import torch.nn.functional as F
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
+from torch import nn
 import torch.utils.checkpoint as cp
 import numpy as np
 from typing import Tuple, Optional, List, Dict, Any
@@ -90,7 +91,7 @@ class VectorRenderer:
             masks:     [N, H, W]  (one soft mask per shape)
         """
         # Choose context manager based on precision mode
-        context = autocast() if self.use_fp16 else nullcontext()
+        context = autocast('cuda') if self.use_fp16 else nullcontext()
         
         with context:
             B = len(x)
@@ -169,7 +170,7 @@ class VectorRenderer:
             Tuple of (composited color, composited alpha)
         """
         if self.use_fp16:
-            with autocast():
+            with autocast('cuda'):
                 '''
                 N0 = m.size(0)
                 # 2의 거듭제곱으로 맞출 크기 계산
@@ -274,7 +275,7 @@ class VectorRenderer:
         - rgb  : (H, W, 3)  (always)
         - alpha: (H, W, 1)  (optional, when return_alpha=True)
         """
-        context = autocast() if self.use_fp16 else nullcontext()
+        context = autocast('cuda') if self.use_fp16 else nullcontext()
         
         with context:    
             target_dtype = torch.float16 if self.use_fp16 else torch.float32
@@ -376,7 +377,7 @@ class VectorRenderer:
                 theta_chunk = theta[i:j]#.to(dtype=target_dtype)
                 
             # a) Rasterize just this subset
-            context = autocast() if self.use_fp16 else nullcontext()
+            context = autocast('cuda') if self.use_fp16 else nullcontext()
             with context:
                 masks_chunk = self._batched_soft_rasterize(
                     x_chunk, y_chunk,
@@ -526,7 +527,7 @@ class VectorRenderer:
             self.memory_report("Before optimization")
         
         # Mixed-precision scaler (only used if use_fp16 is True)
-        scaler = GradScaler() if self.use_fp16 else None
+        scaler = GradScaler('cuda') if self.use_fp16 else None
         
         # Pre-calculate configurations
         blur_sigma = opt_conf.get("blur_sigma", 0.0)
@@ -542,14 +543,43 @@ class VectorRenderer:
         #c.requires_grad_(True)
         
         # Create optimizer
-        optimizer = torch.optim.Adam([
-            {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
-            {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
-            {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
-            {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0) * (1000.0/x.numel())},
-            {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0) * (1000.0/x.numel())},
-            {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
-        ])
+        if True:
+            param_groups = [
+                {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
+                {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
+                {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
+                {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0) * (1000.0/x.numel())},
+                {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0) * (1000.0/x.numel())},
+                {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
+            ]
+            optimizer = torch.optim.Adam(param_groups)
+        else:
+            counts = [1, 1, 9, 35, 137, 553, 2264]
+            param_groups = []
+            custom_gain = 1000.0 / x.numel()
+
+            x_split = [nn.Parameter(p) for p in torch.split(x, counts)]
+            y_split = [nn.Parameter(p) for p in torch.split(y, counts)]
+            r_split = [nn.Parameter(p) for p in torch.split(r, counts)]
+            v_split = [nn.Parameter(p) for p in torch.split(v, counts)]
+            theta_split = [nn.Parameter(p) for p in torch.split(theta, counts)]
+            c_split = [nn.Parameter(p) for p in torch.split(c, counts)]
+
+            for i in range(len(counts)):
+                param_groups.append({'params': [x_split[i]], 'lr': lr * lr_conf.get("gain_x", 1.0)})
+                param_groups.append({'params': [y_split[i]], 'lr': lr * lr_conf.get("gain_y", 1.0)})
+                param_groups.append({'params': [r_split[i]], 'lr': lr * lr_conf.get("gain_r", 1.0)})
+                param_groups.append({
+                    'params': [v_split[i]],
+                    'lr': lr * lr_conf.get("gain_v", 1.0) * (custom_gain * (0.9 ** (len(counts) - i - 1)))
+                })
+                param_groups.append({
+                    'params': [theta_split[i]],
+                    'lr': lr * lr_conf.get("gain_theta", 1.0) * custom_gain
+                })
+                param_groups.append({'params': [c_split[i]], 'lr': lr * lr_conf.get("gain_c", 1.0)})
+
+            optimizer = torch.optim.Adam(param_groups)
         
         print(f"Starting optimization, {num_iterations} iterations...")
         for epoch in tqdm(range(num_iterations)):
@@ -558,7 +588,7 @@ class VectorRenderer:
             
             # Render image - use different approaches based on precision mode
             if self.use_fp16:
-                with autocast():
+                with autocast('cuda'):
                     if opt_conf.get("multi_level", False):
                         rendered = self.render(self.S, v, c)
                     else:
@@ -595,6 +625,8 @@ class VectorRenderer:
                 
                     # Calculate gradients (accumulate per step)
                     scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
                 
                     # Free memory immediately
                     del rendered
@@ -602,10 +634,7 @@ class VectorRenderer:
                         del cached_masks_ref
                     if self.use_fp16:
                         torch.cuda.empty_cache()
-                         
-                # Update parameters with accumulated gradients
-                scaler.step(optimizer)
-                scaler.update()
+                    
             else:
                 # Non-FP16 mode - standard approach without autocast or scaler
                 if opt_conf.get("multi_level", False):

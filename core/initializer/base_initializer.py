@@ -92,13 +92,13 @@ class BaseInitializer(ABC):
         
         return canvas
         
-    def curvature_aware_densification(self, edge_map, points, N, min_dist):
+    def curvature_aware_densification(self, edge_map, points, N, min_dist, curvature_threshold=0.2):
         N_add = N - len(points)
         h, w = edge_map.shape
         edge_norm = edge_map.astype(np.float32) / 255.0
 
         # 1. Mask only low-curvature regions (below threshold)
-        mask = edge_norm < 0.2
+        mask = edge_norm < curvature_threshold
         num_total = edge_norm.size
         num_valid = np.count_nonzero(mask)
         print(f"Low-edge pixels: {num_valid} / {num_total} ({100 * num_valid / num_total:.2f}%)")
@@ -147,10 +147,7 @@ class BaseInitializer(ABC):
             adjusted.append([new_x, new_y])
         return np.array(adjusted)
     
-    def coarse_to_fine_densification(self, edge_map, N, levels, refine_min_dist=False):
-        size_by_levels = [0] * 10
-        cur_size = 0
-        
+    def coarse_to_fine_densification(self, edge_map, N, levels, refine_min_dist=False):        
         def densify_at_levels(edge_map, N, levels, initial_points, initial_levels, base_min_dist):
             points = initial_points.copy()
             point_levels = initial_levels.copy() if initial_levels is not None else np.array([])
@@ -204,7 +201,7 @@ class BaseInitializer(ABC):
         if refine_min_dist and len(points) < N:
             points, point_levels = densify_at_levels(edge_map, N, levels, points, point_levels, base_min_dist=1.0)
             if len(points) < N:
-                points, point_levels = densify_at_levels(edge_map, N, levels, points, point_levels, base_min_dist=0.9)
+                points, point_levels = densify_at_levels(edge_map, N, levels, points, point_levels, base_min_dist=0.0)
 
         # Return both points and their level information
         if len(points) > N:
@@ -244,7 +241,7 @@ class BaseInitializer(ABC):
             best_level -= 1
             
         if len(points) < N:
-            print("Couldn't generate enough points with given constraints. Try again with min_distance 1.")
+            print("Couldn't generate enough points with given constraints. Try again with min_distance 1.0")
             self.min_distance = best_min_distance
             best_points, best_levels = self.coarse_to_fine_densification(edge_map, N, best_level, refine_min_dist=True)
 

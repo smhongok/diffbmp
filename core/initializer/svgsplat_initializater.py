@@ -15,7 +15,6 @@ from typing import Dict, Any
 class StructureAwareInitializer(BaseInitializer):
     def __init__(self, init_opt:Dict[str, Any]):
         super().__init__(init_opt)
-        self.size_by_levels = [0] * 10
         
     def initialize(self, I_target, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
         """
@@ -128,9 +127,26 @@ class StructureAwareInitializer(BaseInitializer):
                          device=device, requires_grad=True)
 
         # -------------------- Initialize opacity v (layer consistent) -------- #
-        rank = torch.linspace(0.0, 1.0, steps=num_points, device=device)     # 0(bottom)→1(top)
-        v = (self.v_init_bias + self.v_init_slope * rank).clone().detach()
-        v += torch.empty_like(v).normal_(mean=0.0, std=0.05)
+        if False:
+            # counts 리스트의 길이에 따라 균일하게 분포된 rank 생성
+            rank = torch.linspace(0.0, 1.0, steps=len(counts), device=device)
+
+            # 각 level별 v 값 계산
+            level_v_values = (self.v_init_bias - 0.5) * (1 - rank) - 2.0 * rank  # rank가 0일 때 v_init_bias-0.5, rank가 1일 때 -1.0
+
+            # 각 point에 대해 해당 level의 v 값 할당
+            v = torch.zeros(num_points, device=device)
+            start_idx = 0
+            for level_idx, count in enumerate(counts):
+                end_idx = start_idx + count
+                v[start_idx:end_idx] = level_v_values[level_idx]
+                start_idx = end_idx
+        elif True:
+            v = torch.full((num_points,), -2.0, device=device)
+        else:
+            rank = torch.linspace(0.0, 1.0, steps=num_points, device=device)     # 0(bottom)→1(top)
+            v = (self.v_init_bias - 0.5 + self.v_init_slope * rank).clone().detach()
+            v += torch.empty_like(v).normal_(mean=0.0, std=0.05)
         v.requires_grad_(True)
 
         theta = torch.rand(num_points, device=device, requires_grad=True) * 2 * np.pi

@@ -330,6 +330,12 @@ def process_combination(args):
                             device=device, 
                             classify_svg=svg_loader.classify_svg(),
                             use_fp16=use_fp16)
+    elif renderer_name == "FreqRenderer":
+        from core.renderer.freq_renderer import FreqRenderer
+        renderer = FreqRenderer((H, W), S=bmp_tensor, 
+                                alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
+                                device=device, 
+                                use_fp16=use_fp16)
     else:
         raise ValueError(f"Unknown renderer: {renderer_name}")
     
@@ -637,7 +643,7 @@ def main():
     print(f"SVG is classified as: {classify_svg}")
     
     # Define renderer names - sorted by memory usage (lowest first)
-    renderer_names = ["MseRenderer", "MixRenderer"]  # Add more as needed
+    renderer_names = ["MseRenderer", "MixRenderer", "FreqRenderer"]  # Add more as needed
     
     # Process initializers one at a time to save memory
     initializers_configs = [

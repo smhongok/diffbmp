@@ -1,20 +1,11 @@
 {
     "preprocessing": {
-        "final_width": [256,512],
+        "final_width": [256],
         "trim": false,
         "FM_halftone": false,
         "transform": "none",
         "img_path": [
-            "images/CelebA/182340.png",
-            "images/CelebA/182341.png",
-            "images/CelebA/182342.png",
-            "images/BSDS500/101085.jpg",
-            "images/BSDS500/101087.jpg",
-            "images/BSDS500/102061.jpg",
-            "images/HighFreq/0831.png",
-            "images/MoviePosters/1.6_56415.jpg",
-            "images/MoviePosters/1.6_245943.jpg",
-            "images/MoviePosters/1.9_270846.jpg"
+            "images/BSDS500/101085.jpg"
         ],
         "bg_threshold": 250,
         "do_equalize": false,
@@ -40,12 +31,12 @@
     },
     "initialization": {
         "initializer": "random",
-        "N": [1000, 3000, 5000],
+        "N": [1000,3000,5000],
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
         "radii_min": 2,
-        "v_init_bias":  -5.0,
+        "v_init_bias": -5.0,
         "v_init_slope": 3.0,
         "keypoint_extracting": false,
         "debug_mode": true,
