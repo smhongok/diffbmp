@@ -8,7 +8,7 @@ from typing import Tuple, Dict, Any
 from torchvision import models
 import piq
 import torch.utils.checkpoint as checkpoint
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 
 class MixRenderer(VectorRenderer):
     def __init__(self, canvas_size: Tuple[int, int], S: torch.Tensor, alpha_upper_bound: float = 0.5, device: torch.device = None, classify_svg: str = None, use_fp16: bool = False):
@@ -238,19 +238,11 @@ class MixRenderer(VectorRenderer):
         rendered_nchw = rendered.permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
         target_nchw = target.permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
         
+        rendered_nchw = rendered_nchw * 2.0 - 1.0
+        target_nchw = target_nchw * 2.0 - 1.0
+        
         # Compute LPIPS loss with optional checkpointing
-        if self.use_lpips_checkpointing and self.use_fp16:
-            def lpips_func(r, t):
-                return self.lpips(r, t)
-            
-            perceptual_loss = checkpoint.checkpoint(
-                lpips_func,
-                rendered_nchw,
-                target_nchw,
-                use_reentrant=False
-            )
-        else:
-            perceptual_loss = self.lpips(rendered_nchw, target_nchw)
+        perceptual_loss = self.lpips(rendered_nchw, target_nchw)
         
         return perceptual_loss
             
@@ -363,23 +355,23 @@ class MixRenderer(VectorRenderer):
             {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
             {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
             {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
-            {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
+            {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0) * (1000.0/x.numel())},
         ])
         
         appearance_optimizer = torch.optim.Adam([
-            {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},
+            {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0) * (1000.0/x.numel())},
             {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
         ])
         
         # Only use mixed precision in FP16 mode
-        shape_scaler = GradScaler() if self.use_fp16 else None
-        appearance_scaler = GradScaler() if self.use_fp16 else None
+        shape_scaler = GradScaler('cuda') if self.use_fp16 else None
+        appearance_scaler = GradScaler('cuda') if self.use_fp16 else None
         
         print(f"Starting optimization for {num_iterations} iterations...")
         for epoch in tqdm(range(num_iterations)):
             # Define context manager based on precision mode
-            shape_context = autocast() if self.use_fp16 else nullcontext()
-            appearance_context = autocast() if self.use_fp16 else nullcontext()
+            shape_context = autocast('cuda') if self.use_fp16 else nullcontext()
+            appearance_context = autocast('cuda') if self.use_fp16 else nullcontext()
             
             # Step 1: Optimize shape parameters
             shape_optimizer.zero_grad()

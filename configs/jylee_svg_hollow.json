@@ -27,7 +27,7 @@
         "output_width": 128
     },
     "initialization": {
-        "initializer": "op_size_lv_aware"
+        "initializer": "op_size_lv_aware",
         "N": 2000,
         "alpha": 0.3,
         "min_distance": 3,
@@ -35,7 +35,7 @@
         "radii_min": 2,
         "v_init_mean": -5.0,
         "keypoint_extracting": true,
-        "whole_random": true,
+        "whole_random": true
     },
     "optimization": {
         "num_iterations": 300,

@@ -1,7 +1,8 @@
 from contextlib import nullcontext
 import torch
 import torch.nn.functional as F
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
+from torch import nn
 import torch.utils.checkpoint as cp
 import numpy as np
 from typing import Tuple, Optional, List, Dict, Any
@@ -90,7 +91,7 @@ class VectorRenderer:
             masks:     [N, H, W]  (one soft mask per shape)
         """
         # Choose context manager based on precision mode
-        context = autocast() if self.use_fp16 else nullcontext()
+        context = autocast('cuda') if self.use_fp16 else nullcontext()
         
         with context:
             B = len(x)
@@ -168,36 +169,50 @@ class VectorRenderer:
         Returns:
             Tuple of (composited color, composited alpha)
         """
-        if False: #if self.use_fp16:
-            with autocast():
-                target_dtype = torch.float16 if self.use_fp16 else torch.float32
-                m = m#.to(dtype=target_dtype)
-                a = a#.to(dtype=target_dtype)
-                N, H, W, _ = m.shape
-                
-                # Use local buffer to ensure checkpointing compatibility
-                comp_m = torch.zeros(H, W, 3, device=m.device, dtype=m.dtype)
-                comp_a = torch.zeros(H, W, device=m.device, dtype=a.dtype)
-    
-                for i in range(N):
-                    ai = a[i]
-                    mi = m[i]
-                    
-                    # Pre-compute 1-ai for reuse
-                    inv_ai = 1.0 - ai
-                    
-                    # Use inplace operations to optimize memory
-                    comp_m *= inv_ai.unsqueeze(-1)
-                    comp_m += mi
-                    
-                    comp_a *= inv_ai
-                    comp_a += ai
-                    
-                    # Free temporary tensors immediately
-                    if self.use_fp16:
-                        del ai, mi, inv_ai
-                
-                return comp_m, comp_a
+        if self.use_fp16:
+            with autocast('cuda'):
+                '''
+                N0 = m.size(0)
+                # 2의 거듭제곱으로 맞출 크기 계산
+                Npad = 1 << (N0 - 1).bit_length()
+                if Npad != N0:
+                    pad = Npad - N0
+                    pad_m = torch.zeros((pad, *m.shape[1:]), device=m.device, dtype=m.dtype)
+                    pad_a = torch.zeros((pad, *a.shape[1:]), device=a.device, dtype=a.dtype)
+                    m = torch.cat([m, pad_m], dim=0)
+                    a = torch.cat([a, pad_a], dim=0)
+
+                # 반복문 내에선 더 이상 torch.cat/zeros 호출 없음
+                while m.size(0) > 1:
+                    n2 = m.size(0) // 2
+                    m = m.view(n2, 2, *m.shape[1:])  # view: 메모리 추가 없이 reshape
+                    a = a.view(n2, 2, *a.shape[1:])
+                    inv = (1 - a[:, 0]).unsqueeze(-1)  # shape=(n2,H,W,1)
+                    # in-place update
+                    m0 = m[:, 0]
+                    m0.mul_(inv).add_(m[:, 1])
+                    a0 = a[:, 0]
+                    a0.mul_(inv.squeeze(-1)).add_(a[:, 1])
+                    m, a = m0, a0
+
+                return m.squeeze(0), a.squeeze(0)
+                '''
+                while m.size(0) > 1:
+                    n = m.size(0)
+                    if n % 2 == 1:
+                        pad_m = torch.zeros((1, *m.shape[1:]), device=m.device, dtype=m.dtype)
+                        pad_a = torch.zeros((1, *a.shape[1:]), device=a.device, dtype=a.dtype)
+                        m = torch.cat([m, pad_m], dim=0)
+                        a = torch.cat([a, pad_a], dim=0)
+                        n += 1
+                    new_n = n // 2
+                    # reshape은 view → 메모리 추가 없음
+                    m = m.view(new_n, 2, *m.shape[1:])
+                    a = a.view(new_n, 2, *a.shape[1:])
+                    # pairwise compositing (in-place로 덮어쓸 수도 있음)
+                    m = m[:,0] + (1 - a[:,0]).unsqueeze(-1) * m[:,1]
+                    a = a[:,0] + (1 - a[:,0]) * a[:,1]
+                return m.squeeze(0), a.squeeze(0)
         else:
             while m.size(0) > 1:
                 n = m.size(0)
@@ -260,7 +275,7 @@ class VectorRenderer:
         - rgb  : (H, W, 3)  (always)
         - alpha: (H, W, 1)  (optional, when return_alpha=True)
         """
-        context = autocast() if self.use_fp16 else nullcontext()
+        context = autocast('cuda') if self.use_fp16 else nullcontext()
         
         with context:    
             target_dtype = torch.float16 if self.use_fp16 else torch.float32
@@ -362,7 +377,7 @@ class VectorRenderer:
                 theta_chunk = theta[i:j]#.to(dtype=target_dtype)
                 
             # a) Rasterize just this subset
-            context = autocast() if self.use_fp16 else nullcontext()
+            context = autocast('cuda') if self.use_fp16 else nullcontext()
             with context:
                 masks_chunk = self._batched_soft_rasterize(
                     x_chunk, y_chunk,
@@ -512,7 +527,7 @@ class VectorRenderer:
             self.memory_report("Before optimization")
         
         # Mixed-precision scaler (only used if use_fp16 is True)
-        scaler = GradScaler() if self.use_fp16 else None
+        scaler = GradScaler('cuda') if self.use_fp16 else None
         
         # Pre-calculate configurations
         blur_sigma = opt_conf.get("blur_sigma", 0.0)
@@ -528,14 +543,43 @@ class VectorRenderer:
         #c.requires_grad_(True)
         
         # Create optimizer
-        optimizer = torch.optim.Adam([
-            {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
-            {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
-            {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
-            {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},
-            {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
-            {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
-        ])
+        if True:
+            param_groups = [
+                {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
+                {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
+                {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
+                {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0) * (1000.0/x.numel())},
+                {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0) * (1000.0/x.numel())},
+                {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
+            ]
+            optimizer = torch.optim.Adam(param_groups)
+        else:
+            counts = [1, 1, 9, 35, 137, 553, 2264]
+            param_groups = []
+            custom_gain = 1000.0 / x.numel()
+
+            x_split = [nn.Parameter(p) for p in torch.split(x, counts)]
+            y_split = [nn.Parameter(p) for p in torch.split(y, counts)]
+            r_split = [nn.Parameter(p) for p in torch.split(r, counts)]
+            v_split = [nn.Parameter(p) for p in torch.split(v, counts)]
+            theta_split = [nn.Parameter(p) for p in torch.split(theta, counts)]
+            c_split = [nn.Parameter(p) for p in torch.split(c, counts)]
+
+            for i in range(len(counts)):
+                param_groups.append({'params': [x_split[i]], 'lr': lr * lr_conf.get("gain_x", 1.0)})
+                param_groups.append({'params': [y_split[i]], 'lr': lr * lr_conf.get("gain_y", 1.0)})
+                param_groups.append({'params': [r_split[i]], 'lr': lr * lr_conf.get("gain_r", 1.0)})
+                param_groups.append({
+                    'params': [v_split[i]],
+                    'lr': lr * lr_conf.get("gain_v", 1.0) * (custom_gain * (0.9 ** (len(counts) - i - 1)))
+                })
+                param_groups.append({
+                    'params': [theta_split[i]],
+                    'lr': lr * lr_conf.get("gain_theta", 1.0) * custom_gain
+                })
+                param_groups.append({'params': [c_split[i]], 'lr': lr * lr_conf.get("gain_c", 1.0)})
+
+            optimizer = torch.optim.Adam(param_groups)
         
         print(f"Starting optimization, {num_iterations} iterations...")
         for epoch in tqdm(range(num_iterations)):
@@ -544,7 +588,7 @@ class VectorRenderer:
             
             # Render image - use different approaches based on precision mode
             if self.use_fp16:
-                with autocast():
+                with autocast('cuda'):
                     if opt_conf.get("multi_level", False):
                         rendered = self.render(self.S, v, c)
                     else:
@@ -581,6 +625,8 @@ class VectorRenderer:
                 
                     # Calculate gradients (accumulate per step)
                     scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
                 
                     # Free memory immediately
                     del rendered
@@ -588,10 +634,7 @@ class VectorRenderer:
                         del cached_masks_ref
                     if self.use_fp16:
                         torch.cuda.empty_cache()
-                         
-                # Update parameters with accumulated gradients
-                scaler.step(optimizer)
-                scaler.update()
+                    
             else:
                 # Non-FP16 mode - standard approach without autocast or scaler
                 if opt_conf.get("multi_level", False):

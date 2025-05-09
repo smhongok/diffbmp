@@ -1,10 +1,12 @@
 {
     "preprocessing": {
-        "final_width": 128,
+        "final_width": [256,512],
         "trim": false,
         "FM_halftone": false,
         "transform": "none",
-        "img_path": "images/trump.png",
+        "img_path": [
+            "images/celeb/trump.png"
+        ],
         "bg_threshold": 250,
         "do_equalize": false,
         "do_local_contrast": false,
@@ -22,28 +24,39 @@
         "vertical_paddings": [0, 0]
     },
     "svg": {
-        "svg_file": "assets/svg/tesla_logo.svg",
+        "svg_file": "tesla_logo.svg",
         "svg_hollow": false,
         "output_width": 128
     },
     "initialization": {
-        "N": 1000,
+        "initializer": "random",
+        "N": [1000, 3000, 5000],
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
         "radii_min": 2,
-        "v_init_mean": -5.0,
-        "keypoint_extracting": true,
-        "whole_random": true
+        "v_init_bias":  -5.0,
+        "v_init_slope": 3.0,
+        "keypoint_extracting": false,
+        "debug_mode": true,
+        "prune_tau": 0.01,
+        "pruning_enabled": true,
+        "level": 2,
+        "multi_level": false,
+        "hollow": false
     },
     "optimization": {
-        "num_iterations": 300,
+        "use_fp16": true,
+        "renderer_type": "lpips",
+        "num_iterations": 100,
+        "batch_optimization": false,
+        "batch_size": 256,
         "learning_rate": {
-            "default": 0.1,
+            "default": 0.1, 
             "gain_x": 10.0,
             "gain_y": 10.0,
             "gain_r": 10.0,
-            "gain_v": 1.0,
+            "gain_v": 1.5,
             "gain_theta": 10.0,
             "gain_c": 1.0
         },
@@ -53,7 +66,7 @@
         "do_gaussian_blur": true,
         "blur_sigma_start": 2.0,
         "blur_sigma_end": 1.0,
-        "sparsifying": {
+        "sparsifying": { 
             "do_sparsify": false,
             "sparsify_warmup": 100,
             "sparsify_duration": 100,
