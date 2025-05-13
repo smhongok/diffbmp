@@ -5,7 +5,35 @@
         "FM_halftone": false,
         "transform": "none",
         "img_path": [
-            "images/BSDS500/101085.jpg"
+            "images/artwork/Cafe_Terrace_at_Night.jpg",
+            "images/artwork/Gustav_Klimt.jpg",
+            "images/artwork/seurat.jpg",
+            "images/artwork/Starry_Night.jpg",
+            "images/artwork/The_Great_Wave_of_Kanagawa.jpg",
+            "images/artwork/The_Scream.jpg",
+            "images/BSDS500/101085.jpg",
+            "images/BSDS500/101087.jpg",
+            "images/BSDS500/102061.jpg",
+            "images/celeb/election2025.png",
+            "images/celeb/jylee.png",
+            "images/celeb/trump.png",
+            "images/CelebA/182340.png",
+            "images/CelebA/182341.png",
+            "images/CelebA/182342.png",
+            "images/HighFreq/0831.png",
+            "images/MoviePosters/1.6_56415.jpg",
+            "images/MoviePosters/1.6_245943.jpg",
+            "images/MoviePosters/1.9_270846.jpg",
+            "images/nature/aurora.jpg",
+            "images/nature/Elk.jpg",
+            "images/nature/Flames_in_the_sky.jpg",
+            "images/nature/puppy1.jpg",
+            "images/nature/puppy2.jpg",
+            "images/nature/puppy3.jpg",
+            "images/nature/The_Earth.jpg",
+            "images/nature/Matterhorn.jpg",
+            "images/nature/melon.jpg",
+            "images/nature/rabbit.jpg"
         ],
         "bg_threshold": 250,
         "do_equalize": false,
@@ -25,7 +53,7 @@
     },
     "svg": {
         "svg_file": "arial.ttf",
-        "text": "S",
+        "text": "D",
         "svg_hollow": false,
         "output_width": 128
     },
@@ -44,7 +72,8 @@
         "pruning_enabled": true,
         "level": 2,
         "multi_level": false,
-        "hollow": false
+        "hollow": false,
+        "save_epoch": false
     },
     "optimization": {
         "use_fp16": true,
@@ -74,10 +103,12 @@
             "sparsify_loss_coeff": 0.5,
             "sparsifying_period": 20,
             "sparsified_N": 1500
-        }
+        },
+        "freq_gamma":1.0,
+        "do_dwa": true
     },
     "postprocessing": {
-        "output_folder": "outputs/",
+        "output_folder": "outputs/0512-D/",
         "linewidth": 3.0,
         "compute_psnr": true
     }

@@ -8,8 +8,8 @@ class MseRenderer(VectorRenderer):
     Renderer using MSE loss for optimization.
     This is the same as the base VectorRenderer implementation.
     """
-    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True):
-        super().__init__(canvas_size, S, alpha_upper_bound, device, use_fp16)
+    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None):
+        super().__init__(canvas_size, S, alpha_upper_bound, device, use_fp16, gamma, output_path)
         
     def compute_loss(self, 
                     rendered: torch.Tensor, 

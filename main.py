@@ -18,7 +18,7 @@ from core.renderer.mse_renderer import MseRenderer
 from core.renderer.lpips_renderer import LpipsRenderer
 from core.renderer.mix_renderer import MixRenderer
 from util.svg_loader import SVGLoader
-from util.font_to_svg import FontParser
+from util.svg_converter import FontParser
 from core.initializer.svgsplat_initializater import StructureAwareInitializer
 from core.initializer.random_initializater import RandomInitializer
 
