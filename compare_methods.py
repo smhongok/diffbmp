@@ -15,7 +15,7 @@ import gc
 
 from core.preprocessing import Preprocessor
 from util.svg_loader import SVGLoader
-from util.font_to_svg import FontParser
+from util.svg_converter import FontParser, ImageToSVG
 from util.utils import set_global_seed, gaussian_blur
 from util.pdf_exporter import PDFExporter
 
@@ -316,26 +316,41 @@ def process_combination(args):
         renderer = MseRenderer((H, W), S=bmp_tensor, 
                             alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
                             device=device,
-                            use_fp16=use_fp16)
+                            use_fp16=use_fp16,
+                            output_path=config["postprocessing"].get("output_folder", "./outputs/"))
     elif renderer_name == "LpipsRenderer":
         from core.renderer.lpips_renderer import LpipsRenderer
         renderer = LpipsRenderer((H, W), S=bmp_tensor, 
                                 alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
                                 device=device,
-                                use_fp16=use_fp16)
+                                use_fp16=use_fp16,
+                                output_path=config["postprocessing"].get("output_folder", "./outputs/"))
     elif renderer_name == "MixRenderer":
         from core.renderer.mix_renderer import MixRenderer
         renderer = MixRenderer((H, W), S=bmp_tensor, 
                             alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
                             device=device, 
                             classify_svg=svg_loader.classify_svg(),
-                            use_fp16=use_fp16)
-    elif renderer_name == "FreqRenderer":
+                            use_fp16=use_fp16,
+                            output_path=config["postprocessing"].get("output_folder", "./outputs/"))
+    elif renderer_name == "FreqRenderer_1":
         from core.renderer.freq_renderer import FreqRenderer
         renderer = FreqRenderer((H, W), S=bmp_tensor, 
                                 alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
                                 device=device, 
-                                use_fp16=use_fp16)
+                                use_fp16=use_fp16,
+                                gamma=config["optimization"].get("freq_gamma", 1.0),
+                                output_path=config["postprocessing"].get("output_folder", "./outputs/"))
+        config["optimization"]["do_dwa"] = True
+    elif renderer_name == "FreqRenderer_2":
+        from core.renderer.freq_renderer import FreqRenderer
+        renderer = FreqRenderer((H, W), S=bmp_tensor, 
+                                alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
+                                device=device, 
+                                use_fp16=use_fp16,
+                                gamma=config["optimization"].get("freq_gamma", 1.0),
+                                output_path=config["postprocessing"].get("output_folder", "./outputs/"))
+        config["optimization"]["do_dwa"] = False
     else:
         raise ValueError(f"Unknown renderer: {renderer_name}")
     
@@ -498,6 +513,9 @@ def run_comparison(initializers_configs, renderer_names, config, I_target, svg_l
         elif init_name == "RandomInitializer":
             from core.initializer.random_initializater import RandomInitializer
             initializer = RandomInitializer(init_config)
+        elif init_name == "MultiLevelInitializer":
+            from core.initializer.multilevel_initializer import MultiLevelInitializer
+            initializer = MultiLevelInitializer(init_config)
         else:
             continue  # Skip unsupported initializer
         
@@ -623,10 +641,13 @@ def main():
     svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
     if svg_ext == ".svg":
         svg_path = os.path.join("assets/svg", config["svg"].get("svg_file"))
+    elif svg_ext in (".png", ".jpg", ".jpeg"):
+        img_converter = ImageToSVG()
+        svg_path = img_converter.extract_filled_outlines(config["svg"].get("svg_file"), threshold=100, min_area_ratio=0.000001)
+        del img_converter
     elif (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
         font_parser = FontParser(config["svg"].get("svg_file"))
         svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode="opt-path"))
-        # Clean up font parser
         del font_parser
     else:
         svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
@@ -643,12 +664,13 @@ def main():
     print(f"SVG is classified as: {classify_svg}")
     
     # Define renderer names - sorted by memory usage (lowest first)
-    renderer_names = ["MseRenderer", "MixRenderer", "FreqRenderer"]  # Add more as needed
+    renderer_names = ["MseRenderer", "FreqRenderer_1", "FreqRenderer_2"]  # Add more as needed
     
     # Process initializers one at a time to save memory
     initializers_configs = [
         ("StructureAwareInitializer", config["initialization"]),
         ("RandomInitializer", config["initialization"]),
+        #("MultiLevelInitializer", config["initialization"]),
         # Add more initializers as needed
     ]
     

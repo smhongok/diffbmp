@@ -11,8 +11,8 @@ import torch.utils.checkpoint as checkpoint
 from torch.amp import GradScaler, autocast
 
 class MixRenderer(VectorRenderer):
-    def __init__(self, canvas_size: Tuple[int, int], S: torch.Tensor, alpha_upper_bound: float = 0.5, device: torch.device = None, classify_svg: str = None, use_fp16: bool = False):
-        super().__init__(canvas_size, S, alpha_upper_bound, device, use_fp16)
+    def __init__(self, canvas_size: Tuple[int, int], S: torch.Tensor, alpha_upper_bound: float = 0.5, device: torch.device = None, classify_svg: str = None, use_fp16: bool = False, gamma=1.0, output_path=None):
+        super().__init__(canvas_size, S, alpha_upper_bound, device, use_fp16, gamma, output_path)
         self.classify_svg = classify_svg
         vgg = models.vgg16(pretrained=True).features.eval().to(self.device)
         self.perc_layers = [3, 8]  # conv1_2, conv2_2

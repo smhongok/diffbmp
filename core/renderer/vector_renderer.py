@@ -12,6 +12,8 @@ import os
 import gc
 import pkg_resources
 from collections import defaultdict
+import datetime
+from PIL import Image
 
 class VectorRenderer:
     """
@@ -24,7 +26,9 @@ class VectorRenderer:
                  S: torch.Tensor,
                  alpha_upper_bound: float = 0.5,
                  device: str = 'cuda',
-                 use_fp16: bool = False):
+                 use_fp16: bool = False,
+                 gamma: float = 1.0,
+                 output_path: str = None):
         """
         Initialize the vector renderer.
         
@@ -39,7 +43,8 @@ class VectorRenderer:
         self.device = device
         self.use_checkpointing = False
         self.use_fp16 = use_fp16
-        
+        self.gamma = gamma
+        self.output_path = output_path
         # Convert S to appropriate precision during initialization
         if self.use_fp16:
             self.S = S.to(dtype=torch.float16)
@@ -534,14 +539,11 @@ class VectorRenderer:
         streaming_render = opt_conf.get("streaming_render", False) and self.use_fp16  # Only use streaming render in FP16 mode
         raster_chunk_size = opt_conf.get("raster_chunk_size", 20)
         
-        # Ensure all parameters require gradients
-        #x.requires_grad_(True)
-        #y.requires_grad_(True)
-        #r.requires_grad_(True)
-        #v.requires_grad_(True)
-        #theta.requires_grad_(True)
-        #c.requires_grad_(True)
-        
+        # Create output directory for saving images if it doesn't exist
+        save_image_intervals = [1, 5, 10, 20, 50, 100]
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs(self.output_path, exist_ok=True)
+       
         # Create optimizer
         if True:
             param_groups = [
@@ -612,6 +614,14 @@ class VectorRenderer:
                             
                             rendered = self.render(cached_masks, v, c)
                             
+                            # Save image at specified epochs
+                            if opt_conf.get("save_epoch", False) and epoch + 1 in save_image_intervals:
+                                output_path = os.path.join(self.output_path, f"epoch_{epoch+1}_{timestamp}.jpg")
+                                rendered_np = rendered.detach().cpu().numpy()
+                                rendered_np = (rendered_np * 255).astype(np.uint8)
+                                Image.fromarray(rendered_np).save(output_path)
+                                del rendered_np
+                            
                             # Save reference for cleanup
                             cached_masks_ref = cached_masks
                             cached_masks = None
@@ -648,6 +658,14 @@ class VectorRenderer:
                     
                     # Render with masks
                     rendered = self.render(cached_masks, v, c)
+                    
+                    # Save image at specified epochs
+                    if opt_conf.get("save_epoch", False) and epoch + 1 in save_image_intervals:
+                        output_path = os.path.join(self.output_path, f"epoch_{epoch+1}_{timestamp}.jpg")
+                        rendered_np = rendered.detach().cpu().numpy()
+                        rendered_np = (rendered_np * 255).astype(np.uint8)
+                        Image.fromarray(rendered_np).save(output_path)
+                        del rendered_np
                 
                 # Compute loss
                 loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
@@ -709,6 +727,11 @@ class VectorRenderer:
         chunk = opt_conf.get("batch_size", 256)
         lr_conf = opt_conf["learning_rate"]
         lr = lr_conf.get("default", 0.1)
+        
+        # Create output directory for saving images if it doesn't exist
+        save_image_intervals = [1, 5, 10, 20, 50, 100]
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs(self.output_path, exist_ok=True)
         
         # Create optimizer
         optimizer = torch.optim.Adam([
@@ -810,6 +833,18 @@ class VectorRenderer:
                     sigma=opt_conf.get("blur_sigma", 0.0)        # 동일 블러 파라미터 사용
                 )
 
+            # Save image at specified epochs
+            if opt_conf.get("save_epoch", False) and step + 1 in save_image_intervals:
+                with torch.no_grad():
+                    # Render the complete image for saving
+                    rendered_img = self.render(cached_masks, v, c)
+                    output_path = os.path.join(self.output_path, f"epoch_{step+1}_{timestamp}.jpg")
+                    rendered_np = rendered_img.detach().cpu().numpy()
+                    rendered_np = (rendered_np * 255).astype(np.uint8)
+                    Image.fromarray(rendered_np).save(output_path)
+                    del rendered_img, rendered_np
+                    torch.cuda.empty_cache()
+            
             if step % 20 == 0:
                 print(f"Epoch {step}, Loss: {loss.item():.4f}")
         
@@ -838,7 +873,6 @@ class VectorRenderer:
         final_render_np = (final_render_np * 255).astype(np.uint8)
         
         # Save the image using PIL
-        from PIL import Image
         Image.fromarray(final_render_np).save(output_path) 
         
     def render_image(self, x, y, r, v, theta, c):
