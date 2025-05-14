@@ -117,6 +117,8 @@ class FreqRenderer(VectorRenderer):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(self.output_path, exist_ok=True)
         
+        blur_sigma = opt_conf.get("blur_sigma", 1.0)
+        
         # Create separate optimizers for shape and appearance parameters
         shape_optimizer = torch.optim.Adam([
             {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
@@ -138,7 +140,7 @@ class FreqRenderer(VectorRenderer):
         print(f"Starting optimization for {num_iterations} iterations...")
         L1 = [None, None]
         L2 = [None, None]
-        for epoch in tqdm(range(num_iterations)):
+        for epoch in tqdm(range(num_iterations)):            
             # Define context manager based on precision mode
             shape_context = autocast('cuda') if self.use_fp16 else nullcontext()
             appearance_context = autocast('cuda') if self.use_fp16 else nullcontext()
@@ -152,7 +154,7 @@ class FreqRenderer(VectorRenderer):
                     # Generate masks using shape parameters (x, y, r, theta)
                     cached_masks = self._batched_soft_rasterize(
                         x, y, r, theta,
-                        sigma=opt_conf.get("blur_sigma", 0.0)
+                        sigma=blur_sigma
                     )
                     
                     # Render image using appearance parameters (v, c)
@@ -192,7 +194,7 @@ class FreqRenderer(VectorRenderer):
                     # Re-render with updated shape parameters
                     cached_masks = self._batched_soft_rasterize(
                         x.detach(), y.detach(), r.detach(), theta.detach(),
-                        sigma=opt_conf.get("blur_sigma", 0.0)
+                        sigma=blur_sigma
                     )
                     rendered = self.render(cached_masks, v, c)
                 
@@ -213,11 +215,11 @@ class FreqRenderer(VectorRenderer):
                         norm = w1 + w2
                         alpha = 2 * w1 / norm
                         beta  = 2 * w2 / norm
-                        appearance_loss = alpha * mse_loss + beta * frequency_loss
+                        appearance_loss = alpha * mse_loss + beta * frequency_loss * 0.5
                     else:
                         appearance_loss = mse_loss 
                 else:
-                    appearance_loss = mse_loss + frequency_loss
+                    appearance_loss = mse_loss + frequency_loss*0.5
                 
                 # Backward pass for appearance parameters
                 if self.use_fp16:

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import os
 from itertools import product
 import gc
+import pandas as pd
 
 from core.preprocessing import Preprocessor
 from util.svg_loader import SVGLoader
@@ -210,8 +211,8 @@ def plot_results(results: List[Dict[str, Any]], save_path: str, target_image: np
             # Create title with metrics
             metrics = result['metrics']
             title = f"{initializer}/{renderer}\n"
-            title += f"PSNR: {metrics['PSNR']:.2f}, SSIM: {metrics['SSIM']:.2f}\n"
-            title += f"VIF: {metrics['VIF']:.2f}, LPIPS: {metrics['LPIPS']:.2f}"
+            title += f"PSNR: {metrics['PSNR']:.3f}, SSIM: {metrics['SSIM']:.3f}\n"
+            title += f"VIF: {metrics['VIF']:.3f}, LPIPS: {metrics['LPIPS']:.3f}"
             ax.set_title(title, fontsize=8)
         except Exception as e:
             print(f"Error displaying image at [{row},{col}]: {e}")
@@ -301,6 +302,9 @@ def process_combination(args):
     # Check if we should use FP16 (half precision) for memory efficiency
     use_fp16 = config["optimization"].get("use_fp16", False)  # Default to False for CPU compatibility
     
+    # Track VRAM before processing
+    peak_memory_before = torch.cuda.max_memory_allocated() / (1024 * 1024)  # MB
+    
     # Get bitmap tensor for renderer with appropriate precision
     bmp_tensor = svg_loader.load_alpha_bitmap()
     if use_fp16:
@@ -368,6 +372,9 @@ def process_combination(args):
     
     x, y, r, v, theta, c = [t.clone().detach().to(device).requires_grad_(True) for t in initial_params]
     
+    # Start timing the initialization and optimization
+    start_time = time.time()
+    
     # Use autocast only when use_fp16 is True
     if use_fp16:
         if "LevelInitializer" in init.__class__.__name__:
@@ -396,8 +403,23 @@ def process_combination(args):
             # Memory report after optimization
             if hasattr(renderer, 'memory_report'):
                 renderer.memory_report(f"After optimization with {renderer_name}")
-            
-        # Generate final render
+    else:
+        # Standard FP32 processing without autocast
+        if "LevelInitializer" in init.__class__.__name__:
+            print(f"{init.__class__.__name__} init and optim skip since it's already done in main()")    
+        else:
+            # Optimize parameters 
+            x, y, r, v, theta, c = renderer.optimize_parameters(
+                x, y, r, v, theta, c,
+                I_target, 
+                opt_conf=config['optimization']
+            )
+    
+    # End timing after optimization completes
+    runtime = time.time() - start_time
+    
+    # Generate final render (not included in timing)
+    if use_fp16:
         with torch.no_grad():  # Disable gradient computation for final render
             # Process in smaller chunks to save memory
             opt_conf = config['optimization']
@@ -416,18 +438,6 @@ def process_combination(args):
                 rendered = renderer.render(cached_masks, v, c)
                 del cached_masks
     else:
-        # Standard FP32 processing without autocast
-        if "LevelInitializer" in init.__class__.__name__:
-            print(f"{init.__class__.__name__} init and optim skip since it's already done in main()")    
-        else:
-            # Optimize parameters 
-            x, y, r, v, theta, c = renderer.optimize_parameters(
-                x, y, r, v, theta, c,
-                I_target, 
-                opt_conf=config['optimization']
-            )
-            
-        # Generate final render
         with torch.no_grad():  # Disable gradient computation for final render
             cached_masks = renderer._batched_soft_rasterize(
                 x, y, r, theta,
@@ -435,7 +445,11 @@ def process_combination(args):
             )
             rendered = renderer.render(cached_masks, v, c)
             del cached_masks
-        
+    
+    # Calculate peak memory usage
+    peak_memory = torch.cuda.max_memory_allocated() / (1024 * 1024)  # MB
+    peak_memory_used = peak_memory - peak_memory_before
+    
     # Move tensors to CPU for metrics computation
     rendered_cpu = rendered.cpu()
     # Convert to float32 for metrics computation if it's a half precision tensor
@@ -451,6 +465,13 @@ def process_combination(args):
     
     # Compute metrics
     metrics = compute_metrics(rendered_cpu, I_target_cpu)
+    
+    # Add runtime and VRAM metrics
+    metrics['Runtime'] = runtime  # Now this is just initialization+optimization time
+    metrics['VRAM_MB'] = peak_memory_used
+    metrics['ImgName'] = os.path.basename(config["preprocessing"].get("img_path", "unknown"))
+    metrics['Width'] = W
+    metrics['NumPrimitives'] = len(x)
     
     # Clear CPU tensors
     del I_target_cpu
@@ -612,7 +633,64 @@ def run_comparison(initializers_configs, renderer_names, config, I_target, svg_l
         import traceback
         traceback.print_exc()
     
+    # Save metrics to Excel
+    try:
+        excel_path = save_metrics_to_excel(results, config)
+        print(f"Metrics saved to Excel: {excel_path}")
+    except Exception as e:
+        print(f"Error saving metrics to Excel: {e}")
+        import traceback
+        traceback.print_exc()
+    
     print("Comparison complete!")
+    
+def save_metrics_to_excel(results, config):
+    """Save metrics from all runs to an Excel file"""
+    if not results:
+        print("No results to save to Excel")
+        return
+    
+    # Filter results to only include StructureAwareInitializer
+    struct_aware_results = [r for r in results if r['initializer'] == "StructureAwareInitializer"]
+    
+    if not struct_aware_results:
+        print("No StructureAwareInitializer results to save to Excel")
+        return
+        
+    # Create a DataFrame from the results
+    data = []
+    for result in struct_aware_results:
+        metrics = result.get('metrics', {})
+        row = {
+            'Image': metrics.get('ImgName', os.path.basename(config["preprocessing"].get("img_path", "unknown"))),
+            'Width': metrics.get('Width', config['canvas_size'][1]),
+            'Primitives': metrics.get('NumPrimitives', config["initialization"].get("N", 0)),
+            'Initializer': result.get('initializer', 'unknown'),
+            'Renderer': result.get('renderer', 'unknown'),
+            'PSNR': metrics.get('PSNR', 0),
+            'SSIM': metrics.get('SSIM', 0),
+            'LPIPS': metrics.get('LPIPS', 0),
+            'VIF': metrics.get('VIF', 0),
+            'Runtime (s)': metrics.get('Runtime', 0),
+            'VRAM (MB)': metrics.get('VRAM_MB', 0)
+        }
+        data.append(row)
+    
+    # Create DataFrame
+    df = pd.DataFrame(data)
+    
+    # Create timestamp for unique filename
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_dir = config["postprocessing"].get("output_folder", "./outputs/")
+    os.makedirs(output_dir, exist_ok=True)
+    excel_path = os.path.join(output_dir, f'metrics_{timestamp}.xlsx')
+    
+    # Save to Excel
+    df.to_excel(excel_path, index=False)
+    print(f"Metrics saved to {excel_path}")
+    
+    # Return path to Excel file
+    return excel_path
 
 def main():
     parser = argparse.ArgumentParser(description="Compare different initializers and renderers")
