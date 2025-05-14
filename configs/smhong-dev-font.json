@@ -5,35 +5,7 @@
         "FM_halftone": false,
         "transform": "none",
         "img_path": [
-            "images/artwork/Cafe_Terrace_at_Night.jpg",
-            "images/artwork/Gustav_Klimt.jpg",
-            "images/artwork/seurat.jpg",
-            "images/artwork/Starry_Night.jpg",
-            "images/artwork/The_Great_Wave_of_Kanagawa.jpg",
-            "images/artwork/The_Scream.jpg",
-            "images/BSDS500/101085.jpg",
-            "images/BSDS500/101087.jpg",
-            "images/BSDS500/102061.jpg",
-            "images/celeb/election2025.png",
-            "images/celeb/jylee.png",
-            "images/celeb/trump.png",
-            "images/CelebA/182340.png",
-            "images/CelebA/182341.png",
-            "images/CelebA/182342.png",
-            "images/HighFreq/0831.png",
-            "images/MoviePosters/1.6_56415.jpg",
-            "images/MoviePosters/1.6_245943.jpg",
-            "images/MoviePosters/1.9_270846.jpg",
-            "images/nature/aurora.jpg",
-            "images/nature/Elk.jpg",
-            "images/nature/Flames_in_the_sky.jpg",
-            "images/nature/puppy1.jpg",
-            "images/nature/puppy2.jpg",
-            "images/nature/puppy3.jpg",
-            "images/nature/The_Earth.jpg",
-            "images/nature/Matterhorn.jpg",
-            "images/nature/melon.jpg",
-            "images/nature/rabbit.jpg"
+            "images/nature/melon.jpg"
         ],
         "bg_threshold": 250,
         "do_equalize": false,
@@ -53,13 +25,13 @@
     },
     "svg": {
         "svg_file": "arial.ttf",
-        "text": "D",
+        "text": "M",
         "svg_hollow": false,
         "output_width": 128
     },
     "initialization": {
         "initializer": "random",
-        "N": [1000,3000,5000],
+        "N": [2000],
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
@@ -72,8 +44,7 @@
         "pruning_enabled": true,
         "level": 2,
         "multi_level": false,
-        "hollow": false,
-        "save_epoch": false
+        "hollow": false
     },
     "optimization": {
         "use_fp16": true,
@@ -94,21 +65,23 @@
         "decay_rate": 0.99,
         "alpha_upper_bound": 1.0,
         "do_gaussian_blur": true,
+        "blur_sigma": 1.0,
         "blur_sigma_start": 2.0,
-        "blur_sigma_end": 1.0,
+        "blur_sigma_end": 0.0,
         "sparsifying": { 
             "do_sparsify": false,
-            "sparsify_warmup": 100,
-            "sparsify_duration": 100,
+            "sparsify_warmup": 20,
+            "sparsify_duration": 20,
             "sparsify_loss_coeff": 0.5,
-            "sparsifying_period": 20,
-            "sparsified_N": 1500
+            "sparsifying_period": 5,
+            "sparsified_N": 1000
         },
         "freq_gamma":1.0,
-        "do_dwa": true
+        "do_dwa": true,
+        "save_epoch": false
     },
     "postprocessing": {
-        "output_folder": "outputs/0512-D/",
+        "output_folder": "outputs/0515-M-sparsify/",
         "linewidth": 3.0,
         "compute_psnr": true
     }

@@ -102,16 +102,16 @@ class VectorRenderer:
             B = len(x)
             _, H, W = self.X.shape
             
+            # Get target dtype based on use_fp16 flag
+            target_dtype = torch.float16 if self.use_fp16 else torch.float32
+            
             # Apply Gaussian blur if needed
             if sigma > 0.0:
                 bmp = self.S.unsqueeze(0)
                 bmp = gaussian_blur(bmp, sigma)
-                bmp_image = bmp.squeeze(0)
+                bmp_image = bmp.squeeze(0).to(dtype=target_dtype).contiguous()
             else:
-                bmp_image = self.S
-            
-            # Get target dtype based on use_fp16 flag
-            target_dtype = torch.float16 if self.use_fp16 else torch.float32
+                bmp_image = self.S.to(dtype=target_dtype)
             
             # Expand parameters to match grid dimensions and convert to appropriate precision
             X_exp = self.X.expand(B, H, W)#.to(dtype=target_dtype)
@@ -133,7 +133,7 @@ class VectorRenderer:
             
             # Prepare for grid sampling
             grid = uv.permute(0, 2, 3, 1)  # (B, H, W, 2)
-            bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, -1, -1, -1)#.to(dtype=target_dtype)
+            bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, -1, -1, -1).contiguous() #.to(dtype=target_dtype)
             
             # Use gradient checkpointing if enabled
             if self.use_checkpointing:
@@ -535,7 +535,7 @@ class VectorRenderer:
         scaler = GradScaler('cuda') if self.use_fp16 else None
         
         # Pre-calculate configurations
-        blur_sigma = opt_conf.get("blur_sigma", 0.0)
+        blur_sigma = opt_conf.get("blur_sigma", 1.0)
         streaming_render = opt_conf.get("streaming_render", False) and self.use_fp16  # Only use streaming render in FP16 mode
         raster_chunk_size = opt_conf.get("raster_chunk_size", 20)
         
@@ -544,8 +544,51 @@ class VectorRenderer:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(self.output_path, exist_ok=True)
        
-        # Create optimizer
-        if True:
+        # Create optimizers - separate xyr from the rest if doing sparsifying
+        sparsify_conf = opt_conf.get("sparsifying", {})
+        do_sparsify = sparsify_conf.get("do_sparsify", False)
+        
+        N = x.shape[0]  # Number of primitives
+        
+        if do_sparsify:
+            # Create separate optimizers for sparsification
+            optimizer_xyr = torch.optim.Adam([
+                {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
+                {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
+                {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
+            ])
+            
+            optimizer_rest = torch.optim.Adam([
+                {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0) * (1000.0/x.numel())},
+                {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0) * (1000.0/x.numel())},
+                {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
+            ])
+            
+            # Create scheduler if decay is enabled
+            do_decay = opt_conf.get("do_decay", False)
+            sched_xyr = torch.optim.lr_scheduler.ExponentialLR(
+                optimizer_xyr, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
+                
+            # Initialize sparsification variables
+            z = torch.zeros_like(v, requires_grad=False)
+            lam = torch.zeros_like(v, requires_grad=False)
+            iters_warmup = sparsify_conf.get("sparsify_warmup", num_iterations//3)
+            sparsify_duration = sparsify_conf.get("sparsify_duration", num_iterations//3)
+            sparsify_loss_coeff = sparsify_conf.get("sparsify_loss_coeff", 0.5)
+            sparsifying_period = sparsify_conf.get("sparsifying_period", 20)
+            sparsified_N = int(sparsify_conf.get("sparsified_N", int(0.6 * N)))
+            
+            assert sparsified_N < N, "sparsified_N must be less than N"
+            assert num_iterations > iters_warmup + sparsify_duration, "num_iterations must be greater than warmup + duration"
+            
+            # For Gaussian blur transition if enabled
+            do_gaussian_blur = opt_conf.get("do_gaussian_blur", False)
+            sigma_start = opt_conf.get("blur_sigma_start", 0.0)
+            sigma_end = opt_conf.get("blur_sigma_end", 0.0)
+            
+            optimizer = None  # We'll use the separate optimizers instead
+        else:
+            # Standard single optimizer if not doing sparsification
             param_groups = [
                 {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
                 {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
@@ -555,38 +598,24 @@ class VectorRenderer:
                 {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
             ]
             optimizer = torch.optim.Adam(param_groups)
-        else:
-            counts = [1, 1, 9, 35, 137, 553, 2264]
-            param_groups = []
-            custom_gain = 1000.0 / x.numel()
-
-            x_split = [nn.Parameter(p) for p in torch.split(x, counts)]
-            y_split = [nn.Parameter(p) for p in torch.split(y, counts)]
-            r_split = [nn.Parameter(p) for p in torch.split(r, counts)]
-            v_split = [nn.Parameter(p) for p in torch.split(v, counts)]
-            theta_split = [nn.Parameter(p) for p in torch.split(theta, counts)]
-            c_split = [nn.Parameter(p) for p in torch.split(c, counts)]
-
-            for i in range(len(counts)):
-                param_groups.append({'params': [x_split[i]], 'lr': lr * lr_conf.get("gain_x", 1.0)})
-                param_groups.append({'params': [y_split[i]], 'lr': lr * lr_conf.get("gain_y", 1.0)})
-                param_groups.append({'params': [r_split[i]], 'lr': lr * lr_conf.get("gain_r", 1.0)})
-                param_groups.append({
-                    'params': [v_split[i]],
-                    'lr': lr * lr_conf.get("gain_v", 1.0) * (custom_gain * (0.9 ** (len(counts) - i - 1)))
-                })
-                param_groups.append({
-                    'params': [theta_split[i]],
-                    'lr': lr * lr_conf.get("gain_theta", 1.0) * custom_gain
-                })
-                param_groups.append({'params': [c_split[i]], 'lr': lr * lr_conf.get("gain_c", 1.0)})
-
-            optimizer = torch.optim.Adam(param_groups)
+            optimizer_xyr = None
+            optimizer_rest = None
         
         print(f"Starting optimization, {num_iterations} iterations...")
         for epoch in tqdm(range(num_iterations)):
             # Reset gradients
-            optimizer.zero_grad()
+            if do_sparsify:
+                optimizer_xyr.zero_grad()
+                optimizer_rest.zero_grad()
+                
+                # Current sigma for Gaussian blur
+                if do_gaussian_blur:
+                    sigma = blur_sigma #sigma_start * (1 - epoch / num_iterations) + sigma_end * (epoch / num_iterations)
+                else:
+                    sigma = 0.0
+            else:
+                optimizer.zero_grad()
+                sigma = blur_sigma
             
             # Render image - use different approaches based on precision mode
             if self.use_fp16:
@@ -598,14 +627,14 @@ class VectorRenderer:
                             rendered = self._stream_render(
                                 x, y, r, theta,
                                 v, c,
-                                sigma=blur_sigma,
+                                sigma=sigma,
                                 raster_chunk_size=raster_chunk_size
                             )
                         else:
                             # Generate masks (memory efficient)
                             cached_masks = self._batched_soft_rasterize(
                                 x, y, r, theta,
-                                sigma=blur_sigma
+                                sigma=sigma
                             )
                             
                             # Memory report after mask generation
@@ -632,11 +661,24 @@ class VectorRenderer:
                     
                     # Compute loss
                     loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
+                    
+                    # Add sparsification loss if needed
+                    if do_sparsify and epoch >= iters_warmup and epoch < iters_warmup + sparsify_duration:
+                        _alpha = self.alpha_upper_bound * torch.sigmoid(v)
+                        loss += 0.5 * sparsify_loss_coeff * F.mse_loss(_alpha, z - lam)  # Sparsification loss
                 
-                    # Calculate gradients (accumulate per step)
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
+                    # Calculate gradients and update parameters
+                    if do_sparsify:
+                        loss.backward()
+                        optimizer_xyr.step()
+                        optimizer_rest.step()
+                        if do_decay and sched_xyr is not None:
+                            sched_xyr.step()
+                    else:
+                        # Standard update with scaler
+                        scaler.scale(loss).backward()
+                        scaler.step(optimizer)
+                        scaler.update()
                 
                     # Free memory immediately
                     del rendered
@@ -653,7 +695,7 @@ class VectorRenderer:
                     # Generate masks
                     cached_masks = self._batched_soft_rasterize(
                         x, y, r, theta,
-                        sigma=blur_sigma
+                        sigma=sigma
                     )
                     
                     # Render with masks
@@ -670,11 +712,21 @@ class VectorRenderer:
                 # Compute loss
                 loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
                 
-                # Calculate gradients
+                # Add sparsification loss if needed
+                if do_sparsify and epoch >= iters_warmup and epoch < iters_warmup + sparsify_duration:
+                    _alpha = self.alpha_upper_bound * torch.sigmoid(v)
+                    loss += 0.5 * sparsify_loss_coeff * F.mse_loss(_alpha, z - lam)  # Sparsification loss
+                
+                # Calculate gradients and update parameters
                 loss.backward()
                 
-                # Update parameters
-                optimizer.step()
+                if do_sparsify:
+                    optimizer_xyr.step()
+                    optimizer_rest.step()
+                    if do_decay and sched_xyr is not None:
+                        sched_xyr.step()
+                else:
+                    optimizer.step()
                 
             # Record loss value for next epoch logging
             loss_value = loss.item()
@@ -692,6 +744,48 @@ class VectorRenderer:
                 y.clamp_(0, self.H)
                 r.clamp_(2, min(self.H, self.W) // 4)
                 theta.clamp_(0, 2 * np.pi)
+                
+                # Sparsification logic
+                if do_sparsify:
+                    if epoch >= iters_warmup and epoch <= iters_warmup + sparsify_duration:
+                        if epoch % sparsifying_period == 0:
+                            # Sparsification step
+                            _alpha = self.alpha_upper_bound * torch.sigmoid(v.detach())
+                            keep_idx = torch.topk(_alpha, sparsified_N).indices
+                            mask = torch.zeros_like(_alpha, dtype=torch.bool)
+                            mask[keep_idx] = True
+                            
+                            z.zero_(); z[mask] = _alpha[mask]  # z ← sparse projection
+                            lam += (_alpha - z)
+                        
+                        if epoch == iters_warmup + sparsify_duration:
+                            # actual sparsification
+                            # 1) helper: 기존 tensor -> 잘라낸 tensor(requires_grad 유지)
+                            def _prune(t):
+                                t_new = t[keep_idx].clone().detach()
+                                if t.requires_grad:
+                                    t_new.requires_grad_(True)
+                                return t_new
+                            
+                            # 2) 실제 파라미터·보조변수 잘라내기
+                            x, y, r, theta, v, c = map(_prune, (x, y, r, theta, v, c))
+                            z, lam = map(_prune, (z, lam))
+                            
+                            # 3) optimizer 재생성 (Adam state 깔끔히 초기화)
+                            optimizer_xyr = torch.optim.Adam([
+                                {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
+                                {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
+                                {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
+                            ])
+                            
+                            optimizer_rest = torch.optim.Adam([
+                                {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},
+                                {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
+                                {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
+                            ])
+                            
+                            sched_xyr = torch.optim.lr_scheduler.ExponentialLR(
+                                optimizer_xyr, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
             
             if epoch % 20 == 0:
                 print(f"Epoch {epoch}, Loss: {loss_value:.4f}")
@@ -746,7 +840,7 @@ class VectorRenderer:
         # 배치 최적화에서는 캐시된 마스크를 미리 생성
         with torch.no_grad():
             cached_masks = self._batched_soft_rasterize(
-                x, y, r, theta, sigma=opt_conf.get("blur_sigma", 0.0)
+                x, y, r, theta, sigma=opt_conf.get("blur_sigma", 1.0)
             )
 
         N = x.numel()
@@ -791,7 +885,7 @@ class VectorRenderer:
                 # 현재 배치 마스크 생성
                 masks_bt = self._batched_soft_rasterize(
                     x[batch_sl], y[batch_sl], r[batch_sl], theta[batch_sl],
-                    sigma=opt_conf.get("blur_sigma", 0.0)
+                    sigma=opt_conf.get("blur_sigma", 1.0)
                 )
                 
                 # 배치 렌더링
@@ -830,7 +924,7 @@ class VectorRenderer:
                 # ── (NEW) 바뀐 batch 슬라이스만 다시 마스크 계산해서 캐시에 업데이트 ──
                 cached_masks[batch_sl] = self._batched_soft_rasterize(
                     x[batch_sl], y[batch_sl], r[batch_sl], theta[batch_sl],
-                    sigma=opt_conf.get("blur_sigma", 0.0)        # 동일 블러 파라미터 사용
+                    sigma=opt_conf.get("blur_sigma", 1.0)        # 동일 블러 파라미터 사용
                 )
 
             # Save image at specified epochs
