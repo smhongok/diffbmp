@@ -69,19 +69,22 @@
         "blur_sigma_start": 2.0,
         "blur_sigma_end": 0.0,
         "sparsifying": { 
-            "do_sparsify": false,
-            "sparsify_warmup": 20,
-            "sparsify_duration": 20,
-            "sparsify_loss_coeff": 0.5,
-            "sparsifying_period": 5,
-            "sparsified_N": 1000
+            "do_sparsify": true,
+            "sparsify_warmup": 10,
+            "sparsify_duration": 24,
+            "sparsify_loss_coeff": 1.0,
+            "sparsifying_period": 4,
+            "sparsified_N": 1000,
+            "dst_enabled": true,
+            "dst_period": 4,
+            "dst_prune_frac": 0.1
         },
         "freq_gamma":1.0,
         "do_dwa": true,
         "save_epoch": false
     },
     "postprocessing": {
-        "output_folder": "outputs/0515-M-sparsify/",
+        "output_folder": "outputs/0515-M-sparsify1630/",
         "linewidth": 3.0,
         "compute_psnr": true
     }
