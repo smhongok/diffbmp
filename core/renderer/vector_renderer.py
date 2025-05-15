@@ -578,6 +578,33 @@ class VectorRenderer:
             sparsifying_period = sparsify_conf.get("sparsifying_period", 20)
             sparsified_N = int(sparsify_conf.get("sparsified_N", int(0.6 * N)))
             
+            # --- Dynamic Sparse Training (DST) 설정 ---
+            dst_enabled = sparsify_conf.get("dst_enabled", True)
+            dst_period = sparsify_conf.get("dst_period", 10)  # DST 업데이트 주기
+            dst_prune_frac = sparsify_conf.get("dst_prune_frac", 0.2)  # Prune 비율
+            
+            # 초기 마스크 생성 (SET style)
+            if dst_enabled:
+                # 활성 비율 계산 (1 - sparsity)
+                density = sparsified_N / N
+                # 초기 랜덤 마스크 생성
+                v_mask = torch.zeros_like(v, requires_grad=False)
+                active_indices = torch.randperm(N, device=self.device)[:sparsified_N]
+                v_mask[active_indices] = 1.0
+                
+                # 각 파라미터별 그래디언트 저장용 버퍼
+                grad_history = {
+                    'x': torch.zeros_like(x),
+                    'y': torch.zeros_like(y),
+                    'r': torch.zeros_like(r),
+                    'v': torch.zeros_like(v),
+                    'theta': torch.zeros_like(theta),
+                    'c': torch.zeros_like(c)
+                }
+                
+                # 초기 마스크 적용
+                print(f"Initialized DST with density {density:.2f} ({sparsified_N}/{N} primitives active)")
+            
             assert sparsified_N < N, "sparsified_N must be less than N"
             assert num_iterations > iters_warmup + sparsify_duration, "num_iterations must be greater than warmup + duration"
             
@@ -664,8 +691,17 @@ class VectorRenderer:
                     
                     # Add sparsification loss if needed
                     if do_sparsify and epoch >= iters_warmup and epoch < iters_warmup + sparsify_duration:
+                        # Don't detach for gradient computation
                         _alpha = self.alpha_upper_bound * torch.sigmoid(v)
-                        loss += 0.5 * sparsify_loss_coeff * F.mse_loss(_alpha, z - lam)  # Sparsification loss
+                        
+                        # Use adaptive rho parameter
+                        rho = sparsify_loss_coeff * (1.0 - (epoch - iters_warmup) / sparsify_duration)
+                        
+                        # DST 적용 시 마스크를 포함한 손실 계산
+                        if dst_enabled:
+                            loss += 0.5 * rho * F.mse_loss(_alpha * v_mask, z - lam)
+                        else:
+                            loss += 0.5 * rho * F.mse_loss(_alpha, z - lam)
                 
                     # Calculate gradients and update parameters
                     if do_sparsify:
@@ -682,8 +718,6 @@ class VectorRenderer:
                 
                     # Free memory immediately
                     del rendered
-                    if not streaming_render and not opt_conf.get("multi_level", False) and 'cached_masks_ref' in locals():
-                        del cached_masks_ref
                     if self.use_fp16:
                         torch.cuda.empty_cache()
                     
@@ -714,8 +748,17 @@ class VectorRenderer:
                 
                 # Add sparsification loss if needed
                 if do_sparsify and epoch >= iters_warmup and epoch < iters_warmup + sparsify_duration:
+                    # Don't detach for gradient computation
                     _alpha = self.alpha_upper_bound * torch.sigmoid(v)
-                    loss += 0.5 * sparsify_loss_coeff * F.mse_loss(_alpha, z - lam)  # Sparsification loss
+                    
+                    # Use adaptive rho parameter
+                    rho = sparsify_loss_coeff * (1.0 - (epoch - iters_warmup) / sparsify_duration)
+                    
+                    # DST 적용 시 마스크를 포함한 손실 계산
+                    if dst_enabled:
+                        loss += 0.5 * rho * F.mse_loss(_alpha * v_mask, z - lam)
+                    else:
+                        loss += 0.5 * rho * F.mse_loss(_alpha, z - lam)
                 
                 # Calculate gradients and update parameters
                 loss.backward()
@@ -748,14 +791,129 @@ class VectorRenderer:
                 # Sparsification logic
                 if do_sparsify:
                     if epoch >= iters_warmup and epoch <= iters_warmup + sparsify_duration:
+                        # DST 마스크 업데이트
+                        if dst_enabled and epoch % dst_period == 0:
+                            with torch.no_grad():
+                                # 그래디언트 절대값 기록 (EMA)
+                                for param_name in ['v', 'x', 'y', 'r', 'theta', 'c']:
+                                    param = locals()[param_name]
+                                    if param.grad is not None:
+                                        grad_history[param_name] = 0.9 * grad_history[param_name] + 0.1 * param.grad.abs()
+                                
+                                # 1. 시각적 기여도 계산 개선
+                                # 컨텍스트 내 각 프리미티브의 영향력 평가
+                                visual_contribution = torch.zeros_like(v, device=self.device)
+                                
+                                if 'cached_masks_ref' in locals() and not streaming_render:
+                                    batch_size = 10
+                                    for i in range(0, N, batch_size):
+                                        end_i = min(i + batch_size, N)
+                                        with torch.no_grad():
+                                            # 현재 배치의 프리미티브 렌더링
+                                            masks_batch = cached_masks_ref[i:end_i]
+                                            v_batch = v[i:end_i]
+                                            c_batch = c[i:end_i]
+                                            
+                                            # 각 프리미티브를 제거했을 때의 손실 증가를 측정
+                                            for j in range(end_i - i):
+                                                # 현재 프리미티브 제외하고 렌더링 (간소화된 방식)
+                                                alpha_j = self.alpha_upper_bound * torch.sigmoid(v_batch[j])
+                                                # 제거 시 발생하는 시각적 영향도 추정
+                                                mask_coverage = masks_batch[j].mean()  # 프리미티브가 덮는 영역의 비율
+                                                visual_contribution[i+j] = alpha_j * mask_coverage
+                                    
+                                    # 정규화
+                                    if visual_contribution.max() > visual_contribution.min():
+                                        visual_contribution = (visual_contribution - visual_contribution.min()) / (visual_contribution.max() - visual_contribution.min())
+                                
+                                # 3. 계층적 관계 분석
+                                # a) 크기 기반 중요도 (큰 것이 작은 것의 "부모")
+                                r_norm = r / r.max()
+                                
+                                # 최종 중요도 계산: 가시성(30%) + 시각적 기여도(50%) + 크기(20%)
+                                alpha_importance = self.alpha_upper_bound * torch.sigmoid(v.detach())
+                                final_importance = (
+                                    0.3 * alpha_importance + 
+                                    0.6 * visual_contribution + 
+                                    0.1 * r_norm
+                                )
+                                
+                                # 활성 파라미터 중 중요도가 낮은 것을 제거 (prune)
+                                k_prune = int(sparsified_N * dst_prune_frac)
+                                active_idxs = (v_mask > 0).nonzero(as_tuple=True)[0]
+                                if len(active_idxs) > 0:
+                                    importance = final_importance[active_idxs]
+                                    prune_candidates = active_idxs[torch.topk(importance, k=k_prune, largest=False).indices]
+                                    v_mask[prune_candidates] = 0.0
+                                
+                                # 비활성 파라미터 중 중요도와 그래디언트를 함께 고려하여 추가 (grow)
+                                inactive_idxs = (v_mask == 0).nonzero(as_tuple=True)[0]
+                                if len(inactive_idxs) > 0:
+                                    # 그래디언트 크기와 시각적 중요도를 결합한 점수
+                                    grow_scores = 0.7 * grad_history['v'][inactive_idxs] + 0.3 * final_importance[inactive_idxs]
+                                    grow_candidates = inactive_idxs[torch.topk(grow_scores, k=k_prune, largest=True).indices]
+                                    v_mask[grow_candidates] = 1.0
+                                
+                                print(f"DST update - Active: {v_mask.sum().item()}/{N} primitives")
+                        
+                        # 기존 ADMM z, λ 업데이트 (주기적으로)
                         if epoch % sparsifying_period == 0:
-                            # Sparsification step
+                            # Compute alpha values from current parameters
                             _alpha = self.alpha_upper_bound * torch.sigmoid(v.detach())
-                            keep_idx = torch.topk(_alpha, sparsified_N).indices
+                            
+                            # Improved: Calculate importance scores considering both visibility and contribution
+                            importance_scores = torch.zeros_like(_alpha, device=self.device)
+                            
+                            # If we have cached masks, use them to compute visual contribution
+                            if 'cached_masks_ref' in locals() and not streaming_render:
+                                # Process in small batches to avoid memory issues
+                                batch_size = 10  # Small batch size to avoid OOM
+                                for i in range(0, N, batch_size):
+                                    end_i = min(i + batch_size, N)
+                                    # For each primitive, measure its contribution to the image
+                                    with torch.no_grad():
+                                        masks_batch = cached_masks_ref[i:end_i]
+                                        v_batch = v[i:end_i].detach()
+                                        c_batch = c[i:end_i].detach()
+                                        
+                                        # Render each primitive individually to assess contribution
+                                        for j in range(end_i - i):
+                                            mask_j = masks_batch[j:j+1]
+                                            alpha_j = self.alpha_upper_bound * torch.sigmoid(v_batch[j:j+1]).view(1, 1, 1)
+                                            color_j = torch.sigmoid(c_batch[j:j+1]).view(1, 1, 1, 3)
+                                            
+                                            # Simple single-primitive rendering
+                                            rendered_j = alpha_j * mask_j.unsqueeze(-1) * color_j
+                                            
+                                            # Use mean absolute difference as importance metric
+                                            # Higher difference = lower importance (we want to keep primitives with high contribution)
+                                            importance_scores[i+j] = 1.0 - torch.mean(torch.abs(rendered_j))
+                                
+                                # Normalize importance scores to [0, 1] range
+                                if importance_scores.max() > importance_scores.min():
+                                    importance_scores = (importance_scores - importance_scores.min()) / (importance_scores.max() - importance_scores.min())
+                            
+                            # Combined score: balance between visibility (alpha) and visual importance
+                            combined_score = _alpha * (0.5 + 0.5 * importance_scores)
+                            
+                            # DST와 통합: 마스크 기반 점수 계산
+                            if dst_enabled:
+                                # 마스크 고려: 활성화된 파라미터만 선택 대상
+                                masked_score = combined_score * v_mask
+                                keep_idx = torch.topk(masked_score, sparsified_N).indices
+                            else:
+                                # 기존 방식: 모든 파라미터 중에서 선택
+                                keep_idx = torch.topk(combined_score, sparsified_N).indices
+                            
                             mask = torch.zeros_like(_alpha, dtype=torch.bool)
                             mask[keep_idx] = True
                             
-                            z.zero_(); z[mask] = _alpha[mask]  # z ← sparse projection
+                            # ADMM 업데이트
+                            z.zero_()
+                            if dst_enabled:
+                                z[mask] = (_alpha * v_mask)[mask]  # 마스크 적용된 값만 업데이트
+                            else:
+                                z[mask] = _alpha[mask]
                             lam += (_alpha - z)
                         
                         if epoch == iters_warmup + sparsify_duration:
@@ -771,7 +929,15 @@ class VectorRenderer:
                             x, y, r, theta, v, c = map(_prune, (x, y, r, theta, v, c))
                             z, lam = map(_prune, (z, lam))
                             
-                            # 3) optimizer 재생성 (Adam state 깔끔히 초기화)
+                            # DST 관련 변수도 함께 잘라내기
+                            if dst_enabled:
+                                v_mask = v_mask[keep_idx].clone()
+                                for key in grad_history:
+                                    if key == 'v':
+                                        grad_history[key] = grad_history[key][keep_idx].clone()
+                            
+                            # 3) Create fresh optimizers after pruning without attempting state transfer
+                            # This avoids tensor size mismatch issues
                             optimizer_xyr = torch.optim.Adam([
                                 {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
                                 {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
@@ -784,8 +950,12 @@ class VectorRenderer:
                                 {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
                             ])
                             
+                            # Create scheduler if decay is enabled
                             sched_xyr = torch.optim.lr_scheduler.ExponentialLR(
                                 optimizer_xyr, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
+
+            if not streaming_render and not opt_conf.get("multi_level", False) and 'cached_masks_ref' in locals():
+                del cached_masks_ref
             
             if epoch % 20 == 0:
                 print(f"Epoch {epoch}, Loss: {loss_value:.4f}")
