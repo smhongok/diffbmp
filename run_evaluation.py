@@ -76,40 +76,6 @@ if __name__ == "__main__":
                 for img_path in img_paths:
                     commands.append(f"{base_command} --initializer {initializer} --renderer {renderer} --svg_text {svg_text} --img_path {img_path}")
     
-    commands = [
-        "python compare_methods_3.py --config configs/overall_scores/tabletest-B-3-2.json",
-        "python compare_methods_3.py --config configs/overall_scores/tabletest-B-3-3.json",
-        "python compare_methods_3.py --config configs/overall_scores/tabletest-B-3-4.json",
-        "python compare_methods_3.py --config configs/overall_scores/tabletest-B-3-5.json",
-        "python compare_methods_3.py --config configs/overall_scores/tabletest-B-3-6.json",
-        "python compare_methods_3.py --config configs/overall_scores/tabletest-B-3-7.json",
-        "python compare_methods_3.py --config configs/overall_scores/tabletest-B-3-8.json",
-        "python compare_methods_3.py --config configs/overall_scores/tabletest-B-3-9.json",
-        "python compare_methods_3.py --config configs/overall_scores/tabletest-B-3-10.json",
-        
-        "python compare_methods_3G.py --config configs/overall_scores/tabletest-B-3-1.json",
-        "python compare_methods_3G.py --config configs/overall_scores/tabletest-B-3-2.json",
-        "python compare_methods_3G.py --config configs/overall_scores/tabletest-B-3-3.json",
-        "python compare_methods_3G.py --config configs/overall_scores/tabletest-B-3-4.json",
-        "python compare_methods_3G.py --config configs/overall_scores/tabletest-B-3-5.json",
-        "python compare_methods_3G.py --config configs/overall_scores/tabletest-B-3-6.json",
-        "python compare_methods_3G.py --config configs/overall_scores/tabletest-B-3-7.json",
-        "python compare_methods_3G.py --config configs/overall_scores/tabletest-B-3-8.json",
-        "python compare_methods_3G.py --config configs/overall_scores/tabletest-B-3-9.json",
-        "python compare_methods_3G.py --config configs/overall_scores/tabletest-B-3-10.json",
-        
-        "python compare_methods_3M.py --config configs/overall_scores/tabletest-B-3-1.json",
-        "python compare_methods_3M.py --config configs/overall_scores/tabletest-B-3-2.json",
-        "python compare_methods_3M.py --config configs/overall_scores/tabletest-B-3-3.json",
-        "python compare_methods_3M.py --config configs/overall_scores/tabletest-B-3-4.json",
-        "python compare_methods_3M.py --config configs/overall_scores/tabletest-B-3-5.json",
-        "python compare_methods_3M.py --config configs/overall_scores/tabletest-B-3-6.json",
-        "python compare_methods_3M.py --config configs/overall_scores/tabletest-B-3-7.json",
-        "python compare_methods_3M.py --config configs/overall_scores/tabletest-B-3-8.json",
-        "python compare_methods_3M.py --config configs/overall_scores/tabletest-B-3-9.json",
-        "python compare_methods_3M.py --config configs/overall_scores/tabletest-B-3-10.json",
-    ]
-    
     # 명령 실행 및 생성된 Excel 파일 경로 수집
     excel_paths = run_and_capture_excel_paths(commands)
     print("Found Excel files:", excel_paths)
