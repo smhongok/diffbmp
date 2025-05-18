@@ -871,7 +871,7 @@ class VectorRenderer:
                             index_scores = idx / (N - 1)      # shape: [N], 0.0 부터 1.0
                             
                             # Combined score: balance between visibility (alpha) and visual importance
-                            combined_score = _alpha * (0.5 + 0.5 * importance_scores) - 0.5 * index_scores
+                            combined_score = _alpha * (0.5 + 0.5 * importance_scores) + 0.5 * index_scores
                             
                             # DST와 통합: 마스크 기반 점수 계산
                             if dst_enabled:
