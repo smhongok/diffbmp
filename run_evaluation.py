@@ -24,7 +24,7 @@ def run_and_capture_excel_paths(commands):
         for line in reversed(result.stdout.splitlines()):
             match = re.search(r'(/[^ ]+\.xlsx)', line)
             if match:
-                excel_paths.append('outputs/' + match.group(1))
+                excel_paths.append(os.path.join('outputs', match.group(1)))
                 break
     return excel_paths
 
