@@ -84,7 +84,7 @@
         "save_epoch": false
     },
     "postprocessing": {
-        "output_folder": "outputs/0515-M-sparsify1630/",
+        "output_folder": "outputs/0519-sparsify/",
         "linewidth": 3.0,
         "compute_psnr": true
     }

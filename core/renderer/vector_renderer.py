@@ -800,49 +800,21 @@ class VectorRenderer:
                                     if param.grad is not None:
                                         grad_history[param_name] = 0.9 * grad_history[param_name] + 0.1 * param.grad.abs()
                                 
-                                # 1. 시각적 기여도 계산 개선
-                                # 컨텍스트 내 각 프리미티브의 영향력 평가
-                                visual_contribution = torch.zeros_like(v, device=self.device)
-                                
-                                if 'cached_masks_ref' in locals() and not streaming_render:
-                                    batch_size = 10
-                                    for i in range(0, N, batch_size):
-                                        end_i = min(i + batch_size, N)
-                                        with torch.no_grad():
-                                            # 현재 배치의 프리미티브 렌더링
-                                            masks_batch = cached_masks_ref[i:end_i]
-                                            v_batch = v[i:end_i]
-                                            c_batch = c[i:end_i]
-                                            
-                                            # 각 프리미티브를 제거했을 때의 손실 증가를 측정
-                                            for j in range(end_i - i):
-                                                # 현재 프리미티브 제외하고 렌더링 (간소화된 방식)
-                                                alpha_j = self.alpha_upper_bound * torch.sigmoid(v_batch[j])
-                                                # 제거 시 발생하는 시각적 영향도 추정
-                                                mask_coverage = masks_batch[j].mean()  # 프리미티브가 덮는 영역의 비율
-                                                visual_contribution[i+j] = alpha_j * mask_coverage
-                                    
-                                    # 정규화
-                                    if visual_contribution.max() > visual_contribution.min():
-                                        visual_contribution = (visual_contribution - visual_contribution.min()) / (visual_contribution.max() - visual_contribution.min())
-                                
                                 # 3. 계층적 관계 분석
                                 # a) 크기 기반 중요도 (큰 것이 작은 것의 "부모")
                                 r_norm = r / r.max()
                                 
-                                # 최종 중요도 계산: 가시성(30%) + 시각적 기여도(50%) + 크기(20%)
-                                alpha_importance = self.alpha_upper_bound * torch.sigmoid(v.detach())
-                                final_importance = (
-                                    0.3 * alpha_importance + 
-                                    0.6 * visual_contribution + 
-                                    0.1 * r_norm
-                                )
+                                # 최종 중요도 계산: 가시성(60%) + 크기(40%)
+                                alpha_importance = self.alpha_upper_bound * torch.sigmoid(v.detach()) * r_norm
+                                weights = torch.tensor([0.6, 0.4], device=self.device)
+                                factors = torch.stack([alpha_importance, r_norm], dim=0)
+                                alpha_importance = torch.matmul(weights, factors)
                                 
                                 # 활성 파라미터 중 중요도가 낮은 것을 제거 (prune)
                                 k_prune = int(sparsified_N * dst_prune_frac)
                                 active_idxs = (v_mask > 0).nonzero(as_tuple=True)[0]
                                 if len(active_idxs) > 0:
-                                    importance = final_importance[active_idxs]
+                                    importance = alpha_importance[active_idxs]
                                     prune_candidates = active_idxs[torch.topk(importance, k=k_prune, largest=False).indices]
                                     v_mask[prune_candidates] = 0.0
                                 
@@ -850,7 +822,7 @@ class VectorRenderer:
                                 inactive_idxs = (v_mask == 0).nonzero(as_tuple=True)[0]
                                 if len(inactive_idxs) > 0:
                                     # 그래디언트 크기와 시각적 중요도를 결합한 점수
-                                    grow_scores = 0.7 * grad_history['v'][inactive_idxs] + 0.3 * final_importance[inactive_idxs]
+                                    grow_scores = 0.7 * grad_history['v'][inactive_idxs] + 0.3 * alpha_importance[inactive_idxs]
                                     grow_candidates = inactive_idxs[torch.topk(grow_scores, k=k_prune, largest=True).indices]
                                     v_mask[grow_candidates] = 1.0
                                 
@@ -899,7 +871,7 @@ class VectorRenderer:
                             index_scores = idx / (N - 1)      # shape: [N], 0.0 부터 1.0
                             
                             # Combined score: balance between visibility (alpha) and visual importance
-                            combined_score = _alpha * (0.5 + 0.5 * importance_scores) - 0.5 * index_scores
+                            combined_score = _alpha * (0.5 + 0.5 * importance_scores) + 0.5 * index_scores
                             
                             # DST와 통합: 마스크 기반 점수 계산
                             if dst_enabled:

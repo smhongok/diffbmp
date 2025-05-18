@@ -649,24 +649,17 @@ def save_metrics_to_excel(results, config):
     if not results:
         print("No results to save to Excel")
         return
-    
-    # Filter results to only include StructureAwareInitializer
-    struct_aware_results = [r for r in results if r['initializer'] == "StructureAwareInitializer"]
-    
-    if not struct_aware_results:
-        print("No StructureAwareInitializer results to save to Excel")
-        return
         
     # Create a DataFrame from the results
     data = []
-    for result in struct_aware_results:
+    for result in results:
         metrics = result.get('metrics', {})
         row = {
             'Image': metrics.get('ImgName', os.path.basename(config["preprocessing"].get("img_path", "unknown"))),
-            'Width': metrics.get('Width', config['canvas_size'][1]),
             'Primitives': metrics.get('NumPrimitives', config["initialization"].get("N", 0)),
             'Initializer': result.get('initializer', 'unknown'),
             'Renderer': result.get('renderer', 'unknown'),
+            'blur_sigma': config["optimization"].get("blur_sigma", 1.0),
             'PSNR': metrics.get('PSNR', 0),
             'SSIM': metrics.get('SSIM', 0),
             'LPIPS': metrics.get('LPIPS', 0),
@@ -695,11 +688,38 @@ def save_metrics_to_excel(results, config):
 def main():
     parser = argparse.ArgumentParser(description="Compare different initializers and renderers")
     parser.add_argument('--config', type=str, required=True, help='Path to the config file')
+    parser.add_argument('--initializer', type=str, required=False, help='StructureAwareInitializer, RandomInitializer, MultiLevelInitializer, ...')
+    parser.add_argument('--renderer', type=str, required=False, help='MseRenderer, FreqRenderer, ...')
+    parser.add_argument('--svg_text', type=str, required=False, help='G, B, M, ...')
+    parser.add_argument('--img_path', type=str, required=False, help='images/HighFreq/0831.png, images/LowFreq/0831.png, ...')
     args = parser.parse_args()
-    
+       
     # Load configuration
     with open(args.config, "r", encoding="utf-8") as f:
         config = json.load(f)
+    
+    if args.initializer:
+        initializers_configs = [(init, config["initialization"]) for init in args.initializer.split(",")]
+    else:
+        # Process initializers one at a time to save memory
+        initializers_configs = [
+            ("StructureAwareInitializer", config["initialization"]),
+            ("RandomInitializer", config["initialization"]),
+            #("MultiLevelInitializer", config["initialization"]),
+            # Add more initializers as needed
+        ]
+    if args.renderer:
+        renderer_names = args.renderer.split(",")
+    else:
+        # Define renderer names - sorted by memory usage (lowest first)
+        renderer_names = ["MseRenderer", "FreqRenderer_1", "FreqRenderer_2"]  # Add more as needed
+    
+    if args.svg_text:
+        config["svg"]["text"] = args.svg_text
+        config["postprocessing"]["output_folder"] = config["postprocessing"]["output_folder"].replace("outputs/", "outputs/" + args.svg_text + "-")
+    
+    if args.img_path:
+        config["preprocessing"]["img_path"] = args.img_path
     
     print(f"Using FP16 (half precision): {config['optimization'].get('use_fp16', False)}")
     
@@ -740,18 +760,7 @@ def main():
     )
     classify_svg = svg_loader.classify_svg()
     print(f"SVG is classified as: {classify_svg}")
-    
-    # Define renderer names - sorted by memory usage (lowest first)
-    renderer_names = ["MseRenderer", "FreqRenderer_1", "FreqRenderer_2"]  # Add more as needed
-    
-    # Process initializers one at a time to save memory
-    initializers_configs = [
-        ("StructureAwareInitializer", config["initialization"]),
-        ("RandomInitializer", config["initialization"]),
-        #("MultiLevelInitializer", config["initialization"]),
-        # Add more initializers as needed
-    ]
-    
+        
     orig_final_width = config["preprocessing"].get("final_width", 128)
     if type(orig_final_width) is list:
         final_width_list = orig_final_width
@@ -799,6 +808,7 @@ def main():
                 config["initialization"]["N"] = N
                 config["postprocessing"]["output_folder"] = os.path.join(orig_output_folder, img_path.split("/")[-2], "width" + str(final_width), "N" + str(N))
                 run_comparison(initializers_configs, renderer_names, config, I_target, svg_loader, device)
+                
                 torch.cuda.empty_cache()
                 gc.collect()
         
