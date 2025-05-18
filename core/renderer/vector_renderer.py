@@ -892,9 +892,14 @@ class VectorRenderer:
                                 # Normalize importance scores to [0, 1] range
                                 if importance_scores.max() > importance_scores.min():
                                     importance_scores = (importance_scores - importance_scores.min()) / (importance_scores.max() - importance_scores.min())
+
+                            N = importance_scores.size(0)
+                            # 0,1,2,...,N-1 인덱스를 0~1 범위로 정규화
+                            idx = torch.arange(N, dtype=importance_scores.dtype, device=importance_scores.device)
+                            index_scores = idx / (N - 1)      # shape: [N], 0.0 부터 1.0
                             
                             # Combined score: balance between visibility (alpha) and visual importance
-                            combined_score = _alpha * (0.5 + 0.5 * importance_scores)
+                            combined_score = _alpha * (0.5 + 0.5 * importance_scores) - 0.5 * index_scores
                             
                             # DST와 통합: 마스크 기반 점수 계산
                             if dst_enabled:
