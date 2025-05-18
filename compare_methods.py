@@ -716,7 +716,7 @@ def main():
     
     if args.svg_text:
         config["svg"]["text"] = args.svg_text
-        config["postprocessing"]["output_folder"] = config["postprocessing"]["output_folder"].replace("-B-", "-" + args.svg_text + "-")
+        config["postprocessing"]["output_folder"] = config["postprocessing"]["output_folder"].replace("outputs/", "outputs/" + args.svg_text + "-")
     
     if args.img_path:
         config["preprocessing"]["img_path"] = args.img_path
