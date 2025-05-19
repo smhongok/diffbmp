@@ -10,6 +10,9 @@ images/*
 !images/BSDS500
 !images/CelebA
 !images/MoviePosters
+!images/artwork
+!images/HighFreq
+!images/nature
 configs/*
 !configs/jylee_svg_hollow.json
 !configs/smhong-dev.json
