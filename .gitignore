@@ -25,6 +25,8 @@ main_rgb.py
 codes_legacy/*
 extra_outputs/*
 assets/svg/*
+!assets/svg/fire.svg
+!assets/svg/fire2.svg
 
 ### Python ###
 # Byte-compiled / optimized / DLL files

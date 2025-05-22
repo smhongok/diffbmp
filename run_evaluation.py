@@ -24,7 +24,7 @@ def run_and_capture_excel_paths(commands):
         for line in reversed(result.stdout.splitlines()):
             match = re.search(r'(/[^ ]+\.xlsx)', line)
             if match:
-                excel_paths.append(os.path.join('outputs', match.group(1)))
+                excel_paths.append('outputs' + match.group(1))
                 break
     return excel_paths
 
@@ -42,16 +42,34 @@ if __name__ == "__main__":
     base_command = "python compare_methods.py --config configs/smhong-dev-font.json"
     commands = []
     img_paths = [
-        "images/artwork/Cafe_Terrace_at_Night.jpg",
-        "images/artwork/Gustav_Klimt.jpg",
-        "images/artwork/The_Great_Wave_of_Kanagawa.jpg",
-        "images/artwork/The_Scream.jpg",
-        "images/BSDS500/102061.jpg",
-        "images/MoviePosters/1.6_245943.jpg",
-        "images/MoviePosters/1.9_270846.jpg",
-        "images/nature/puppy1.jpg",
-        "images/nature/puppy2.jpg",
-        "images/nature/melon.jpg"
+        #"images/artwork/Cafe_Terrace_at_Night.jpg",
+        # "images/artwork/Gustav_Klimt.jpg",
+        #"images/artwork/The_Great_Wave_of_Kanagawa.jpg",
+        #"images/artwork/The_Scream.jpg",
+        # "images/BSDS500/102061.jpg",    
+        #"images/MoviePosters/1.6_245943.jpg",
+        #"images/MoviePosters/1.9_270846.jpg",
+        # "images/nature/puppy1.jpg",
+        # "images/nature/puppy2.jpg",
+        # "images/nature/melon.jpg"
+
+        # "images/artwork/Gustav_Klimt.jpg",
+        # "images/artwork/Starry_Night.jpg",
+        # "images/artwork/The_Great_Wave_of_Kanagawa.jpg",
+        # "images/artwork/The_Scream.jpg",
+        # "images/BSDS500/102061.jpg",
+        # "images/MoviePosters/1.6_245943.jpg",
+        # "images/MoviePosters/1.9_270846.jpg",
+        # "images/nature/puppy1.jpg",
+        # "images/nature/puppy2.jpg",
+        # "images/nature/puppy3.jpg",
+        # "images/nature/melon.jpg",
+        # "images/nature/Matterhorn.jpg"
+
+        "images/nature/Fire_Santiago_VI.jpg",
+        "images/nature/firefighter.jpg",
+        "images/nature/wildfire.jpg",
+        "images/nature/Yugansky_nature_reserve_fire.jpg"
     ]
     initializers = [
         #"RandomInitializer",
@@ -63,18 +81,78 @@ if __name__ == "__main__":
         #"FreqRenderer_2"
     ]
     svg_texts = [
-        "B",
-        "G",
-        "M",
-        #"S",
-        #"T",
+        # "A",
+        #"B",
+        # "C",
+        # "D",
+        # "E",
+        # "F",
+        #"G",
+        # "H",
+        # "I",
+        # "J",
+        # "K",
+        # "L",
+        # "M",
+        # "N",
+        # "O",
+        # "P",
+        # "Q",
+        # "R",
+        # "S",
+        # "T",
+        # "U",
+        # "V",
+        # "W",
+        # "X",
+        # "Y",
+        # "Z",
+        # "a",
+        # "b",
+        # "c",
+        # "d",
+        # "e",
+        # "f",
+        # "g",
+        # "h",
+        # "i",
+        # "j",
+        # "k",
+        # "l",
+        # "m",
+        # "n",
+        # "o",
+        # "p",
+        # "q",
+        # "r",
+        # "s",
+        # "t",
+        # "u",
+        # "v",
+        # "w",
+        # "x",
+        # "y",
+        # "z"
+        #"LOVE"
+    ]
+
+    svg_paths = [
+        "fire.svg",
+        "fire2.svg"
     ]
     
-    for svg_text in svg_texts:
-        for initializer in initializers:
-            for renderer in renderers:
-                for img_path in img_paths:
-                    commands.append(f"{base_command} --initializer {initializer} --renderer {renderer} --svg_text {svg_text} --img_path {img_path}")
+    if len(svg_texts) > 0:
+        for svg_text in svg_texts:
+            for initializer in initializers:
+                for renderer in renderers:
+                    for img_path in img_paths:
+                        commands.append(f"{base_command} --initializer {initializer} --renderer {renderer} --svg_text {svg_text} --img_path {img_path}")
+    else:
+        for svg_path in svg_paths:
+            for initializer in initializers:
+                for renderer in renderers:
+                    for img_path in img_paths:
+                        commands.append(f"{base_command} --initializer {initializer} --renderer {renderer} --svg_path {svg_path} --img_path {img_path}")
     
     # 명령 실행 및 생성된 Excel 파일 경로 수집
     excel_paths = run_and_capture_excel_paths(commands)

@@ -25,7 +25,7 @@
     },
     "svg": {
         "svg_file": "arial.ttf",
-        "text": "M",
+        "text": "G",
         "svg_hollow": false,
         "output_width": 128
     },
@@ -66,10 +66,11 @@
         "alpha_upper_bound": 1.0,
         "do_gaussian_blur": true,
         "blur_sigma": 1.0,
+        "do_adapt_gaussian_blur": false,
         "blur_sigma_start": 2.0,
         "blur_sigma_end": 0.0,
         "sparsifying": { 
-            "do_sparsify": true,
+            "do_sparsify": false,
             "sparsify_warmup": 10,
             "sparsify_duration": 24,
             "sparsify_loss_coeff": 1.0,
@@ -84,7 +85,7 @@
         "save_epoch": false
     },
     "postprocessing": {
-        "output_folder": "outputs/0519-sparsify/",
+        "output_folder": "outputs/0522-LOVE/",
         "linewidth": 3.0,
         "compute_psnr": true
     }

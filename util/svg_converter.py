@@ -1773,31 +1773,32 @@ class ImageToSVG:
 
 # 예시 사용법
 if __name__ == "__main__":
-    # from svg_loader import SVGLoader
-    # text = "고"
-    # font_name = "MaruBuri-Bold.otf"
-    # font_parser = FontParser(font_name)
-    # svg_path = font_parser.text_to_svg(text, mode='opt-path')
-    # svg_loader = SVGLoader(
-    #     svg_path=svg_path,
-    #     output_width=128,
-    #     device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # )
+    from svg_loader import SVGLoader
+    text = "WAVE"
+    font_name = "MaruBuri-Bold.otf"
+    font_parser = FontParser(font_name)
+    svg_path = font_parser.text_to_svg(text, mode='opt-path')
+    svg_loader = SVGLoader(
+        svg_path=svg_path,
+        output_width=128,
+        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    )
+    
     # classify_svg = svg_loader.classify_svg()
     # print(f"SVG is classified as: {classify_svg}")
     
-    img_converter = ImageToSVG()
-    img_path = "/data/jameskim/repos/circle_art/assets/image/elec_stamp.png"
-    #traced_svg = img_converter.trace_image(img_path, color_mode="color", quantize=True, simplify=False, num_colors=8)
+    # img_converter = ImageToSVG()
+    # img_path = "/data/jameskim/repos/circle_art/assets/image/elec_stamp.png"
+    # #traced_svg = img_converter.trace_image(img_path, color_mode="color", quantize=True, simplify=False, num_colors=8)
     
-    # 기본 윤곽선 추출 (일반)
-    #outline_svg = img_converter.extract_all_outlines(img_path, threshold=100, min_area_ratio=0.000001)
+    # # 기본 윤곽선 추출 (일반)
+    # #outline_svg = img_converter.extract_all_outlines(img_path, threshold=100, min_area_ratio=0.000001)
     
-    # 내부가 채워진 윤곽선 생성
-    filled_outline_svg = img_converter.extract_filled_outlines(img_path, threshold=100, min_area_ratio=0.000001)
-    out_svg = img_converter.create_logo_svg(img_path, simplify=False)
-    img_converter.extract_logo_paths(img_path)
-    img_converter.vectorize_image(img_path)
+    # # 내부가 채워진 윤곽선 생성
+    # filled_outline_svg = img_converter.extract_filled_outlines(img_path, threshold=100, min_area_ratio=0.000001)
+    # out_svg = img_converter.create_logo_svg(img_path, simplify=False)
+    # img_converter.extract_logo_paths(img_path)
+    # img_converter.vectorize_image(img_path)
     
     
     
