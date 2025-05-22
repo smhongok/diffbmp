@@ -10,6 +10,9 @@ images/*
 !images/BSDS500
 !images/CelebA
 !images/MoviePosters
+!images/artwork
+!images/HighFreq
+!images/nature
 configs/*
 !configs/jylee_svg_hollow.json
 !configs/smhong-dev.json
@@ -22,6 +25,8 @@ main_rgb.py
 codes_legacy/*
 extra_outputs/*
 assets/svg/*
+!assets/svg/fire.svg
+!assets/svg/fire2.svg
 
 ### Python ###
 # Byte-compiled / optimized / DLL files

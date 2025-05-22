@@ -688,37 +688,41 @@ def save_metrics_to_excel(results, config):
 def main():
     parser = argparse.ArgumentParser(description="Compare different initializers and renderers")
     parser.add_argument('--config', type=str, required=True, help='Path to the config file')
-    parser.add_argument('--initializer', type=str, required=False, help='StructureAwareInitializer, RandomInitializer, MultiLevelInitializer, ...')
-    parser.add_argument('--renderer', type=str, required=False, help='MseRenderer, FreqRenderer, ...')
-    parser.add_argument('--svg_text', type=str, required=False, help='G, B, M, ...')
-    parser.add_argument('--img_path', type=str, required=False, help='images/HighFreq/0831.png, images/LowFreq/0831.png, ...')
+    parser.add_argument('--initializer', type=str, default='', help='StructureAwareInitializer, RandomInitializer, MultiLevelInitializer, ...')
+    parser.add_argument('--renderer', type=str, default='', help='MseRenderer, FreqRenderer, ...')
+    parser.add_argument('--svg_text', type=str, default='', help='G, B, M, ...')
+    parser.add_argument('--svg_path', type=str, default='', help='LOVE.svg, ...')
+    parser.add_argument('--img_path', type=str, default='', help='images/HighFreq/0831.png, images/LowFreq/0831.png, ...')
     args = parser.parse_args()
        
     # Load configuration
     with open(args.config, "r", encoding="utf-8") as f:
         config = json.load(f)
     
-    if args.initializer:
+    if args.initializer != '':
         initializers_configs = [(init, config["initialization"]) for init in args.initializer.split(",")]
     else:
         # Process initializers one at a time to save memory
         initializers_configs = [
-            ("StructureAwareInitializer", config["initialization"]),
             ("RandomInitializer", config["initialization"]),
+            ("StructureAwareInitializer", config["initialization"]),
             #("MultiLevelInitializer", config["initialization"]),
             # Add more initializers as needed
         ]
-    if args.renderer:
+    if args.renderer != '':
         renderer_names = args.renderer.split(",")
     else:
         # Define renderer names - sorted by memory usage (lowest first)
-        renderer_names = ["MseRenderer", "FreqRenderer_1", "FreqRenderer_2"]  # Add more as needed
+        renderer_names = ["MseRenderer"] #, "FreqRenderer_1", "FreqRenderer_2"]  # Add more as needed
     
-    if args.svg_text:
+    if args.svg_path != '':
+        config["svg"]["svg_file"] = args.svg_path
+        config["postprocessing"]["output_folder"] = config["postprocessing"]["output_folder"].replace("outputs/", "outputs/" + args.svg_path.split("/")[-1].split(".")[0] + "-")
+    elif args.svg_text != '':
         config["svg"]["text"] = args.svg_text
         config["postprocessing"]["output_folder"] = config["postprocessing"]["output_folder"].replace("outputs/", "outputs/" + args.svg_text + "-")
     
-    if args.img_path:
+    if args.img_path != '':
         config["preprocessing"]["img_path"] = args.img_path
     
     print(f"Using FP16 (half precision): {config['optimization'].get('use_fp16', False)}")

@@ -549,6 +549,12 @@ class VectorRenderer:
         do_sparsify = sparsify_conf.get("do_sparsify", False)
         
         N = x.shape[0]  # Number of primitives
+
+        # For Gaussian blur transition if enabled
+        do_gaussian_blur = opt_conf.get("do_gaussian_blur", False)
+        do_adapt_gaussian_blur = opt_conf.get("do_adapt_gaussian_blur", False)
+        sigma_start = opt_conf.get("blur_sigma_start", 0.0)
+        sigma_end = opt_conf.get("blur_sigma_end", 0.0)
         
         if do_sparsify:
             # Create separate optimizers for sparsification
@@ -560,7 +566,7 @@ class VectorRenderer:
             
             optimizer_rest = torch.optim.Adam([
                 {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0) * (1000.0/x.numel())},
-                {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0) * (1000.0/x.numel())},
+                {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)}, # * (1000.0/x.numel())},
                 {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
             ])
             
@@ -607,12 +613,7 @@ class VectorRenderer:
             
             assert sparsified_N < N, "sparsified_N must be less than N"
             assert num_iterations > iters_warmup + sparsify_duration, "num_iterations must be greater than warmup + duration"
-            
-            # For Gaussian blur transition if enabled
-            do_gaussian_blur = opt_conf.get("do_gaussian_blur", False)
-            sigma_start = opt_conf.get("blur_sigma_start", 0.0)
-            sigma_end = opt_conf.get("blur_sigma_end", 0.0)
-            
+                        
             optimizer = None  # We'll use the separate optimizers instead
         else:
             # Standard single optimizer if not doing sparsification
@@ -621,7 +622,7 @@ class VectorRenderer:
                 {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
                 {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
                 {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0) * (1000.0/x.numel())},
-                {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0) * (1000.0/x.numel())},
+                {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)}, # * (1000.0/x.numel())},
                 {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
             ]
             optimizer = torch.optim.Adam(param_groups)
@@ -636,7 +637,10 @@ class VectorRenderer:
                 optimizer_rest.zero_grad()
                 
                 # Current sigma for Gaussian blur
-                if do_gaussian_blur:
+                if do_adapt_gaussian_blur:
+                    sigma = sigma_start - (sigma_start - sigma_end) * (epoch / num_iterations)
+                    print(f"Gaussian blur sigma: {sigma}")
+                elif do_gaussian_blur:
                     sigma = blur_sigma #sigma_start * (1 - epoch / num_iterations) + sigma_end * (epoch / num_iterations)
                 else:
                     sigma = 0.0
@@ -832,46 +836,8 @@ class VectorRenderer:
                         if epoch % sparsifying_period == 0:
                             # Compute alpha values from current parameters
                             _alpha = self.alpha_upper_bound * torch.sigmoid(v.detach())
-                            
-                            # Improved: Calculate importance scores considering both visibility and contribution
-                            importance_scores = torch.zeros_like(_alpha, device=self.device)
-                            
-                            # If we have cached masks, use them to compute visual contribution
-                            if 'cached_masks_ref' in locals() and not streaming_render:
-                                # Process in small batches to avoid memory issues
-                                batch_size = 10  # Small batch size to avoid OOM
-                                for i in range(0, N, batch_size):
-                                    end_i = min(i + batch_size, N)
-                                    # For each primitive, measure its contribution to the image
-                                    with torch.no_grad():
-                                        masks_batch = cached_masks_ref[i:end_i]
-                                        v_batch = v[i:end_i].detach()
-                                        c_batch = c[i:end_i].detach()
-                                        
-                                        # Render each primitive individually to assess contribution
-                                        for j in range(end_i - i):
-                                            mask_j = masks_batch[j:j+1]
-                                            alpha_j = self.alpha_upper_bound * torch.sigmoid(v_batch[j:j+1]).view(1, 1, 1)
-                                            color_j = torch.sigmoid(c_batch[j:j+1]).view(1, 1, 1, 3)
-                                            
-                                            # Simple single-primitive rendering
-                                            rendered_j = alpha_j * mask_j.unsqueeze(-1) * color_j
-                                            
-                                            # Use mean absolute difference as importance metric
-                                            # Higher difference = lower importance (we want to keep primitives with high contribution)
-                                            importance_scores[i+j] = 1.0 - torch.mean(torch.abs(rendered_j))
-                                
-                                # Normalize importance scores to [0, 1] range
-                                if importance_scores.max() > importance_scores.min():
-                                    importance_scores = (importance_scores - importance_scores.min()) / (importance_scores.max() - importance_scores.min())
-
-                            N = importance_scores.size(0)
-                            # 0,1,2,...,N-1 인덱스를 0~1 범위로 정규화
-                            idx = torch.arange(N, dtype=importance_scores.dtype, device=importance_scores.device)
-                            index_scores = idx / (N - 1)      # shape: [N], 0.0 부터 1.0
-                            
-                            # Combined score: balance between visibility (alpha) and visual importance
-                            combined_score = _alpha * (0.5 + 0.5 * importance_scores) + 0.5 * index_scores
+                           
+                            combined_score = _alpha 
                             
                             # DST와 통합: 마스크 기반 점수 계산
                             if dst_enabled:
