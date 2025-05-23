@@ -1,4 +1,4 @@
-# Circle Art Test
+# Circle Art
 
 ## Overview
 
@@ -100,7 +100,7 @@ Feel free to submit pull requests or report issues to enhance the functionality 
 
 ## License
 
-Specify the appropriate license for the use or distribution of this project.
+Please do not distribute. This is for the purpose of anonymous review.
 
 ---
 
