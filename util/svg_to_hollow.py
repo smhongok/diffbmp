@@ -9,48 +9,48 @@ from xml.etree import ElementTree as ET
 
 def convert_svg_to_hollow(input_file, output_file, stroke_width=None, stroke_color='#000000'):
     """
-    SVG 파일을 hollow 형태로 변환하는 함수
+    Function to convert SVG file to hollow format
     
     Args:
-        input_file (str): 입력 SVG 파일 경로
-        output_file (str): 출력 SVG 파일 경로
-        stroke_width (float): 테두리 두께 (None이면 자동 계산)
-        stroke_color (str): 테두리 색상
+        input_file (str): Input SVG file path
+        output_file (str): Output SVG file path
+        stroke_width (float): Border thickness (None for automatic calculation)
+        stroke_color (str): Border color
     """
-    # XML 네임스페이스 등록
+    # Register XML namespace
     ET.register_namespace('', 'http://www.w3.org/2000/svg')
     ET.register_namespace('xlink', 'http://www.w3.org/1999/xlink')
     
     try:
-        # SVG 파일 파싱
+        # Parse SVG file
         tree = ET.parse(input_file)
         root = tree.getroot()
         
-        # SVG 네임스페이스 정의
+        # Define SVG namespace
         svg_ns = {'svg': 'http://www.w3.org/2000/svg'}
         
-        # 원본 뷰박스와 크기 정보 얻기
+        # Get original viewBox and size information
         viewBox = root.get('viewBox')
         width = root.get('width')
         height = root.get('height')
         
-        # 이미지 크기에 따라 테두리 두께 조정
+        # Adjust border thickness based on image size
         adjusted_width = None
         
-        # viewBox가 없는 경우 width와 height로부터 생성
+        # If viewBox doesn't exist, create from width and height
         if not viewBox and width and height:
             try:
                 w = float(width.rstrip('px').rstrip('em').rstrip('pt').rstrip('%'))
                 h = float(height.rstrip('px').rstrip('em').rstrip('pt').rstrip('%'))
                 viewBox = f"0 0 {w} {h}"
                 root.set('viewBox', viewBox)
-                print(f"viewBox가 없어 생성했습니다: {viewBox}")
+                print(f"Created viewBox because it didn't exist: {viewBox}")
             except (ValueError, TypeError):
                 pass
         
-        # 테두리 두께 자동 계산
+        # Automatic border thickness calculation
         if viewBox:
-            # viewBox의 크기에 비례하여 적절한 테두리 두께 계산
+            # Calculate appropriate border thickness proportional to viewBox size
             vb_parts = viewBox.split()
             if len(vb_parts) == 4:
                 vb_min_x = float(vb_parts[0])
@@ -58,51 +58,51 @@ def convert_svg_to_hollow(input_file, output_file, stroke_width=None, stroke_col
                 vb_width = float(vb_parts[2])
                 vb_height = float(vb_parts[3])
                 
-                # 이미지 크기에 따른 자동 테두리 두께 계산
+                # Automatic border thickness calculation based on image size
                 if stroke_width is None:
-                    # 작은 이미지
+                    # Small image
                     if min(vb_width, vb_height) <= 50:
                         adjusted_width = min(vb_width, vb_height) * 0.02  # 2%
-                    # 중간 크기 이미지
+                    # Medium size image
                     elif min(vb_width, vb_height) <= 200:
                         adjusted_width = min(vb_width, vb_height) * 0.01  # 1%
-                    # 큰 이미지
+                    # Large image
                     else:
                         adjusted_width = min(vb_width, vb_height) * 0.005  # 0.5%
                     
-                    # 최소/최대 값 범위 설정
-                    adjusted_width = max(adjusted_width, 0.5)  # 최소 0.5
-                    print(f"테두리 두께가 자동 계산되었습니다: {adjusted_width:.1f}")
+                    # Set min/max value range
+                    adjusted_width = max(adjusted_width, 0.5)  # Minimum 0.5
+                    print(f"Border thickness automatically calculated: {adjusted_width:.1f}")
                 else:
-                    # 사용자 지정 값 사용
+                    # Use user specified value
                     adjusted_width = stroke_width
                 
-                # 테두리 두께를 고려하여 viewBox 확장
-                # 테두리 두께의 절반만큼 각 방향으로 확장 (테두리가 중앙에서 양쪽으로 늘어나므로)
+                # Expand viewBox to account for border thickness
+                # Expand by half the border thickness in each direction (border grows from center)
                 padding = adjusted_width / 2
                 
-                # 새로운 viewBox 설정 (테두리가 잘리지 않도록 padding 추가)
+                # Set new viewBox (add padding to prevent border from being cut off)
                 new_viewBox = f"{vb_min_x - padding} {vb_min_y - padding} {vb_width + padding*2} {vb_height + padding*2}"
                 root.set('viewBox', new_viewBox)
         
-        # viewBox가 없는 경우 기본 테두리 두께 설정
+        # Set default border thickness if viewBox doesn't exist
         if adjusted_width is None:
             if stroke_width is not None:
                 adjusted_width = stroke_width
             else:
-                adjusted_width = 1.0  # 기본값
+                adjusted_width = 1.0  # Default value
         
-        # 다른 속성도 테두리 두께를 고려하여 조정
+        # Adjust other attributes to account for border thickness
         if width and height:
             try:
-                # 단위 추출
+                # Extract units
                 w_str = width
                 h_str = height
                 
                 w_unit = ""
                 h_unit = ""
                 
-                # 숫자 부분과 단위 부분 분리
+                # Separate numeric part and unit part
                 w_match = re.match(r'([0-9.]+)([a-z%]*)', w_str)
                 h_match = re.match(r'([0-9.]+)([a-z%]*)', h_str)
                 
@@ -118,113 +118,113 @@ def convert_svg_to_hollow(input_file, output_file, stroke_width=None, stroke_col
                 else:
                     h = float(h_str)
                 
-                # 확장된 크기 계산 (padding은 테두리 두께)
+                # Calculate expanded size (padding is border thickness)
                 padding = adjusted_width
                 w_new = w + padding * 2
                 h_new = h + padding * 2
                 
-                # 새 크기 설정
+                # Set new size
                 root.set('width', f"{w_new}{w_unit}")
                 root.set('height', f"{h_new}{h_unit}")
             except (ValueError, TypeError) as e:
-                print(f"크기 조정 중 오류 발생: {e}")
+                print(f"Error during size adjustment: {e}")
             
-        # <style> 요소 찾기 또는 생성
+        # Find or create <style> element
         style_elem = root.find('.//svg:style', svg_ns)
         
         if style_elem is None:
-            # style 요소가 없으면 생성
+            # Create style element if it doesn't exist
             style_elem = ET.SubElement(root, '{http://www.w3.org/2000/svg}style')
             style_elem.set('type', 'text/css')
             style_elem.text = '\n\t.st0{fill:none;stroke:' + stroke_color + ';stroke-width:' + str(adjusted_width) + ';stroke-linejoin:round;stroke-linecap:round;}\n'
         else:
-            # 기존 style 요소가 있으면 hollow 스타일 대체 또는 추가
+            # Update or add hollow style to existing style element
             style_text = style_elem.text or ""
             if '.st0' in style_text:
-                # 기존 st0 클래스를 업데이트
+                # Update existing st0 class
                 style_text = re.sub(r'\.st0\{[^}]*\}', '.st0{fill:none;stroke:' + stroke_color + ';stroke-width:' + 
                                    str(adjusted_width) + ';stroke-linejoin:round;stroke-linecap:round;}', style_text)
                 style_elem.text = style_text
             else:
-                # 새로운 st0 클래스 추가
+                # Add new st0 class
                 style_elem.text = style_text + '\n\t.st0{fill:none;stroke:' + stroke_color + ';stroke-width:' + str(adjusted_width) + ';stroke-linejoin:round;stroke-linecap:round;}\n'
         
-        # 모든 path, rect, circle, ellipse 등의 요소에 hollow 스타일 적용
+        # Apply hollow style to all path, rect, circle, ellipse and other elements
         for elem in root.findall('.//{http://www.w3.org/2000/svg}path') + \
                     root.findall('.//{http://www.w3.org/2000/svg}rect') + \
                     root.findall('.//{http://www.w3.org/2000/svg}circle') + \
                     root.findall('.//{http://www.w3.org/2000/svg}ellipse') + \
                     root.findall('.//{http://www.w3.org/2000/svg}polygon'):
             
-            # 원본 스타일 정보 저장
+            # Save original style information
             original_style = {}
             if 'style' in elem.attrib:
                 style_text = elem.attrib['style']
-                # 중요한 원본 스타일 속성 보존
+                # Preserve important original style attributes
                 stroke_match = re.search(r'stroke-width:([^;]+);', style_text)
                 if stroke_match:
                     original_style['stroke-width'] = stroke_match.group(1)
                 
-                # 기존 스타일에서 fill 속성만 제거
+                # Remove only fill attribute from existing style
                 style_text = re.sub(r'fill:[^;]+;', '', style_text)
                 elem.attrib['style'] = style_text
             
-            # fill 속성 제거
+            # Remove fill attribute
             if 'fill' in elem.attrib:
                 del elem.attrib['fill']
                 
-            # 원본 테두리 속성 유지하면서 class 속성 설정
+            # Set class attribute while maintaining original border attributes
             elem.set('class', 'st0')
             
-            # 사용자 지정 테두리 두께 설정
+            # Set user-specified border thickness
             if 'stroke-width' in original_style:
                 elem.set('stroke-width', original_style['stroke-width'])
             else:
                 elem.set('stroke-width', str(adjusted_width))
             
-            # 테두리 색상 설정
+            # Set border color
             elem.set('stroke', stroke_color)
             elem.set('fill', 'none')
             
-        # 결과를 문자열로 변환
+        # Convert result to string
         rough_string = ET.tostring(root, 'utf-8')
         
-        # minidom을 사용하여 더 깔끔한 XML 형식으로 변환
+        # Use minidom for cleaner XML formatting
         reparsed = minidom.parseString(rough_string)
         pretty_xml = reparsed.toprettyxml(indent='\t')
         
-        # 빈 줄 제거
+        # Remove empty lines
         pretty_xml = os.linesep.join([s for s in pretty_xml.splitlines() if s.strip()])
         
-        # 결과 저장
+        # Save result
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(pretty_xml)
             
-        print(f"Hollow SVG가 성공적으로 생성되었습니다: {output_file}")
-        print(f"적용된 테두리 두께: {adjusted_width}")
+        print(f"Hollow SVG successfully generated: {output_file}")
+        print(f"Applied border thickness: {adjusted_width}")
         if viewBox:
-            print(f"원본 viewBox: {viewBox}")
-            print(f"수정된 viewBox: {new_viewBox if 'new_viewBox' in locals() else '변경 없음'}")
+            print(f"Original viewBox: {viewBox}")
+            print(f"Modified viewBox: {new_viewBox if 'new_viewBox' in locals() else 'No change'}")
         
     except Exception as e:
-        print(f"오류 발생: {e}")
+        print(f"Error occurred: {e}")
         import traceback
         traceback.print_exc()
 
 def main():
     """
-    메인 함수: 명령줄 인자를 처리하고 SVG 변환 함수 호출
+    Main function: Process command line arguments and call SVG conversion function
     """
-    parser = argparse.ArgumentParser(description='SVG 파일을 hollow 형태로 변환합니다.')
-    parser.add_argument('input_file', help='입력 SVG 파일 경로')
-    parser.add_argument('--output', '-o', help='출력 SVG 파일 경로 (기본값: input_file에 _hollow 접미사 추가)')
+    parser = argparse.ArgumentParser(description='Convert SVG file to hollow format')
+    parser.add_argument('input_file', help='Input SVG file path')
+    parser.add_argument('--output', '-o', help='Output SVG file path (default: append _hollow to input_file)')
     parser.add_argument('--stroke-width', '-w', type=float, 
-                        help='테두리 두께 (기본값: 이미지 크기에 따라 자동 계산)')
-    parser.add_argument('--stroke-color', '-c', default='#000000', help='테두리 색상 (기본값: #000000)')
+                        help='Border thickness (default: automatic calculation based on image size)')
+    parser.add_argument('--stroke-color', '-c', default='#000000', help='Border color (default: #000000)')
     
     args = parser.parse_args()
     
-    # 출력 파일명이 지정되지 않았으면 입력 파일명에 _hollow 접미사 추가
+    # If output file name is not specified, append _hollow to input file name
     if args.output is None:
         base_name, ext = os.path.splitext(args.input_file)
         args.output = f"{base_name}_hollow{ext}"

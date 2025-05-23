@@ -18,17 +18,17 @@ def set_global_seed(seed: int = 42):
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-# Gaussian Blur 함수 (2D convolution 방식)
+# Gaussian Blur function (2D convolution method)
 def gaussian_blur(input_tensor, sigma):
     """
     input_tensor: (N, H, W)
-    sigma: Gaussian kernel의 표준편차 (스칼라, float)
+    sigma: Standard deviation of Gaussian kernel (scalar, float)
     """
     if sigma <= 0.0:
         return input_tensor
-    # kernel 크기는 보통 3*sigma를 반올림한 값의 양쪽 대칭 (홀수 크기)
+    # Kernel size is typically rounded 3*sigma with symmetry on both sides (odd size)
     kernel_size = int(2 * round(3 * sigma) + 1)
-    # 좌표 생성: kernel 중심이 0이 되도록
+    # Generate coordinates: kernel center is 0
     ax = torch.arange(kernel_size, dtype=torch.float32, device=input_tensor.device) - kernel_size // 2
     kernel = torch.exp(-0.5 * (ax / sigma) ** 2)
     kernel = kernel / kernel.sum()
@@ -47,14 +47,14 @@ def compute_psnr(img1, img2, max_val=1.0):
 
 def make_batch_indices(N: int, chunk: int, step: int) -> Tuple[slice, slice, slice]:
     """
-    깊이 정렬된 [0…N-1]를
-        앞쪽(F) | 학습 대상(B_t) | 뒤쪽(B)
-    세 덩어리(slice)로 나눈다.
+    Divide depth-sorted [0…N-1] into
+        front(F) | learning target(B_t) | back(B)
+    three chunks (slices).
     """
     start = (step * chunk) % N
     end   = min(start + chunk, N)
-    # 마지막 배치가 N을 넘어갈 때는 circular 하지 않고 그대로 작은 덩어리
-    batch = slice(start, end)                # 학습할 구간
-    fg    = slice(0, start)                  # 화면 앞
-    bg    = slice(end, N)                    # 화면 뒤
+    # For the last batch that would exceed N, don't wrap around circular, just use the smaller chunk
+    batch = slice(start, end)                # Section to learn
+    fg    = slice(0, start)                  # Front of screen
+    bg    = slice(end, N)                    # Back of screen
     return fg, batch, bg

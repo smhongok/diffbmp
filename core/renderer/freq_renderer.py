@@ -49,7 +49,7 @@ class FreqRenderer(VectorRenderer):
 
         # focal weights: emphasize large errors
         weight = mag ** gamma
-        weight[..., 0, 0] = 0.0  # DC 성분 가중치 강제 0
+        weight[..., 0, 0] = 0.0  # Force DC component weight to 0
         weight = weight / (weight.sum(dim=(-2,-1), keepdim=True) + eps)
 
         # FFL: weighted sum of squared magnitudes
@@ -136,7 +136,7 @@ class FreqRenderer(VectorRenderer):
         shape_scaler = GradScaler('cuda') if self.use_fp16 else None
         appearance_scaler = GradScaler('cuda') if self.use_fp16 else None
         
-        T = 2.0  # 온도 하이퍼파라미터
+        T = 2.0  # Temperature hyperparameter
         print(f"Starting optimization for {num_iterations} iterations...")
         L1 = [None, None]
         L2 = [None, None]
@@ -208,7 +208,7 @@ class FreqRenderer(VectorRenderer):
                 L1[epoch % 2] = mse_loss
                 L2[epoch % 2] = frequency_loss
                 if opt_conf.get("do_dwa", True):
-                    # 지난 two epochs의 loss 변화율을 비교해 자동 weight 산출
+                    # Compare loss change rates over past two epochs to automatically calculate weights
                     if epoch > 2:
                         w1 = math.exp((L1[-1]/L1[-2]) / T)
                         w2 = math.exp((L2[-1]/L2[-2]) / T)
@@ -258,7 +258,7 @@ class FreqRenderer(VectorRenderer):
         # Only use mixed precision in FP16 mode
         scaler = GradScaler('cuda') if self.use_fp16 else None
         
-        T = 2.0  # 온도 하이퍼파라미터
+        T = 2.0  # Temperature hyperparameter
         print(f"Starting optimization for {num_iterations} iterations...")
         L1 = []
         L2 = []
@@ -286,7 +286,7 @@ class FreqRenderer(VectorRenderer):
                 L1.append(mse_loss)
                 L2.append(frequency_loss)
                 if opt_conf.get("do_dwa", True):
-                    # 지난 two epochs의 loss 변화율을 비교해 자동 weight 산출
+                    # Compare loss change rates over past two epochs to automatically calculate weights
                     if epoch > 2:
                         w1 = math.exp((L1[-1]/L1[-2]) / T)
                         w2 = math.exp((L2[-1]/L2[-2]) / T)

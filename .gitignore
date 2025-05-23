@@ -3,20 +3,6 @@
 
 # Custom ignores
 outputs/*
-images/*
-!images/girl.png
-!images/jylee.png
-!images/trump.png
-!images/BSDS500
-!images/CelebA
-!images/MoviePosters
-!images/artwork
-!images/HighFreq
-!images/nature
-configs/*
-!configs/jylee_svg_hollow.json
-!configs/smhong-dev.json
-!configs/smhong-dev-font.json
 main_text.py
 main_rgb.py
 *ignore.py

@@ -322,39 +322,6 @@ def process_combination(args):
                             device=device,
                             use_fp16=use_fp16,
                             output_path=config["postprocessing"].get("output_folder", "./outputs/"))
-    elif renderer_name == "LpipsRenderer":
-        from core.renderer.lpips_renderer import LpipsRenderer
-        renderer = LpipsRenderer((H, W), S=bmp_tensor, 
-                                alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
-                                device=device,
-                                use_fp16=use_fp16,
-                                output_path=config["postprocessing"].get("output_folder", "./outputs/"))
-    elif renderer_name == "MixRenderer":
-        from core.renderer.mix_renderer import MixRenderer
-        renderer = MixRenderer((H, W), S=bmp_tensor, 
-                            alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
-                            device=device, 
-                            classify_svg=svg_loader.classify_svg(),
-                            use_fp16=use_fp16,
-                            output_path=config["postprocessing"].get("output_folder", "./outputs/"))
-    elif renderer_name == "FreqRenderer_1":
-        from core.renderer.freq_renderer import FreqRenderer
-        renderer = FreqRenderer((H, W), S=bmp_tensor, 
-                                alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
-                                device=device, 
-                                use_fp16=use_fp16,
-                                gamma=config["optimization"].get("freq_gamma", 1.0),
-                                output_path=config["postprocessing"].get("output_folder", "./outputs/"))
-        config["optimization"]["do_dwa"] = True
-    elif renderer_name == "FreqRenderer_2":
-        from core.renderer.freq_renderer import FreqRenderer
-        renderer = FreqRenderer((H, W), S=bmp_tensor, 
-                                alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
-                                device=device, 
-                                use_fp16=use_fp16,
-                                gamma=config["optimization"].get("freq_gamma", 1.0),
-                                output_path=config["postprocessing"].get("output_folder", "./outputs/"))
-        config["optimization"]["do_dwa"] = False
     else:
         raise ValueError(f"Unknown renderer: {renderer_name}")
     
@@ -689,7 +656,7 @@ def main():
     parser = argparse.ArgumentParser(description="Compare different initializers and renderers")
     parser.add_argument('--config', type=str, required=True, help='Path to the config file')
     parser.add_argument('--initializer', type=str, default='', help='StructureAwareInitializer, RandomInitializer, MultiLevelInitializer, ...')
-    parser.add_argument('--renderer', type=str, default='', help='MseRenderer, FreqRenderer, ...')
+    parser.add_argument('--renderer', type=str, default='', help='MseRenderer, ...')
     parser.add_argument('--svg_text', type=str, default='', help='G, B, M, ...')
     parser.add_argument('--svg_path', type=str, default='', help='LOVE.svg, ...')
     parser.add_argument('--img_path', type=str, default='', help='images/HighFreq/0831.png, images/LowFreq/0831.png, ...')
@@ -704,16 +671,13 @@ def main():
     else:
         # Process initializers one at a time to save memory
         initializers_configs = [
-            ("RandomInitializer", config["initialization"]),
             ("StructureAwareInitializer", config["initialization"]),
-            #("MultiLevelInitializer", config["initialization"]),
             # Add more initializers as needed
         ]
     if args.renderer != '':
         renderer_names = args.renderer.split(",")
     else:
-        # Define renderer names - sorted by memory usage (lowest first)
-        renderer_names = ["MseRenderer"] #, "FreqRenderer_1", "FreqRenderer_2"]  # Add more as needed
+        renderer_names = ["MseRenderer"] # Add more renderers as needed
     
     if args.svg_path != '':
         config["svg"]["svg_file"] = args.svg_path
@@ -821,9 +785,4 @@ def main():
         gc.collect()
 
 if __name__ == '__main__':
-    start_time = time.time()
     main() 
-    end_time = time.time()
-    formatted_time = str(timedelta(seconds=int(end_time - start_time)))
-    # 수행 시간 출력
-    print(f"total_cost_time: {formatted_time}")

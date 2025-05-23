@@ -36,7 +36,7 @@ class SVGLoader:
         return self.svg_width, self.svg_height
 
     def load_alpha_bitmap(self):
-        # SVG 전부를 읽어서 bytes로
+        # Read the entire SVG into bytes
         svg_bytes = Path(self.svg_path).read_bytes()
         # render SVG to PNG
         with tempfile.NamedTemporaryFile(suffix='.png', delete=True) as tmp:
@@ -59,7 +59,7 @@ class SVGLoader:
     def svg_to_image(self) -> np.ndarray:
         png_bytes = svg2png(url=self.svg_path, output_width=self.output_width)
         arr = np.frombuffer(png_bytes, dtype=np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)  # 흑백으로
+        img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)  # as grayscale
         return img
 
     def extract_angles(self, img: np.ndarray) -> np.ndarray:
@@ -94,47 +94,26 @@ class SVGLoader:
         curv = np.mean(np.abs(lap))
 
         return straight_mass, cir_var, ent, curv
-
-    '''
-    def classify_svg(self,
-                 straight_thresh: float=0.4,
-                 var_thresh: float=0.5,
-                 ent_thresh: float=1.0,
-                 curv_low: float=0.005,
-                 curv_high: float=0.02):
-        img = self.svg_to_image()
-        angles = self.extract_angles(img)
-        # Mask: binary edge map by simple threshold :contentReference[oaicite:8]{index=8}
-        _, mask = cv2.threshold(img, 10, 1, cv2.THRESH_BINARY)
-        straight_mass, cir_var, ent, curv = self.compute_metrics(angles, mask)
-        print(f"straight_mass: {straight_mass} cir_var: {cir_var} ent: {ent} curv: {curv}")
-
-        if straight_mass > straight_thresh and cir_var < var_thresh and curv < curv_low:
-            return 'straight'
-        if curv > curv_high or cir_var > var_thresh or ent > ent_thresh:
-            return 'curve'
-        return 'mixed'
-    '''
     
     def classify_svg(self, curve_thresh: float = 0.5, straight_thresh: float = 0.5) -> str:
         """
-        <path> 요소의 d 문자열에서 커맨드 비율을 계산해 'straight'/'curve'/'mixed' 분류.
-        - 곡선 커맨드: Q, q, C, c, S, s, T, t, A, a
-        - 직선 커맨드: L, l, H, h, V, v
+        Calculate command ratios from the d string of <path> elements to classify as 'straight'/'curve'/'mixed'.
+        - Curve commands: Q, q, C, c, S, s, T, t, A, a
+        - Straight commands: L, l, H, h, V, v
         """
-        # XML 파싱
+        # XML parsing
         tree = ET.parse(self.svg_path)
         root = tree.getroot()
-        # 네임스페이스 처리
+        # Namespace handling
         ns = {'svg': 'http://www.w3.org/2000/svg'}
 
         curve_count = straight_count = 0
-        # 모든 <path> 요소 순회
+        # Iterate through all <path> elements
         for path in root.findall('.//svg:path', ns):
             d = path.get('d')
             if not d:
                 continue
-            # 명령 문자만 골라내기
+            # Extract only command characters
             cmds = re.findall(r'[A-Za-z]', d)
             for c in cmds:
                 if c in 'QqCcSsTtAa':
@@ -146,7 +125,7 @@ class SVGLoader:
         curve_ratio = curve_count / total
         straight_ratio = straight_count / total
 
-        # 분류 기준
+        # Classification criteria
         if curve_ratio  > curve_thresh:
             return 'curve'
         if straight_ratio > straight_thresh:
