@@ -11,10 +11,6 @@ circle_art_test/
 ├── assets/
 │   ├── font/
 │   │   └── arial.ttf
-│   └── svg/
-│       ├── arial_S.svg
-│       ├── bat.svg
-│       └── siggraph_logo.svg
 ├── configs/
 │   └── default.json
 ├── core/
