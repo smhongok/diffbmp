@@ -39,137 +39,37 @@ def merge_excels(excel_paths, output_path):
 
 if __name__ == "__main__":
     # List your commands here
-    base_command = "python compare_methods.py --config configs/smhong-dev-font.json"
+    base_command = "python compare_methods.py --config configs/default.json"
     commands = []
     img_paths = [
-        #"images/artwork/Cafe_Terrace_at_Night.jpg",
-        # "images/artwork/Gustav_Klimt.jpg",
-        #"images/artwork/The_Great_Wave_of_Kanagawa.jpg",
-        #"images/artwork/The_Scream.jpg",
-        # "images/BSDS500/102061.jpg",    
-        #"images/MoviePosters/1.6_245943.jpg",
-        #"images/MoviePosters/1.9_270846.jpg",
-        # "images/nature/puppy1.jpg",
-        # "images/nature/puppy2.jpg",
-        # "images/nature/melon.jpg"
-
-        # "images/artwork/Gustav_Klimt.jpg",
-        # "images/artwork/Starry_Night.jpg",
-        # "images/artwork/The_Great_Wave_of_Kanagawa.jpg",
-        # "images/artwork/The_Scream.jpg",
-        # "images/BSDS500/102061.jpg",
-        # "images/MoviePosters/1.6_245943.jpg",
-        # "images/MoviePosters/1.9_270846.jpg",
-        # "images/nature/puppy1.jpg",
-        # "images/nature/puppy2.jpg",
-        # "images/nature/puppy3.jpg",
-        # "images/nature/melon.jpg",
-        # "images/nature/Matterhorn.jpg"
-
-        # "images/nature/Fire_Santiago_VI.jpg",
-        # "images/nature/firefighter.jpg",
-        # "images/nature/wildfire.jpg",
-        # "images/nature/Yugansky_nature_reserve_fire.jpg"
-        
-        # "images/MoviePosters/7.3_145487.jpg",
-        "images/MoviePosters/7.9_106364.jpg",
-
-        # "images/MoviePosters_2/5.5_88885.jpg",
-        # "images/MoviePosters_2/5.6_370263.jpg",
-        # "images/MoviePosters_2/5.7_77766.jpg",
-        # "images/MoviePosters_2/5.7_146316.jpg",
-        # "images/MoviePosters_2/6.4_79945.jpg",
-        # "images/MoviePosters_2/6.4_118571.jpg",
-        # "images/MoviePosters_2/6.4_319262.jpg",
-        # "images/MoviePosters_2/6.6_266915.jpg",
-        # "images/MoviePosters_2/6.8_182789.jpg",
-        # "images/MoviePosters_2/6.8_248667.jpg",
-        # "images/MoviePosters_2/6.9_110475.jpg",
-        #"images/MoviePosters_2/6.9_259711.jpg",
-        # "images/MoviePosters_2/7.0_125439.jpg",
-        # "images/MoviePosters_2/7.1_82679.jpg",
-        # "images/MoviePosters_2/7.2_275847.jpg"
+        "images/CelebA/182340.png",
+        "images/CelebA/182341.png",
+        "images/CelebA/182342.png"
     ]
     initializers = [
-        #"RandomInitializer",
         "StructureAwareInitializer"
     ]
     renderers = [
         "MseRenderer",
-        #"FreqRenderer_1",
-        #"FreqRenderer_2"
     ]
     svg_texts = [
-        #"A",
-        #"B",
-        # "C",
-        # "D",
-        # "E",
-        # "F",
-        #"G",
-        # "H",
-        # "I",
-        # "J",
-        # "K",
-        # "L",
-        # "M",
-        # "N",
-        # "O",
-        # "P",
-        # "Q",
-        # "R",
-        # "S",
-        # "T",
-        # "U",
-        # "V",
-        # "W",
-        # "X",
-        # "Y",
-        #"Z",
-        # "a",
-        # "b",
-        # "c",
-        # "d",
-        # "e",
-        # "f",
-        # "g",
-        # "h",
-        # "i",
-        # "j",
-        # "k",
-        # "l",
-        # "m",
-        # "n",
-        # "o",
-        # "p",
-        # "q",
-        # "r",
-        # "s",
-        # "t",
-        # "u",
-        # "v",
-        # "w",
-        # "x",
-        # "y",
-        # "z"
-        #"LOVE"
+        "A",
+        "B",
+        "M",
+        "X",
+        "Y"
     ]
 
-    svg_texts = [""] # for svg mode
-    svg_paths = [
-        #"fire.svg",
-        #"fire2.svg"
-        #"Movie-reel.svg"
-        #"web.svg"
-        "bat.svg"
-    ]
+    #svg_texts = [""] # for svg mode
+    #svg_paths = ["siggraph_logo.svg"]
     
     for svg_text in svg_texts:
         for svg_path in svg_paths:
             for initializer in initializers:
                 for renderer in renderers:
                     for img_path in img_paths:
-                        commands.append(f"{base_command} --initializer {initializer} --renderer {renderer}  --svg_text {svg_text} --svg_path {svg_path} --img_path {img_path}")
+                        #commands.append(f"{base_command} --initializer {initializer} --renderer {renderer} --svg_path {svg_path} --img_path {img_path}")
+                        commands.append(f"{base_command} --initializer {initializer} --renderer {renderer} --svg_text {svg_text} --img_path {img_path}")
     
     # Execute commands and collect generated Excel file paths
     excel_paths = run_and_capture_excel_paths(commands)
