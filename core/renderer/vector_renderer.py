@@ -187,10 +187,10 @@ class VectorRenderer:
                     m = torch.cat([m, pad_m], dim=0)
                     a = torch.cat([a, pad_a], dim=0)
 
-                # 반복문 내에선 더 이상 torch.cat/zeros 호출 없음
+                # No more torch.cat/zeros calls inside the loop
                 while m.size(0) > 1:
                     n2 = m.size(0) // 2
-                    m = m.view(n2, 2, *m.shape[1:])  # view: 메모리 추가 없이 reshape
+                    m = m.view(n2, 2, *m.shape[1:])  # view: reshape without additional memory
                     a = a.view(n2, 2, *a.shape[1:])
                     inv = (1 - a[:, 0]).unsqueeze(-1)  # shape=(n2,H,W,1)
                     # in-place update
@@ -211,10 +211,10 @@ class VectorRenderer:
                         a = torch.cat([a, pad_a], dim=0)
                         n += 1
                     new_n = n // 2
-                    # reshape은 view → 메모리 추가 없음
+                    # reshape with view → no additional memory
                     m = m.view(new_n, 2, *m.shape[1:])
                     a = a.view(new_n, 2, *a.shape[1:])
-                    # pairwise compositing (in-place로 덮어쓸 수도 있음)
+                    # pairwise compositing (could overwrite in-place)
                     m = m[:,0] + (1 - a[:,0]).unsqueeze(-1) * m[:,1]
                     a = a[:,0] + (1 - a[:,0]) * a[:,1]
                 return m.squeeze(0), a.squeeze(0)
@@ -240,20 +240,20 @@ class VectorRenderer:
         Returns the correct checkpoint keyword arguments based on the PyTorch version.
         Older versions don't support use_reentrant.
         """
-        # PyTorch 버전 확인
+        # Check PyTorch version
         torch_version = pkg_resources.get_distribution("torch").version
         major, minor = map(int, torch_version.split('.')[:2])
         
-        # PyTorch 1.12 이상에서만 use_reentrant 지원
+        # use_reentrant supported only in PyTorch 1.12 and later
         if (major > 1) or (major == 1 and minor >= 12):
             return {"use_reentrant": False}
         else:
-            # 이전 버전에서는 해당 옵션 없음
+            # No such option in earlier versions
             return {}
     
     def _safe_checkpoint(self, func, *tensors):
         """
-        PyTorch 버전에 관계없이 안전하게 체크포인팅을 수행하는 래퍼 함수
+        Wrapper function to safely perform checkpointing regardless of PyTorch version
         """
         kwargs = self._get_checkpoint_kwargs()
         return torch.utils.checkpoint.checkpoint(func, *tensors, **kwargs)
@@ -584,21 +584,21 @@ class VectorRenderer:
             sparsifying_period = sparsify_conf.get("sparsifying_period", 20)
             sparsified_N = int(sparsify_conf.get("sparsified_N", int(0.6 * N)))
             
-            # --- Dynamic Sparse Training (DST) 설정 ---
+            # --- Dynamic Sparse Training (DST) configuration ---
             dst_enabled = sparsify_conf.get("dst_enabled", True)
-            dst_period = sparsify_conf.get("dst_period", 10)  # DST 업데이트 주기
-            dst_prune_frac = sparsify_conf.get("dst_prune_frac", 0.2)  # Prune 비율
+            dst_period = sparsify_conf.get("dst_period", 10)  # DST update frequency
+            dst_prune_frac = sparsify_conf.get("dst_prune_frac", 0.2)  # Prune ratio
             
-            # 초기 마스크 생성 (SET style)
+            # Initialize initial mask (SET style)
             if dst_enabled:
-                # 활성 비율 계산 (1 - sparsity)
+                # Calculate active ratio (1 - sparsity)
                 density = sparsified_N / N
-                # 초기 랜덤 마스크 생성
+                # Create initial random mask
                 v_mask = torch.zeros_like(v, requires_grad=False)
                 active_indices = torch.randperm(N, device=self.device)[:sparsified_N]
                 v_mask[active_indices] = 1.0
                 
-                # 각 파라미터별 그래디언트 저장용 버퍼
+                # Buffer for storing gradients for each parameter
                 grad_history = {
                     'x': torch.zeros_like(x),
                     'y': torch.zeros_like(y),
@@ -608,7 +608,7 @@ class VectorRenderer:
                     'c': torch.zeros_like(c)
                 }
                 
-                # 초기 마스크 적용
+                # Apply initial mask
                 print(f"Initialized DST with density {density:.2f} ({sparsified_N}/{N} primitives active)")
             
             assert sparsified_N < N, "sparsified_N must be less than N"
@@ -701,7 +701,7 @@ class VectorRenderer:
                         # Use adaptive rho parameter
                         rho = sparsify_loss_coeff * (1.0 - (epoch - iters_warmup) / sparsify_duration)
                         
-                        # DST 적용 시 마스크를 포함한 손실 계산
+                        # Calculate loss including mask when DST is applied
                         if dst_enabled:
                             loss += 0.5 * rho * F.mse_loss(_alpha * v_mask, z - lam)
                         else:
@@ -758,7 +758,7 @@ class VectorRenderer:
                     # Use adaptive rho parameter
                     rho = sparsify_loss_coeff * (1.0 - (epoch - iters_warmup) / sparsify_duration)
                     
-                    # DST 적용 시 마스크를 포함한 손실 계산
+                    # Calculate loss including mask when DST is applied
                     if dst_enabled:
                         loss += 0.5 * rho * F.mse_loss(_alpha * v_mask, z - lam)
                     else:
@@ -798,23 +798,23 @@ class VectorRenderer:
                         # DST 마스크 업데이트
                         if dst_enabled and epoch % dst_period == 0:
                             with torch.no_grad():
-                                # 그래디언트 절대값 기록 (EMA)
+                                # Record absolute values of gradients (EMA)
                                 for param_name in ['v', 'x', 'y', 'r', 'theta', 'c']:
                                     param = locals()[param_name]
                                     if param.grad is not None:
                                         grad_history[param_name] = 0.9 * grad_history[param_name] + 0.1 * param.grad.abs()
                                 
-                                # 3. 계층적 관계 분석
-                                # a) 크기 기반 중요도 (큰 것이 작은 것의 "부모")
+                                # 3. Hierarchical relationship analysis
+                                # a) Size-based importance (larger ones are "parents" of smaller ones)
                                 r_norm = r / r.max()
                                 
-                                # 최종 중요도 계산: 가시성(60%) + 크기(40%)
+                                # Final importance calculation: visibility(60%) + size(40%)
                                 alpha_importance = self.alpha_upper_bound * torch.sigmoid(v.detach()) * r_norm
                                 weights = torch.tensor([0.6, 0.4], device=self.device)
                                 factors = torch.stack([alpha_importance, r_norm], dim=0)
                                 alpha_importance = torch.matmul(weights, factors)
                                 
-                                # 활성 파라미터 중 중요도가 낮은 것을 제거 (prune)
+                                # Remove low-importance parameters from active ones (prune)
                                 k_prune = int(sparsified_N * dst_prune_frac)
                                 active_idxs = (v_mask > 0).nonzero(as_tuple=True)[0]
                                 if len(active_idxs) > 0:
@@ -822,39 +822,39 @@ class VectorRenderer:
                                     prune_candidates = active_idxs[torch.topk(importance, k=k_prune, largest=False).indices]
                                     v_mask[prune_candidates] = 0.0
                                 
-                                # 비활성 파라미터 중 중요도와 그래디언트를 함께 고려하여 추가 (grow)
+                                # Add considering both importance and gradients from inactive parameters (grow)
                                 inactive_idxs = (v_mask == 0).nonzero(as_tuple=True)[0]
                                 if len(inactive_idxs) > 0:
-                                    # 그래디언트 크기와 시각적 중요도를 결합한 점수
+                                    # Combined score of gradient magnitude and visual importance
                                     grow_scores = 0.7 * grad_history['v'][inactive_idxs] + 0.3 * alpha_importance[inactive_idxs]
                                     grow_candidates = inactive_idxs[torch.topk(grow_scores, k=k_prune, largest=True).indices]
                                     v_mask[grow_candidates] = 1.0
                                 
                                 print(f"DST update - Active: {v_mask.sum().item()}/{N} primitives")
                         
-                        # 기존 ADMM z, λ 업데이트 (주기적으로)
+                        # Regular ADMM z, λ update (periodically)
                         if epoch % sparsifying_period == 0:
                             # Compute alpha values from current parameters
                             _alpha = self.alpha_upper_bound * torch.sigmoid(v.detach())
                            
                             combined_score = _alpha 
                             
-                            # DST와 통합: 마스크 기반 점수 계산
+                            # Integration with DST: mask-based score calculation
                             if dst_enabled:
-                                # 마스크 고려: 활성화된 파라미터만 선택 대상
+                                # Consider mask: only active parameters are candidates for selection
                                 masked_score = combined_score * v_mask
                                 keep_idx = torch.topk(masked_score, sparsified_N).indices
                             else:
-                                # 기존 방식: 모든 파라미터 중에서 선택
+                                # Traditional approach: select from all parameters
                                 keep_idx = torch.topk(combined_score, sparsified_N).indices
                             
                             mask = torch.zeros_like(_alpha, dtype=torch.bool)
                             mask[keep_idx] = True
                             
-                            # ADMM 업데이트
+                            # ADMM update
                             z.zero_()
                             if dst_enabled:
-                                z[mask] = (_alpha * v_mask)[mask]  # 마스크 적용된 값만 업데이트
+                                z[mask] = (_alpha * v_mask)[mask]  # Only update values with applied mask
                             else:
                                 z[mask] = _alpha[mask]
                             lam += (_alpha - z)

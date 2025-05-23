@@ -5,7 +5,7 @@
         "FM_halftone": false,
         "transform": "none",
         "img_path": [
-            "images/nature/melon.jpg"
+            "images/artwork/seurat.jpg"
         ],
         "bg_threshold": 250,
         "do_equalize": false,
@@ -25,7 +25,7 @@
     },
     "svg": {
         "svg_file": "arial.ttf",
-        "text": "G",
+        "text": "S",
         "svg_hollow": false,
         "output_width": 128
     },
@@ -85,7 +85,7 @@
         "save_epoch": false
     },
     "postprocessing": {
-        "output_folder": "outputs/0522-LOVE/",
+        "output_folder": "outputs/0523-test-bat/",
         "linewidth": 3.0,
         "compute_psnr": true
     }

@@ -180,7 +180,7 @@ class Initializer:
         N = self.N
         # Define default radii_max if not provided
         if self.radii_max is None:
-            self.radii_max = min(H, W) / 4  # 예: 이미지 크기의 1/4 이내로
+            self.radii_max = min(H, W) / 4  # Example: within 1/4 of the image size
         
         torch.manual_seed(0)
         # Random centers uniformly in the image bounds
@@ -222,11 +222,11 @@ class Initializer:
         N = self.N
         # Define default radii_max if not provided
         if self.radii_max is None:
-            self.radii_max = min(H, W) / 4  # 예: 이미지 크기의 1/4 이내로
+            self.radii_max = min(H, W) / 4  # Example: within 1/4 of the image size
 
-        x = torch.rand(N, device=device) * W  # 중심 x 좌표
-        y = torch.rand(N, device=device) * H  # 중심 y 좌표
-        r = torch.rand(N, device=device) * min(H,W) / 8 + min(H,W) / 32  # 배율 (초기값 1)
-        v = torch.full((N,), self.v_init_mean, device=device)  # alpha 초깃값
-        theta = torch.rand(N, device=device) * 2 * np.pi  # 회전각 (0~2π)
+        x = torch.rand(N, device=device) * W  # Center x coordinate
+        y = torch.rand(N, device=device) * H  # Center y coordinate
+        r = torch.rand(N, device=device) * min(H,W) / 8 + min(H,W) / 32  # Scale (initial value 1)
+        v = torch.full((N,), self.v_init_mean, device=device)  # Initial alpha value
+        theta = torch.rand(N, device=device) * 2 * np.pi  # Rotation angle (0~2π)
         return x, y, r, v, theta

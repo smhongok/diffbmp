@@ -1791,18 +1791,13 @@ if __name__ == "__main__":
     # img_path = "/data/jameskim/repos/circle_art/assets/image/elec_stamp.png"
     # #traced_svg = img_converter.trace_image(img_path, color_mode="color", quantize=True, simplify=False, num_colors=8)
     
-    # # 기본 윤곽선 추출 (일반)
     # #outline_svg = img_converter.extract_all_outlines(img_path, threshold=100, min_area_ratio=0.000001)
     
-    # # 내부가 채워진 윤곽선 생성
     # filled_outline_svg = img_converter.extract_filled_outlines(img_path, threshold=100, min_area_ratio=0.000001)
     # out_svg = img_converter.create_logo_svg(img_path, simplify=False)
     # img_converter.extract_logo_paths(img_path)
     # img_converter.vectorize_image(img_path)
     
-    
-    
-    # 부드러운 곡선과 원 요소를 사용한 향상된 윤곽선 추출 (특히 원형 요소에 효과적)
     #smooth_svg = img_converter.extract_smooth_outlines(img_path, threshold=100, min_area_ratio=0.000001)
     
     

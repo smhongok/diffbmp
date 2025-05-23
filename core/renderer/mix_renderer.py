@@ -181,7 +181,7 @@ class MixRenderer(VectorRenderer):
             return loss
     
     def compute_ssim_loss(self, rendered, target):
-        # 입력: (H,W,3) → (1,3,H,W)
+        # Input: (H,W,3) → (1,3,H,W)
         r = rendered.permute(2,0,1).unsqueeze(0)
         t = target  .permute(2,0,1).unsqueeze(0)
         return 1 - self.ssim(r, t)
@@ -219,7 +219,7 @@ class MixRenderer(VectorRenderer):
         grad_gx = F.conv2d(m_gt,   self.kx, padding=1)
         grad_gy = F.conv2d(m_gt,   self.ky, padding=1)
 
-        # 3) L1 차이
+        # 3) L1 difference
         loss = (grad_px - grad_gx).abs().mean() + (grad_py - grad_gy).abs().mean()
         return loss
     

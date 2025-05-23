@@ -1,6 +1,6 @@
 import time
 from datetime import timedelta
-# 시작 시간 기록
+# Record the start time
 start_time = time.time()
 
 import os
@@ -38,7 +38,7 @@ config_path = args.config
 # Load configuration
 with open(config_path, "r", encoding="utf-8") as f:
     config = json.load(f)
-# import 뒤 혹은 config 로드 직후
+# After import or after loading config
 set_global_seed(config.get("seed", 42))
 
 # Initialize preprocessor
@@ -200,7 +200,7 @@ exporter.export(x, y, r, theta, v, c,
 
 end_time = time.time()
 formatted_time = str(timedelta(seconds=int(end_time - start_time)))
-# 수행 시간 출력
+# Output execution time
 print(f"total_cost_time: {formatted_time}")
 
 do_compute_psnr = config['postprocessing'].get('compute_psnr', False)

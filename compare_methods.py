@@ -825,5 +825,5 @@ if __name__ == '__main__':
     main() 
     end_time = time.time()
     formatted_time = str(timedelta(seconds=int(end_time - start_time)))
-    # 수행 시간 출력
+    # Output execution time
     print(f"total_cost_time: {formatted_time}")

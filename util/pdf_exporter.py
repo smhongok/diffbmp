@@ -106,9 +106,9 @@ class PDFExporter:
                                    output_path: str,
                                    svg_hollow=False):
         """
-        • 왼쪽 ⅔ 영역 스플랫          → 모두 유지
-        • 오른쪽 ⅓ 영역 (x > 2W/3) →  x 에 비례해 선형 확률로 드롭
-        그러고 나서 self.export(...) 로 PDF 저장.
+        • Left ⅔ area splats         → Keep all
+        • Right ⅓ area (x > 2W/3) → Drop with linear probability proportional to x
+        Then save PDF with self.export(...)
         """
         W = self.canvas_w
 
@@ -116,14 +116,14 @@ class PDFExporter:
             keep_left = x < ( W / 2)
             prob      = torch.where(keep_left,
                                     torch.ones_like(x),
-                                    (W - x) / (W / 2))  # x 증가할수록 감소
+                                    (W - x) / (W / 2))  # decreases as x increases
             keep_idx  = keep_left | (torch.rand_like(prob) < prob)
 
-            # 필터링된 파라미터
+            # Filtered parameters
             x_d, y_d, r_d     = [t[keep_idx] for t in (x, y, r)]
             theta_d, v_d, c_d = [t[keep_idx] for t in (theta, v, c)]
 
-        # PDF로 내보내기
+        # Export to PDF
         self.export(x_d, y_d, r_d, theta_d, v_d, c_d,
                     output_path=output_path,
                     svg_hollow=svg_hollow)

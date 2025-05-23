@@ -66,10 +66,29 @@ if __name__ == "__main__":
         # "images/nature/melon.jpg",
         # "images/nature/Matterhorn.jpg"
 
-        "images/nature/Fire_Santiago_VI.jpg",
-        "images/nature/firefighter.jpg",
-        "images/nature/wildfire.jpg",
-        "images/nature/Yugansky_nature_reserve_fire.jpg"
+        # "images/nature/Fire_Santiago_VI.jpg",
+        # "images/nature/firefighter.jpg",
+        # "images/nature/wildfire.jpg",
+        # "images/nature/Yugansky_nature_reserve_fire.jpg"
+        
+        # "images/MoviePosters/7.3_145487.jpg",
+        "images/MoviePosters/7.9_106364.jpg",
+
+        # "images/MoviePosters_2/5.5_88885.jpg",
+        # "images/MoviePosters_2/5.6_370263.jpg",
+        # "images/MoviePosters_2/5.7_77766.jpg",
+        # "images/MoviePosters_2/5.7_146316.jpg",
+        # "images/MoviePosters_2/6.4_79945.jpg",
+        # "images/MoviePosters_2/6.4_118571.jpg",
+        # "images/MoviePosters_2/6.4_319262.jpg",
+        # "images/MoviePosters_2/6.6_266915.jpg",
+        # "images/MoviePosters_2/6.8_182789.jpg",
+        # "images/MoviePosters_2/6.8_248667.jpg",
+        # "images/MoviePosters_2/6.9_110475.jpg",
+        #"images/MoviePosters_2/6.9_259711.jpg",
+        # "images/MoviePosters_2/7.0_125439.jpg",
+        # "images/MoviePosters_2/7.1_82679.jpg",
+        # "images/MoviePosters_2/7.2_275847.jpg"
     ]
     initializers = [
         #"RandomInitializer",
@@ -81,7 +100,7 @@ if __name__ == "__main__":
         #"FreqRenderer_2"
     ]
     svg_texts = [
-        # "A",
+        #"A",
         #"B",
         # "C",
         # "D",
@@ -106,7 +125,7 @@ if __name__ == "__main__":
         # "W",
         # "X",
         # "Y",
-        # "Z",
+        #"Z",
         # "a",
         # "b",
         # "c",
@@ -136,29 +155,27 @@ if __name__ == "__main__":
         #"LOVE"
     ]
 
+    svg_texts = [""] # for svg mode
     svg_paths = [
-        "fire.svg",
-        "fire2.svg"
+        #"fire.svg",
+        #"fire2.svg"
+        #"Movie-reel.svg"
+        #"web.svg"
+        "bat.svg"
     ]
     
-    if len(svg_texts) > 0:
-        for svg_text in svg_texts:
-            for initializer in initializers:
-                for renderer in renderers:
-                    for img_path in img_paths:
-                        commands.append(f"{base_command} --initializer {initializer} --renderer {renderer} --svg_text {svg_text} --img_path {img_path}")
-    else:
+    for svg_text in svg_texts:
         for svg_path in svg_paths:
             for initializer in initializers:
                 for renderer in renderers:
                     for img_path in img_paths:
-                        commands.append(f"{base_command} --initializer {initializer} --renderer {renderer} --svg_path {svg_path} --img_path {img_path}")
+                        commands.append(f"{base_command} --initializer {initializer} --renderer {renderer}  --svg_text {svg_text} --svg_path {svg_path} --img_path {img_path}")
     
-    # 명령 실행 및 생성된 Excel 파일 경로 수집
+    # Execute commands and collect generated Excel file paths
     excel_paths = run_and_capture_excel_paths(commands)
     print("Found Excel files:", excel_paths)
     
-    # 수집된 Excel 파일을 하나로 병합
+    # Merge collected Excel files into one
     os.makedirs("outputs/merged_results", exist_ok=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     output_file = "outputs/merged_results/" + timestamp + ".xlsx"
