@@ -114,17 +114,17 @@ class VectorRenderer:
                 bmp_image = self.S.to(dtype=target_dtype)
             
             # Expand parameters to match grid dimensions and convert to appropriate precision
-            X_exp = self.X.expand(B, H, W)#.to(dtype=target_dtype)
-            Y_exp = self.Y.expand(B, H, W)#.to(dtype=target_dtype)
-            x_exp = x.view(B, 1, 1).expand(B, H, W)#.to(dtype=target_dtype)
-            y_exp = y.view(B, 1, 1).expand(B, H, W)#.to(dtype=target_dtype)
-            r_exp = r.view(B, 1, 1).expand(B, H, W)#.to(dtype=target_dtype)
+            X_exp = self.X.expand(B, H, W)
+            Y_exp = self.Y.expand(B, H, W)
+            x_exp = x.view(B, 1, 1).expand(B, H, W)
+            y_exp = y.view(B, 1, 1).expand(B, H, W)
+            r_exp = r.view(B, 1, 1).expand(B, H, W)
             
             # Position normalization and rotation
             pos = torch.stack([X_exp - x_exp, Y_exp - y_exp], dim=1) / r_exp.unsqueeze(1)
-            cos_t = torch.cos(theta)#.to(dtype=target_dtype)
-            sin_t = torch.sin(theta)#.to(dtype=target_dtype)
-            R_inv = torch.zeros(B, 2, 2, device=self.device)#, dtype=target_dtype)
+            cos_t = torch.cos(theta)
+            sin_t = torch.sin(theta)
+            R_inv = torch.zeros(B, 2, 2, device=self.device)
             R_inv[:, 0, 0] = cos_t
             R_inv[:, 0, 1] = sin_t
             R_inv[:, 1, 0] = -sin_t
@@ -133,7 +133,7 @@ class VectorRenderer:
             
             # Prepare for grid sampling
             grid = uv.permute(0, 2, 3, 1)  # (B, H, W, 2)
-            bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, -1, -1, -1).contiguous() #.to(dtype=target_dtype)
+            bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, -1, -1, -1).contiguous() 
             
             # Use gradient checkpointing if enabled
             if self.use_checkpointing:
@@ -176,32 +176,6 @@ class VectorRenderer:
         """
         if self.use_fp16:
             with autocast('cuda'):
-                '''
-                N0 = m.size(0)
-                # 2의 거듭제곱으로 맞출 크기 계산
-                Npad = 1 << (N0 - 1).bit_length()
-                if Npad != N0:
-                    pad = Npad - N0
-                    pad_m = torch.zeros((pad, *m.shape[1:]), device=m.device, dtype=m.dtype)
-                    pad_a = torch.zeros((pad, *a.shape[1:]), device=a.device, dtype=a.dtype)
-                    m = torch.cat([m, pad_m], dim=0)
-                    a = torch.cat([a, pad_a], dim=0)
-
-                # No more torch.cat/zeros calls inside the loop
-                while m.size(0) > 1:
-                    n2 = m.size(0) // 2
-                    m = m.view(n2, 2, *m.shape[1:])  # view: reshape without additional memory
-                    a = a.view(n2, 2, *a.shape[1:])
-                    inv = (1 - a[:, 0]).unsqueeze(-1)  # shape=(n2,H,W,1)
-                    # in-place update
-                    m0 = m[:, 0]
-                    m0.mul_(inv).add_(m[:, 1])
-                    a0 = a[:, 0]
-                    a0.mul_(inv.squeeze(-1)).add_(a[:, 1])
-                    m, a = m0, a0
-
-                return m.squeeze(0), a.squeeze(0)
-                '''
                 while m.size(0) > 1:
                     n = m.size(0)
                     if n % 2 == 1:
@@ -284,9 +258,9 @@ class VectorRenderer:
         
         with context:    
             target_dtype = torch.float16 if self.use_fp16 else torch.float32
-            cached_masks = cached_masks#.to(dtype=target_dtype)
-            v = v#.to(dtype=target_dtype)
-            c = c#.to(dtype=target_dtype)
+            cached_masks = cached_masks
+            v = v
+            c = c
             N = v.shape[0]
 
             # 1. per-primitive alpha & color
@@ -351,7 +325,7 @@ class VectorRenderer:
                 #bmp_processed = bmp.to(dtype=target_dtype).squeeze(0)  # [C_bmp, H, W]
                 bmp_processed = bmp.squeeze(0)  # [C_bmp, H, W]
             else:
-                bmp_processed = self.S#.to(dtype=target_dtype)
+                bmp_processed = self.S
             del bmp
 
         # 2) Prepare alphas & colors
@@ -370,16 +344,16 @@ class VectorRenderer:
             
             # Calculate visibility and color for current chunk
             with torch.no_grad():
-                v_chunk = v[i:j]#.to(dtype=target_dtype)
-                c_chunk = c[i:j]#.to(dtype=target_dtype)
-                v_alpha = (self.alpha_upper_bound * torch.sigmoid(v_chunk)).view(curr_chunk_size, 1, 1)#.to(dtype=target_dtype)
-                c_eff = torch.sigmoid(c_chunk).view(curr_chunk_size, 1, 1, 3)#.to(dtype=target_dtype)
+                v_chunk = v[i:j]
+                c_chunk = c[i:j]
+                v_alpha = (self.alpha_upper_bound * torch.sigmoid(v_chunk)).view(curr_chunk_size, 1, 1)
+                c_eff = torch.sigmoid(c_chunk).view(curr_chunk_size, 1, 1, 3)
                 
                 # Get position parameters
-                x_chunk = x[i:j]#.to(dtype=target_dtype)
-                y_chunk = y[i:j]#.to(dtype=target_dtype)
-                r_chunk = r[i:j]#.to(dtype=target_dtype)
-                theta_chunk = theta[i:j]#.to(dtype=target_dtype)
+                x_chunk = x[i:j]
+                y_chunk = y[i:j]
+                r_chunk = r[i:j]
+                theta_chunk = theta[i:j]
                 
             # a) Rasterize just this subset
             context = autocast('cuda') if self.use_fp16 else nullcontext()
@@ -388,7 +362,7 @@ class VectorRenderer:
                     x_chunk, y_chunk,
                     r_chunk, theta_chunk,
                     sigma=0.0                # already applied blur to bmp_processed
-                )#.to(dtype=target_dtype)     # [C, H, W]
+                )     # [C, H, W]
                 
                 # b) Split into smaller sub-chunks instead of compositing all masks at once
                 sub_chunk_size = 5  # small sub-chunk size
