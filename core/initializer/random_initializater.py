@@ -50,7 +50,4 @@ class RandomInitializer(BaseInitializer):
         
         print("Using whole random initialization.")
         
-        # adjusted_pts = np.random.rand(N, 2) * np.array([W, H])
-        # init_pts = np.empty((0, 2))
-        # densified_pts = np.empty((0, 2))
         return self._random_splat_params(self.num_init, 0, 0, H, W, device)

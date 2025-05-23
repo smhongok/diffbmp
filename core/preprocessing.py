@@ -6,19 +6,15 @@ class Preprocessor:
                  trim=False, transform_mode="none", FM_halftone=False,
                  ):
         """
-        width, height: Target size for intermediate stage (padding/cropping)
         final_width: Final size to resize to
         trim: If True, crop; if False, pad
         transform_mode: "none" or "ellipse"
         FM_halftone: If True, apply FM halftone (Floyd-Steinberg dithering)
         """
-        # self.width = width
-        # self.height = height
         self.final_width = final_width
         self.trim = trim
         self.transform_mode = transform_mode
         self.FM_halftone = FM_halftone
-        # self.vertical_paddings = tuple(vertical_paddings)
 
     def load_image_8bit_gray(self, config):
         """
