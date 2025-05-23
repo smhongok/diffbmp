@@ -104,5 +104,5 @@ Please do not distribute. This is for the purpose of anonymous review.
 
 ---
 
-Enjoy creating beautiful circle-based artwork!
+Enjoy creating beautiful SVG drawing artwork!
 
