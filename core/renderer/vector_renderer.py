@@ -769,10 +769,10 @@ class VectorRenderer:
                 # Sparsification logic
                 if do_sparsify:
                     if epoch >= iters_warmup and epoch <= iters_warmup + sparsify_duration:
-                        # DST 마스크 업데이트
+                        # DST mask update
                         if dst_enabled and epoch % dst_period == 0:
                             with torch.no_grad():
-                                # Record absolute values of gradients (EMA)
+                                # DST mask update
                                 for param_name in ['v', 'x', 'y', 'r', 'theta', 'c']:
                                     param = locals()[param_name]
                                     if param.grad is not None:
@@ -835,18 +835,18 @@ class VectorRenderer:
                         
                         if epoch == iters_warmup + sparsify_duration:
                             # actual sparsification
-                            # 1) helper: 기존 tensor -> 잘라낸 tensor(requires_grad 유지)
+                            # 1) helper: existing tensor -> trimmed tensor (maintains requires_grad)
                             def _prune(t):
                                 t_new = t[keep_idx].clone().detach()
                                 if t.requires_grad:
                                     t_new.requires_grad_(True)
                                 return t_new
                             
-                            # 2) 실제 파라미터·보조변수 잘라내기
+                            # 2) Actually prune parameters and auxiliary variables
                             x, y, r, theta, v, c = map(_prune, (x, y, r, theta, v, c))
                             z, lam = map(_prune, (z, lam))
                             
-                            # DST 관련 변수도 함께 잘라내기
+                            # Also prune DST related variables
                             if dst_enabled:
                                 v_mask = v_mask[keep_idx].clone()
                                 for key in grad_history:
@@ -924,7 +924,7 @@ class VectorRenderer:
             {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
         ])
 
-        # 배치 최적화에서는 캐시된 마스크를 미리 생성
+        # For batch optimization, pre-generate cached masks
         with torch.no_grad():
             cached_masks = self._batched_soft_rasterize(
                 x, y, r, theta, sigma=opt_conf.get("blur_sigma", 1.0)
@@ -933,27 +933,27 @@ class VectorRenderer:
         N = x.numel()
         print(f"Starting optimization for Mini-batch GD: N={N}  chunk={chunk}  iterations={num_iterations}...")
         for step in tqdm(range(num_iterations)):
-            # -------- 0. 앞·배치·뒤 인덱스 슬라이스 --------
+            # -------- 0. Front/batch/back index slices --------
             start = (step * chunk) % N
             end   = min(start + chunk, N)
-            fg_sl     = slice(0, start)   # 앞쪽(near)
-            batch_sl  = slice(start, end) # 학습 대상
-            bg_sl     = slice(end, N)     # 뒤쪽(far)
+            fg_sl     = slice(0, start)   # Front (near)
+            batch_sl  = slice(start, end) # Training target
+            bg_sl     = slice(end, N)     # Back (far)
 
-            # -------- 1. no-grad 합성(FG,BG) --------
+            # -------- 1. no-grad composition (FG,BG) --------
             with torch.no_grad():
-                # 앞 레이어 → rgb_fg, alpha_fg
+                # Front layers → rgb_fg, alpha_fg
                 if start > 0:
-                    # 매번 새로운 버퍼로 렌더링
+                    # Render with new buffer each time
                     rgb_fg, alpha_fg = self.render(
                         cached_masks[fg_sl], v[fg_sl], c[fg_sl],
                         return_alpha=True
                     )
-                else:  # 아무것도 없으면 투명
+                else:  # If nothing, then transparent
                     rgb_fg  = torch.zeros((self.H, self.W, 3), device=self.device, dtype=torch.float16)
                     alpha_fg = torch.zeros((self.H, self.W, 1), device=self.device, dtype=torch.float16)
                     
-                # 뒤 레이어 → rgb_bg (흰 배경까지 합성, alpha 버림)
+                # Back layers → rgb_bg (composite with white background, discard alpha)
                 if end < N:
                     rgb_bg = self.render(
                         cached_masks[bg_sl], v[bg_sl], c[bg_sl],
@@ -962,42 +962,42 @@ class VectorRenderer:
                 else:
                     rgb_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float16)
 
-            # -------- 2. 학습 배치 forward --------
+            # -------- 2. Forward pass for batch learning --------
             optimizer.zero_grad()
             # Render image
             if opt_conf.get("multi_level", False):
-                # 멀티레벨 렌더링 미구현
+                # Multi-level rendering not implemented
                 raise NotImplementedError("Multi-level rendering not implemented")
             else:
-                # 현재 배치 마스크 생성
+                # Generate current batch masks
                 masks_bt = self._batched_soft_rasterize(
                     x[batch_sl], y[batch_sl], r[batch_sl], theta[batch_sl],
                     sigma=opt_conf.get("blur_sigma", 1.0)
                 )
                 
-                # 배치 렌더링
+                # Batch rendering
                 rgb_bt, alpha_bt = self.render(
                         masks_bt, v[batch_sl], c[batch_sl],
                         return_alpha=True
                     )
             
             # -------- 3. Porter-Duff over(fg → batch → bg) --------
-            # 새 텐서를 명시적으로 생성하여 체크포인팅 호환성 향상
+            # Create new tensor explicitly to improve checkpointing compatibility
             comp1 = rgb_fg + (1 - alpha_fg) * rgb_bt
             
-            # 마지막 합성도 새 텐서를 생성
+            # Final composition also creates new tensor
             inv_alpha_product = (1 - alpha_fg) * (1 - alpha_bt)
             final = comp1 + inv_alpha_product * rgb_bg
 
-            # 손실 계산
+            # Compute loss
             loss = self.compute_loss(final, target_image,
                                     x, y, r, v, theta, c)
             
-            # 역전파 및 업데이트
+            # Backward pass and update
             loss.backward()
             optimizer.step()            
             
-            # 사용한 텐서 명시적 정리
+            # Explicitly clean up used tensors
             del masks_bt, rgb_bt, alpha_bt, comp1, inv_alpha_product, final, rgb_fg, alpha_fg, rgb_bg
             torch.cuda.empty_cache()
             
@@ -1008,10 +1008,10 @@ class VectorRenderer:
                 r.clamp_(2, min(self.H, self.W) // 4)
                 theta.clamp_(0, 2 * np.pi)
             
-                # ── (NEW) 바뀐 batch 슬라이스만 다시 마스크 계산해서 캐시에 업데이트 ──
+                # ── (NEW) Recalculate masks for changed batch slice and cache update ──
                 cached_masks[batch_sl] = self._batched_soft_rasterize(
                     x[batch_sl], y[batch_sl], r[batch_sl], theta[batch_sl],
-                    sigma=opt_conf.get("blur_sigma", 1.0)        # 동일 블러 파라미터 사용
+                    sigma=opt_conf.get("blur_sigma", 1.0)        # Use same blur parameter
                 )
 
             # Save image at specified epochs
@@ -1029,7 +1029,7 @@ class VectorRenderer:
             if step % 20 == 0:
                 print(f"Epoch {step}, Loss: {loss.item():.4f}")
         
-        # 캐시된 마스크 정리
+        # Clean up cached masks
         del cached_masks
         torch.cuda.empty_cache()
         
@@ -1075,7 +1075,7 @@ class VectorRenderer:
         Returns:
             Blended image (H, W, 3)
         """
-        # 알파 채널이 있으면 사용, 없으면 1로 가정
+        # If alpha channel exists, use it, otherwise assume 1
         if I_hat.shape[-1] == 4:
             alpha = I_hat[..., 3:4]
             rgb = I_hat[..., :3]
@@ -1086,7 +1086,7 @@ class VectorRenderer:
     
     def memory_report(self, message="Memory usage"):
         """
-        메모리 사용량에 대한 상세 보고서를 출력합니다.
+        Detailed memory usage report.
         """
         torch.cuda.synchronize()
         
@@ -1096,12 +1096,12 @@ class VectorRenderer:
         
         print(f"{message}: Current={current:.2f}MB, Peak={peak:.2f}MB, Reserved={reserved:.2f}MB")
         
-        # 주요 클래스 텐서 사용량 출력
+        # Print top tensors by memory usage
         tensors_report = defaultdict(int)
         sizes_report = {}
         precision_report = {}
         
-        # self 내 텐서 확인
+        # Check tensors in self
         for name, obj in vars(self).items():
             if isinstance(obj, torch.Tensor) and obj.is_cuda:
                 size_bytes = obj.nelement() * obj.element_size()
@@ -1109,14 +1109,14 @@ class VectorRenderer:
                 sizes_report[name] = obj.shape
                 precision_report[name] = obj.dtype
         
-        # 정렬된 텐서 사용량 출력 (큰 것부터)
+        # Print sorted tensors by memory usage (largest first)
         if tensors_report:
             print("  Top tensors by memory usage:")
             sorted_tensors = sorted(tensors_report.items(), key=lambda x: x[1], reverse=True)
-            for name, size in sorted_tensors[:5]:  # 상위 5개만 출력
+            for name, size in sorted_tensors[:5]:  # Print top 5 only
                 print(f"    {name}: {size/1024/1024:.2f}MB, shape={sizes_report[name]}, dtype={precision_report[name]}")
         
-        # FP16 vs FP32 메모리 사용량 비교
+        # Compare memory usage between FP16 and FP32
         fp16_count = sum(1 for dtype in precision_report.values() if dtype == torch.float16)
         fp32_count = sum(1 for dtype in precision_report.values() if dtype == torch.float32)
         fp16_bytes = sum(size for name, size in tensors_report.items() if precision_report.get(name) == torch.float16)
@@ -1130,13 +1130,13 @@ class VectorRenderer:
 
     def clear_cuda_cache(self):
         """
-        CUDA 캐시를 완전히 비우고 가비지 컬렉션을 수행합니다.
+        Completely clear CUDA cache and perform garbage collection.
         """
         torch.cuda.empty_cache()
         gc.collect()
         torch.cuda.synchronize()
         
-        # 메모리 사용량 최소화를 위해 peak 기록 재설정
+        # Reset peak memory stats for memory usage minimization
         torch.cuda.reset_peak_memory_stats()
         
         current = torch.cuda.memory_allocated() / 1024 / 1024
@@ -1145,14 +1145,14 @@ class VectorRenderer:
 
     def create_stream(self):
         """
-        새로운 CUDA 스트림을 생성하여 메모리 작업을 비동기적으로 처리합니다.
-        이를 통해 여러 연산을 동시에 수행할 수 있어 메모리 사용량이 감소할 수 있습니다.
+        Create a new CUDA stream to handle memory operations asynchronously.
+        This allows multiple operations to be performed simultaneously, reducing memory usage.
         """
         return torch.cuda.Stream()
 
     def with_stream(self, stream):
         """
-        주어진 스트림에서 코드 블록을 실행하기 위한 컨텍스트 매니저를 반환합니다.
+        Return a context manager to execute code block in given stream.
         """
         class StreamContext:
             def __init__(self, stream):
@@ -1172,19 +1172,19 @@ class VectorRenderer:
 
 from collections import defaultdict
 
-def pretty_mem(x):       # byte → MB 단위 문자열
+def pretty_mem(x):       # byte → MB unit string
     return f"{x/1024/1024:8.2f} MB"
 
 def tensor_vram_report(namespace: dict):
     """
-    namespace(dict): globals()  또는 locals()
+    namespace(dict): globals()   or locals()
     Prints a table of all torch.Tensor objects (including .grad) on GPU.
     """
     seen_data_ptr = set()
     rows, total = [], 0
     for name, obj in namespace.items():
         if isinstance(obj, torch.Tensor) and obj.is_cuda:
-            # same storage 여러 변수에 공유될 수 있으니 data_ptr 기준 dedup
+            # same storage can be shared among multiple variables
             ptr = obj.data_ptr()
             if ptr in seen_data_ptr:
                 continue
@@ -1194,14 +1194,14 @@ def tensor_vram_report(namespace: dict):
             rows.append((name, str(tuple(obj.shape)), obj.dtype, pretty_mem(size_bytes)))
             total += size_bytes
 
-            # grad 버퍼도 있으면 같이 체크
+            # grad buffer also exists if it exists
             if obj.grad is not None:
                 gbytes = obj.grad.numel() * obj.grad.element_size()
                 rows.append((name + ".grad", str(tuple(obj.grad.shape)),
                              obj.grad.dtype, pretty_mem(gbytes)))
                 total += gbytes
 
-    # 정렬: 큰 순서
+    # Sort: largest first
     rows.sort(key=lambda r: float(r[3].split()[0]), reverse=True)
 
     print(f"{'tensor':25} {'shape':20} {'dtype':9} {'mem':>10}")

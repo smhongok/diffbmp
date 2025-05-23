@@ -10,7 +10,7 @@ from datetime import timedelta
 from .base_initializer import BaseInitializer
 from core.renderer.vector_renderer import VectorRenderer
 from typing import Dict, Any
-# 시작 시간 기록
+# Record the start time
 
 class StructureAwareInitializer(BaseInitializer):
     def __init__(self, init_opt:Dict[str, Any]):

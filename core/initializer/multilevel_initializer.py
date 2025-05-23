@@ -114,24 +114,24 @@ class MultiLevelInitializer(SingleLevelInitializer):
         x0, y0, w, h = bbox
         cropped = image[..., y0:y0+h, x0:x0+w]
         resized = torch.nn.functional.interpolate(cropped.unsqueeze(0), size=(256, 256), mode='bilinear', align_corners=False).squeeze(0)
-        # ---- 채널 보정 ----
+        # ---- Channel correction ----
         if resized.shape[-1] != 3:
             resized = resized[..., :3].contiguous()
         return resized
 
     def _calculate_high_frequency_ratio(self, image):
         """
-        이미지의 고주파 성분 비율을 계산합니다.
+        Calculate the ratio of high-frequency components in the image.
         
         Args:
-            image: 분석할 이미지 (numpy array)
+            image: Image to analyze (numpy array)
             
         Returns:
-            고주파 성분 비율 (0~1 사이 값)
+            High-frequency component ratio (value between 0~1)
         """
-        # 1) 빈 배열 방지
+        # 1) Prevent empty array
         if image is None or image.size == 0:
-            raise ValueError(f"빈 이미지 전달됨: shape={image.shape}")
+            raise ValueError(f"Empty image passed: shape={image.shape}")
 
         # 2) (C,H,W) → (H,W,C)
         if image.ndim == 3 and image.shape[0] in (1, 3):
@@ -139,84 +139,84 @@ class MultiLevelInitializer(SingleLevelInitializer):
             
         if image.dtype != np.uint8:
             if np.issubdtype(image.dtype, np.floating):
-                # [0..1] 범위라면
+                # If range is [0..1]
                 image = (np.clip(image, 0, 1) * 255).astype(np.uint8)
             else:
                 image = image.astype(np.uint8)
             
-        # 이미지가 3차원(컬러)인 경우 그레이스케일로 변환
+        # Convert image to grayscale if it's 3D (color)
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         else:
             gray = image
         
-        # 이미지가 float 타입인 경우 uint8로 변환
+        # Convert image to uint8 if it's float type
         if gray.dtype != np.uint8:
             gray = (gray * 255).astype(np.uint8)
         
-        # FFT 변환
+        # FFT transformation
         f = np.fft.fft2(gray)
         fshift = np.fft.fftshift(f)
         
-        # 주파수 마스크 생성 (중앙 저주파 영역 제외)
+        # Create frequency mask (exclude central low-frequency region)
         rows, cols = gray.shape
         crow, ccol = rows // 2, cols // 2
         mask = np.ones((rows, cols), np.uint8)
         center_radius = min(rows, cols) // 4
         cv2.circle(mask, (ccol, crow), center_radius, 0, -1)
         
-        # 고주파 성분 추출
+        # Extract high-frequency components
         high_freq = fshift * mask
         
-        # 고주파 에너지 계산
+        # Calculate high-frequency energy
         high_freq_energy = np.sum(np.abs(high_freq))
         total_energy = np.sum(np.abs(fshift))
         
-        # 고주파 비율 계산 (0~1 사이 값)
+        # Calculate high-frequency ratio (value between 0~1)
         ratio = high_freq_energy / (total_energy + 1e-10)
         
         return ratio
 
     def _adjust_points_by_frequency(self, image, coords):
         """
-        각 사분면의 고주파 비율에 따라 점의 개수를 조정합니다.
+        Adjust the number of points for each quadrant based on the high-frequency ratio.
         
         Args:
-            sections: 분할 이미지 좌표 리스트
+            sections: List of split image coordinates
             
         Returns:
-            조정된 점의 개수 리스트
+            List of adjusted point counts
         """
         if isinstance(image, torch.Tensor):
             img_t = image.detach().cpu()
-            # (C,H,W) 형태면 → (H,W,C)
+            # If shape is (C,H,W), convert to (H,W,C)
             if img_t.ndim == 3 and img_t.shape[0] in (1, 3):
                 img_t = img_t.permute(1, 2, 0)
             image_np = img_t.numpy()
         else:
             image_np = image
 
-        # 각 사분면의 고주파 비율 계산
+        # Calculate high-frequency ratio for each quadrant
         freq_ratios = []
         for xs, ys, xe, ye in coords:
             patch = image_np[ys:ys+ye, xs:xs+xe, :]
             ratio = self._calculate_high_frequency_ratio(patch)
             freq_ratios.append(ratio)
         
-        # 고주파 비율 합계
+        # Sum of high-frequency ratios
         total_ratio = sum(freq_ratios)
         
-        # 기본 점 개수 (전체 점 개수의 1/4)
+        # Base number of points (1/4 of the total number of points)
         base_points = self.num_init
         
-        # 각 사분면별 점 개수 조정
+        # Adjust number of points for each quadrant
         adjusted_points = []
         for ratio in freq_ratios:
-            # 고주파 비율에 따라 점 개수 조정 (최소 1개는 보장)
+            # Adjust number of points based on high-frequency ratio (ensure at least 1)
             points = max(1, int(base_points * (ratio / (total_ratio + 1e-10))))
             adjusted_points.append(points)
         
-        # 점 개수가 적으면 더 많이 생성
+        # Add more points if the total is less than expected
         total_points = sum(adjusted_points)
         print("base_points - total_points: ", base_points - total_points)
         while total_points < base_points:

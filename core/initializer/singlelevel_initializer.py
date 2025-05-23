@@ -25,14 +25,13 @@ class SingleLevelInitializer(StructureAwareInitializer):
         Returns:
             tuple: (x, y, r, v, theta, c)
         """
-        # [TODO] I_bg implementation 
         if I_bg is None:
             I_bg = torch.zeros_like(I_tar)
         
         # 1. Structure-aware initialization (use parent class)
         x, y, r, v, theta, c = renderer.initialize_parameters(super(), I_bg)
         
-        # ---- c shape 보정 ----
+        # ---- c shape correction ----
         if c.shape[1] != 3:
             c = c[:, :3].contiguous().detach().clone().requires_grad_(True)
         
