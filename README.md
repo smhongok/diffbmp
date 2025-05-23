@@ -2,49 +2,8 @@
 
 ## Overview
 
-This project provides tools and methodologies for creating and evaluating circle-based vector art from images. It includes initialization techniques, rendering methods, and evaluation scripts aimed at comparing the effectiveness and quality of various circle-art generation algorithms.
+This project provides tools and methodologies for creating and evaluating svg-based vector art from images. It includes initialization techniques, rendering methods, and evaluation scripts aimed at comparing the effectiveness and quality of various svgsplat art generation algorithms.
 
-## Project Structure
-
-```
-circle_art_test/
-├── assets/
-│   ├── font/
-│   │   └── arial.ttf
-├── configs/
-│   └── default.json
-├── core/
-│   ├── preprocessing.py
-│   ├── initializer/
-│   │   ├── base_initializer.py
-│   │   ├── multilevel_initializer.py
-│   │   ├── random_initializater.py
-│   │   ├── singlelevel_initializer.py
-│   │   ├── svgsplat_initializater.py
-│   │   └── tm_initializer.py
-│   └── renderer/
-│       ├── mse_renderer.py
-│       └── vector_renderer.py
-├── images/
-│   ├── artwork/
-│   ├── BSDS500/
-│   ├── CelebA/
-│   ├── MoviePosters/
-│   ├── MoviePosters_2/
-│   ├── nature/
-│   └── supp/
-├── util/
-│   ├── pdf_exporter.py
-│   ├── run_wavelet.py
-│   ├── svg_converter.py
-│   ├── svg_loader.py
-│   ├── svg_to_hollow.py
-│   └── utils.py
-├── compare_methods.py
-├── main.py
-├── requirements.txt
-└── run_evaluation.py
-```
 
 ## Requirements
 
