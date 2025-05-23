@@ -82,7 +82,7 @@ python run_evaluation.py
 
 ## Assets
 
-* Predefined SVG templates are provided in the `assets/svg` directory.
+* Put any predefined SVG templates based on 'path' tag in the `assets/svg` directory.
 * Fonts for rendering are located in `assets/font`.
 
 ## Examples and Datasets
