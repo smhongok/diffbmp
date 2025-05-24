@@ -13,6 +13,12 @@ Install dependencies using pip:
 pip install -r requirements.txt
 ```
 
+Install Poppler
+
+```
+sudo apt-get install poppler-utils
+```
+
 ## Usage
 
 ### Running the Main Script
