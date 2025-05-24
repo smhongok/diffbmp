@@ -34,7 +34,7 @@ python main.py --config configs/default.json
 To compare different circle-art methods:
 
 ```
-python compare_methods.py
+python compare_methods.py --config configs/default.json
 ```
 
 ### Running Evaluations
