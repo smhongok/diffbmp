@@ -30,7 +30,7 @@
         "output_width": 128
     },
     "initialization": {
-        "initializer": "random",
+        "initializer": "structure_aware",
         "N": [3000],
         "alpha": 0.3,
         "min_distance": 5,
@@ -48,7 +48,7 @@
     },
     "optimization": {
         "use_fp16": true,
-        "renderer_type": "lpips",
+        "renderer_type": "mse",
         "num_iterations": 100,
         "batch_optimization": false,
         "batch_size": 256,

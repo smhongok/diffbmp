@@ -15,8 +15,6 @@ import argparse
 import cv2
 from datetime import datetime
 from core.renderer.mse_renderer import MseRenderer
-from core.renderer.lpips_renderer import LpipsRenderer
-from core.renderer.mix_renderer import MixRenderer
 from util.svg_loader import SVGLoader
 from util.svg_converter import FontParser
 from core.initializer.svgsplat_initializater import StructureAwareInitializer
@@ -41,9 +39,21 @@ with open(config_path, "r", encoding="utf-8") as f:
 # After import or after loading config
 set_global_seed(config.get("seed", 42))
 
+# Force list attributes to single item
+if type(config["preprocessing"]["img_path"]) is list:
+    config["preprocessing"]["img_path"] = config["preprocessing"]["img_path"][0]
+    print("Use only one file to inference")
+if type(config["preprocessing"]["final_width"]) is list:
+    config["preprocessing"]["final_width"] = config["preprocessing"]["final_width"][0]
+    print("Use only one final_width to inference")
+if type(config["initialization"]["N"]) is list: 
+    config["initialization"]["N"] = config["initialization"]["N"][0]
+    print("Use only one N to inference")
+
 # Initialize preprocessor
 pp_conf = config["preprocessing"]
 opt_conf = config["optimization"]
+use_fp16 = opt_conf.get("use_fp16", False)  # Default to False for CPU compatibility
 
 preprocessor = Preprocessor(
     final_width=pp_conf.get("final_width", 128),
@@ -62,7 +72,7 @@ W = preprocessor.final_width
 svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
 if (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
     font_parser = FontParser(config["svg"].get("svg_file"))
-    svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode=config["svg"].get("mode", "opt_path")))
+    svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode="opt-path"))
 else:
     svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
 
@@ -77,50 +87,35 @@ svg_loader = SVGLoader(
 renderer_type = opt_conf.get("renderer_type", "mse")
 renderer_class = {
     "mse": MseRenderer,
-    "lpips": LpipsRenderer,
-    "mix": MixRenderer
 }.get(renderer_type.lower())
 
 if renderer_class is None:
     raise ValueError(f"Invalid renderer type: {renderer_type}")
 
-renderer = renderer_class(
-    canvas_size=(H, W),
-    alpha_upper_bound=opt_conf.get("alpha_upper_bound", 0.5),
-    device=device
-)
+bmp_tensor = svg_loader.load_alpha_bitmap()
+if use_fp16:
+    bmp_tensor = bmp_tensor.to(dtype=torch.float16)
+else:
+    bmp_tensor = bmp_tensor.to(dtype=torch.float32)
+    
+H = preprocessor.final_height
+W = preprocessor.final_width
 
+# Create renderer only when needed - defer instantiation
+renderer = renderer_class((H, W), S=bmp_tensor, 
+                        alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
+                        device=device,
+                        use_fp16=use_fp16,
+                        output_path=config["postprocessing"].get("output_folder", "./outputs/"))
 print(f"Using {renderer_class.__name__} for optimization")
 
 # Initialize parameters
 print("---Initializing vector graphics with Structure-Aware method---")
 init_conf = config["initialization"]
 if init_conf.get("initializer", "none") == "structure_aware":
-    initializer = StructureAwareInitializer(
-        num_init=init_conf.get("N", 10000),
-        alpha=init_conf.get("alpha", 0.3),
-        min_distance=init_conf.get("min_distance", 5),
-        peak_threshold=init_conf.get("peak_threshold", 0.5),
-        radii_min=init_conf.get("radii_min", 2),
-        radii_max=init_conf.get("radii_max", None),
-        v_init_bias=init_conf.get("v_init_bias", -5.0),
-        v_init_slope=init_conf.get("v_init_slope", 10.0),
-        keypoint_extracting=init_conf.get("keypoint_extracting", False),
-        debug_mode=init_conf.get("debug_mode", False)
-    )
+    initializer = StructureAwareInitializer(init_conf)
 elif init_conf.get("initializer", "none") == "random":
-    initializer = RandomInitializer(
-        num_init=init_conf.get("N", 10000),
-        alpha=init_conf.get("alpha", 0.3),
-        min_distance=init_conf.get("min_distance", 5),
-        peak_threshold=init_conf.get("peak_threshold", 0.5),
-        radii_min=init_conf.get("radii_min", 2),
-        radii_max=init_conf.get("radii_max", None),
-        v_init_bias=init_conf.get("v_init_bias", -5.0),
-        v_init_slope=init_conf.get("v_init_slope", 10.0),
-        keypoint_extracting=init_conf.get("keypoint_extracting", False),
-        debug_mode=init_conf.get("debug_mode", False)
-    )
+    initializer = RandomInitializer(init_conf)
 else:
     raise ValueError(f"Invalid initializer: {init_conf.get('initializer', 'none')}")
 
@@ -153,37 +148,44 @@ if init_conf.get("debug_mode", False):
     os.makedirs('outputs', exist_ok=True)
     
     # Save the final render
-    cv2.imwrite('outputs/final_render.png', cv2.cvtColor(cached_masks.detach().cpu().numpy() * 255, cv2.COLOR_RGB2BGR))
+    final_render = renderer.render(cached_masks, v, c)
+    cv2.imwrite('outputs/final_render.png', cv2.cvtColor(final_render.detach().cpu().numpy() * 255, cv2.COLOR_RGB2BGR))
     
-    # Load point debug visualization
-    point_debug = cv2.imread('outputs/point_debug.png')
+    # Try to load point debug visualization if it exists
+    point_debug = None
+    if os.path.exists('outputs/point_debug.png'):
+        point_debug = cv2.imread('outputs/point_debug.png')
     
-    # Resize if dimensions don't match
-    if point_debug.shape[:2] != cached_masks.shape[:2]:
-        point_debug = cv2.resize(point_debug, (cached_masks.shape[1], cached_masks.shape[0]))
-    
-    # Load original visualization if it exists
-    if os.path.exists('outputs/side_by_side_debug.png'):
-        side_by_side = cv2.imread('outputs/side_by_side_debug.png')
+    # Only process point_debug if it was successfully loaded
+    if point_debug is not None:
+        # Resize if dimensions don't match
+        if point_debug.shape[:2] != final_render.shape[:2]:
+            point_debug = cv2.resize(point_debug, (final_render.shape[1], final_render.shape[0]))
         
-        # Create a new row with final render
-        final_render_bgr = cv2.cvtColor(cached_masks.detach().cpu().numpy() * 255, cv2.COLOR_RGB2BGR)
-        
-        # Extract original and point debug from side_by_side
-        mid_point = side_by_side.shape[1] // 2
-        original = side_by_side[:, :mid_point]
-        points = side_by_side[:, mid_point:]
-        
-        # Resize final render to match original and points
-        final_render_bgr = cv2.resize(final_render_bgr, (mid_point, side_by_side.shape[0]))
-        
-        # Create three-panel image: original, points, final render
-        combined = np.hstack((original, points, final_render_bgr))
-        
-        timestamp_str = datetime.now().strftime("%m-%d-%H-%M-%S")
-        print(timestamp_str)
-        cv2.imwrite('outputs/combined_visualization_' + timestamp_str + '.png', combined)
-        print("Combined visualization saved to outputs/combined_visualization.png")
+        # Load original visualization if it exists
+        if os.path.exists('outputs/side_by_side_debug.png'):
+            side_by_side = cv2.imread('outputs/side_by_side_debug.png')
+            
+            # Create a new row with final render
+            final_render_bgr = cv2.cvtColor(final_render.detach().cpu().numpy() * 255, cv2.COLOR_RGB2BGR)
+            
+            # Extract original and point debug from side_by_side
+            mid_point = side_by_side.shape[1] // 2
+            original = side_by_side[:, :mid_point]
+            points = side_by_side[:, mid_point:]
+            
+            # Resize final render to match original and points
+            final_render_bgr = cv2.resize(final_render_bgr, (mid_point, side_by_side.shape[0]))
+            
+            # Create three-panel image: original, points, final render
+            combined = np.hstack((original, points, final_render_bgr))
+            
+            timestamp_str = datetime.now().strftime("%m-%d-%H-%M-%S")
+            print(timestamp_str)
+            cv2.imwrite('outputs/combined_visualization_' + timestamp_str + '.png', combined)
+            print("Combined visualization saved to outputs/combined_visualization.png")
+    else:
+        print("Point debug visualization not found. Skipping combined visualization.")
 
 filename_only = os.path.splitext(os.path.basename(config['preprocessing']['img_path']))[0]
 output_path=config['postprocessing']['output_folder'] + filename_only + "_N" + str(init_conf.get("N", 1000)) + "_ITER" + str(config["optimization"]["num_iterations"]) \
