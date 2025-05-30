@@ -450,7 +450,10 @@ def process_combination(args):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     pdf_path = os.path.join(output_dir, 
                         f"{init.__class__.__name__}_{renderer_name}_{timestamp}.pdf")
-    
+    folder_path = os.path.join(output_dir,
+                        f"{init.__class__.__name__}_{renderer_name}_{timestamp}")
+    os.makedirs(folder_path, exist_ok=True)
+
     H, W = config['canvas_size']
     exporter = PDFExporter(
         svg_loader.svg_path, 
@@ -462,6 +465,10 @@ def process_combination(args):
     
     exporter.export(x, y, r, theta, v, c,
                 output_path=pdf_path,
+                svg_hollow=config["svg"].get("svg_hollow", False))
+    
+    exporter.export_with_pngs(x,y,r,theta,v,c,
+                output_folder=folder_path,
                 svg_hollow=config["svg"].get("svg_hollow", False))
     
     # Copy parameters to CPU before returning
@@ -712,8 +719,13 @@ def main():
         svg_path = img_converter.extract_filled_outlines(config["svg"].get("svg_file"), threshold=100, min_area_ratio=0.000001)
         del img_converter
     elif (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
-        font_parser = FontParser(config["svg"].get("svg_file"))
-        svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode="opt-path"))
+        font_parser = FontParser(config["svg"]["svg_file"])
+        texts = config["svg"]["text"]
+        if isinstance(texts, list):
+            svg_paths = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
+        else:
+            svg_paths = str(font_parser.text_to_svg(texts, mode="opt-path"))
+        svg_path = svg_paths
         del font_parser
     else:
         svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")

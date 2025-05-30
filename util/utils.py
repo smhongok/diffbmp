@@ -18,28 +18,53 @@ def set_global_seed(seed: int = 42):
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-# Gaussian Blur function (2D convolution method)
-def gaussian_blur(input_tensor, sigma):
+def gaussian_blur(input_tensor: torch.Tensor, sigma: float) -> torch.Tensor:
     """
-    input_tensor: (N, H, W)
-    sigma: Standard deviation of Gaussian kernel (scalar, float)
+    Apply a 2D Gaussian blur.
+
+    Args:
+        input_tensor: Tensor of shape
+            - (N, H, W), or
+            - (N, C, H, W)
+        sigma: Standard deviation of the Gaussian kernel.
+
+    Returns:
+        - If input was (N, H, W): returns (N, H, W)
+        - If input was (N, C, H, W): returns (N, C, H, W)
     """
     if sigma <= 0.0:
         return input_tensor
-    # Kernel size is typically rounded 3*sigma with symmetry on both sides (odd size)
+
+    # Build 1-D Gaussian kernel
     kernel_size = int(2 * round(3 * sigma) + 1)
-    # Generate coordinates: kernel center is 0
     ax = torch.arange(kernel_size, dtype=torch.float32, device=input_tensor.device) - kernel_size // 2
-    kernel = torch.exp(-0.5 * (ax / sigma) ** 2)
-    kernel = kernel / kernel.sum()
-    # 2D kernel: outer product
-    kernel2d = kernel[:, None] * kernel[None, :]
-    kernel2d = kernel2d.unsqueeze(0).unsqueeze(0)  # shape: (1, 1, kernel_size, kernel_size)
-    
+    kernel1d = torch.exp(-0.5 * (ax / sigma) ** 2)
+    kernel1d = kernel1d / kernel1d.sum()
+
+    # Make 2-D separable kernel
+    kernel2d = kernel1d[:, None] * kernel1d[None, :]  # (K, K)
+
     padding = kernel_size // 2
-    input_tensor = input_tensor.unsqueeze(1)  # (N, 1, H, W)
-    blurred = F.conv2d(input_tensor, kernel2d, padding=padding)
-    return blurred.squeeze(1)  # (N, H, W)
+
+    if input_tensor.dim() == 3:
+        # (N, H, W) -> (N, 1, H, W)
+        x = input_tensor.unsqueeze(1)
+        weight = kernel2d.unsqueeze(0).unsqueeze(0)  # (1, 1, K, K)
+        blurred = F.conv2d(x, weight, padding=padding)
+        return blurred.squeeze(1)  # back to (N, H, W)
+
+    elif input_tensor.dim() == 4:
+        # (N, C, H, W): do depthwise conv with groups=C
+        N, C, H, W = input_tensor.shape
+        x = input_tensor
+        # Expand weight to (C, 1, K, K) for depthwise
+        weight = kernel2d.unsqueeze(0).unsqueeze(0).expand(C, 1, kernel_size, kernel_size)
+        blurred = F.conv2d(x, weight, groups=C, padding=padding)
+        return blurred  # (N, C, H, W)
+
+    else:
+        raise ValueError(f"gaussian_blur: unsupported input shape {input_tensor.shape}")
+
 
 def compute_psnr(img1, img2, max_val=1.0):
     mse = F.mse_loss(img1, img2)

@@ -62,7 +62,7 @@ W = preprocessor.final_width
 svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
 if (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
     font_parser = FontParser(config["svg"].get("svg_file"))
-    svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode=config["svg"].get("mode", "opt_path")))
+    svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode=config["svg"].get("mode", "opt-path")))
 else:
     svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
 
@@ -77,8 +77,6 @@ svg_loader = SVGLoader(
 renderer_type = opt_conf.get("renderer_type", "mse")
 renderer_class = {
     "mse": MseRenderer,
-    "lpips": LpipsRenderer,
-    "mix": MixRenderer
 }.get(renderer_type.lower())
 
 if renderer_class is None:
