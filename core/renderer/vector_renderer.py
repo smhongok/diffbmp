@@ -87,6 +87,9 @@ class VectorRenderer:
         """
         Generate soft masks for each primitive, processing in smaller chunks to save memory.
 
+        Now supports a sequence of p different primitives in self.S of shape (p, H, W),
+        assigning them periodically to the B instances.
+
         Args:
             x, y:       [N] position coordinates for N shapes
             r:          [N] scales
@@ -95,72 +98,60 @@ class VectorRenderer:
         Returns:
             masks:     [N, H, W]  (one soft mask per shape)
         """
-        # Choose context manager based on precision mode
         context = autocast('cuda') if self.use_fp16 else nullcontext()
-        
         with context:
             B = len(x)
             _, H, W = self.X.shape
-            
-            # Get target dtype based on use_fp16 flag
             target_dtype = torch.float16 if self.use_fp16 else torch.float32
-            
-            # Apply Gaussian blur if needed
+
+            # Prepare the bitmap(s): either single template or a sequence of p templates
             if sigma > 0.0:
-                bmp = self.S.unsqueeze(0)
+                bmp = self.S.unsqueeze(0)       # -> [1, p, H, W] or [1, H, W]
                 bmp = gaussian_blur(bmp, sigma)
                 bmp_image = bmp.squeeze(0).to(dtype=target_dtype).contiguous()
             else:
                 bmp_image = self.S.to(dtype=target_dtype)
-            
-            # Expand parameters to match grid dimensions and convert to appropriate precision
+
+            # Expand coordinates and parameters
             X_exp = self.X.expand(B, H, W)
             Y_exp = self.Y.expand(B, H, W)
             x_exp = x.view(B, 1, 1).expand(B, H, W)
             y_exp = y.view(B, 1, 1).expand(B, H, W)
             r_exp = r.view(B, 1, 1).expand(B, H, W)
-            
-            # Position normalization and rotation
+
+            # Normalize and rotate positions
             pos = torch.stack([X_exp - x_exp, Y_exp - y_exp], dim=1) / r_exp.unsqueeze(1)
             cos_t = torch.cos(theta)
             sin_t = torch.sin(theta)
             R_inv = torch.zeros(B, 2, 2, device=self.device)
-            R_inv[:, 0, 0] = cos_t
-            R_inv[:, 0, 1] = sin_t
-            R_inv[:, 1, 0] = -sin_t
-            R_inv[:, 1, 1] = cos_t
+            R_inv[:, 0, 0] = cos_t; R_inv[:, 0, 1] = sin_t
+            R_inv[:, 1, 0] = -sin_t; R_inv[:, 1, 1] = cos_t
             uv = torch.einsum('bij,bjhw->bihw', R_inv, pos)
-            
-            # Prepare for grid sampling
             grid = uv.permute(0, 2, 3, 1)  # (B, H, W, 2)
-            bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, -1, -1, -1).contiguous() 
-            
-            # Use gradient checkpointing if enabled
-            if self.use_checkpointing:
-                def grid_sample_func(x, grid):
-                    return F.grid_sample(
-                        x,
-                        grid,
-                        mode='bilinear',
-                        padding_mode='zeros',
-                        align_corners=True
-                    )
 
-                sampled = torch.utils.checkpoint.checkpoint(
-                    grid_sample_func,
-                    bmp_exp,
-                    grid,
-                    use_reentrant=False
-                )
+            # Build bmp_exp: one bitmap per instance, cycling through p if provided
+            if bmp_image.dim() == 2:
+                # single primitive template [H, W]
+                bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, 1, -1, -1).contiguous()
+            elif bmp_image.dim() == 3:
+                # sequence of p templates [p, H, W]
+                p = bmp_image.size(0)
+                # periodic assignment
+                idx = torch.arange(B, device=self.device, dtype=torch.long) % p  # [B]
+                bmp_sel = bmp_image[idx, :, :]            # [B, H, W]
+                bmp_exp = bmp_sel.unsqueeze(1).contiguous()  # [B, 1, H, W]
             else:
-                sampled = F.grid_sample(
-                    bmp_exp,
-                    grid,
-                    mode='bilinear',
-                    padding_mode='zeros',
-                    align_corners=True
-                )
-            
+                raise ValueError(f"Unsupported self.S shape: {bmp_image.shape}")
+
+            # Sample masks via grid_sample (with optional checkpointing)
+            if self.use_checkpointing:
+                def grid_fn(img, g):
+                    return F.grid_sample(img, g, mode='bilinear', padding_mode='zeros', align_corners=True)
+                sampled = cp.checkpoint(grid_fn, bmp_exp, grid, use_reentrant=False)
+            else:
+                sampled = F.grid_sample(bmp_exp, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
+
+            # Return single-channel masks
             return sampled.squeeze(1)  # (B, H, W)
     
     def _tree_over(self, m: torch.Tensor, a: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
