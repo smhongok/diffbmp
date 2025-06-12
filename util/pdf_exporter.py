@@ -287,3 +287,165 @@ class PDFExporter:
             writer.write(img)
         writer.release()
         print(f"MP4 video saved to {video_path}")
+
+
+    def export_to_mp4_incremental(self,
+                                x: torch.Tensor,
+                                y: torch.Tensor,
+                                r: torch.Tensor,
+                                theta: torch.Tensor,
+                                v: torch.Tensor,
+                                c: torch.Tensor,
+                                video_path: str,
+                                fps: int = 60,
+                                svg_hollow: bool = False,
+                                border_color: str = 'red',
+                                border_width: float = 6.0):
+        """
+        - primitive를 하나씩 누적해가는 단일 루프
+        - 루프 안에서 바로 PNG 프레임으로 변환 → VideoWriter에 기록
+        """
+        import io
+        import numpy as np
+        import cv2
+        import xml.etree.ElementTree as ET
+        from cairosvg import svg2png
+
+        # 1) 텐서 → NumPy
+        x_np     = x.detach().cpu().numpy()
+        y_np     = y.detach().cpu().numpy()
+        r_np     = r.detach().cpu().numpy()
+        theta_np = theta.detach().cpu().numpy()
+        v_np     = v.detach().cpu().numpy()
+        c_np     = torch.sigmoid(c).detach().cpu().numpy()
+        alpha_vals = self.alpha_upper_bound * (1 / (1 + np.exp(-v_np)))
+
+        N = len(x_np)
+        p = len(self.svg_paths)
+        rev_indices = list(reversed(range(N)))
+
+        # 2) 빈 SVG 루트 하나만 만든 뒤, 프리미티브와 강조 테두리를 여기에 누적
+        root = ET.Element(f'{{{SVG_NS}}}svg', {
+            'width': str(self.canvas_w),
+            'height': str(self.canvas_h),
+            'viewBox': f"{-self.canvas_w/2} {-self.canvas_h/2} {self.canvas_w} {self.canvas_h}"
+        })
+
+        # 3) 비디오 크기 알아내기 — 첫 프레임 생성
+        # (여기서는 첫 primitive 하나만 추가한 임시 root 생성)
+        first_idx = rev_indices[0]
+        self._append_primitive_to_root(root, first_idx,
+                                    x_np, y_np, r_np, theta_np, c_np, alpha_vals,
+                                    svg_hollow, border_color, border_width)
+        svg_bytes = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+        png_bytes = svg2png(bytestring=svg_bytes,
+                            output_width=self.canvas_w,
+                            background_color='white')
+        arr = np.frombuffer(png_bytes, dtype=np.uint8)
+        first = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
+        h, w = first.shape[:2]
+
+        # 4) VideoWriter 초기화
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(video_path, fourcc, fps, (w, h))
+        import time
+        # 5) 단일 루프: primitive 하나씩 누적 → 매 사이클마다 한 프레임 기록
+        #    첫 번째는 이미 root에 추가되어 있으므로 enumerate 시작점 0
+        for frame_idx, idx in enumerate(rev_indices):
+            t_start = time.time()
+
+            if frame_idx > 0:
+                t_primitive_start = time.time()
+                self._append_primitive_to_root(
+                    root, idx,
+                    x_np, y_np, r_np, theta_np, c_np, alpha_vals,
+                    svg_hollow, border_color, border_width
+                )
+                t_primitive_end = time.time()
+                print(f"[{frame_idx}] Primitive 추가 시간: {t_primitive_end - t_primitive_start:.4f}초")
+            else:
+                print(f"[{frame_idx}] 첫 프레임: Primitive 추가 생략")
+
+            t_svg_start = time.time()
+            svg_bytes = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+            t_svg_end = time.time()
+
+            t_png_start = time.time()
+            png_bytes = svg2png(
+                bytestring=svg_bytes,
+                output_width=self.canvas_w,
+                background_color='white'
+            )
+            t_png_end = time.time()
+
+            t_decode_start = time.time()
+            arr = np.frombuffer(png_bytes, dtype=np.uint8)
+            frame = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
+            t_decode_end = time.time()
+
+            t_write_start = time.time()
+            writer.write(frame)
+            t_write_end = time.time()
+
+            print(f"[{frame_idx}] SVG to string: {t_svg_end - t_svg_start:.4f}초")
+            print(f"[{frame_idx}] SVG to PNG:   {t_png_end - t_png_start:.4f}초")
+            print(f"[{frame_idx}] PNG decode:   {t_decode_end - t_decode_start:.4f}초")
+            print(f"[{frame_idx}] Frame write:  {t_write_end - t_write_start:.4f}초")
+            print(f"[{frame_idx}] 전체 루프 시간: {t_write_end - t_start:.4f}초\n")
+            print("asdf")
+
+        writer.release()
+        print(f"Saved MP4 video to {video_path}")
+
+    # -----------------------------------------------------
+    def _append_primitive_to_root(self, root, j,
+                                x_np, y_np, r_np, theta_np, c_np, alpha_vals,
+                                svg_hollow, border_color, border_width):
+        """
+        root(<svg> Element)에
+        - j번째 프리미티브와
+        - 강조용 테두리(이 프리미티브 전용)를 append 해 주는 헬퍼
+        """
+        tree     = ET.parse(self.svg_paths[j % len(self.svg_paths)])
+        tpl_root = tree.getroot()
+        self._remove_styles(tpl_root)
+        children = list(tpl_root)
+
+        theta_deg = np.degrees(theta_np[j])
+        transform = (
+            f"translate({x_np[j]-self.canvas_w/2},{y_np[j]-self.canvas_h/2}) "
+            f"rotate({theta_deg}) "
+            f"scale({r_np[j]}) "
+            f"scale({self.norm_scale}) "
+            f"translate({-self.view_w/2},{-self.view_h/2})"
+        )
+
+        # 1) 메인 도형
+        g = ET.Element(f'{{{SVG_NS}}}g', {'transform': transform})
+        if not svg_hollow:
+            g.attrib.update({
+                'fill':   f'rgb({int(c_np[j][0]*255)},{int(c_np[j][1]*255)},{int(c_np[j][2]*255)})',
+                'fill-opacity': str(alpha_vals[j])
+            })
+        else:
+            g.attrib.update({
+                'stroke':       f'rgb({int(c_np[j][0]*255)},{int(c_np[j][1]*255)},{int(c_np[j][2]*255)})',
+                'stroke-opacity': str(alpha_vals[j]),
+                'stroke-width': str(border_width),
+                'fill':         f'rgb({int(c_np[j][0]*255)},{int(c_np[j][1]*255)},{int(c_np[j][2]*255)})',
+                'fill-opacity': '0'
+            })
+        for ch in children:
+            g.append(deepcopy(ch))
+        root.append(g)
+
+        # 2) 강조 테두리
+        border_g = ET.Element(f'{{{SVG_NS}}}g', {'transform': transform})
+        border_g.attrib.update({
+            'fill': 'none',
+            'stroke': border_color,
+            'stroke-width': str(border_width)
+        })
+        for ch in children:
+            border_g.append(deepcopy(ch))
+        root.append(border_g)

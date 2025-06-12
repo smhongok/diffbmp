@@ -32,19 +32,22 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # Argument parser setup
 parser = argparse.ArgumentParser(description="Process images with Structure-Aware Graphics Synthesis")
 parser.add_argument('--config', type=str, required=True, help='Path to the config file')
+parser.add_argument('--initializer', type=str, default='StructureAwareInitializer', help='StructureAwareInitializer, RandomInitializer, MultiLevelInitializer, ...')
+parser.add_argument('--renderer', type=str, default='MseRenderer', help='MseRenderer, ...')
+parser.add_argument('--svg_text', type=str, default='', help='G, B, M, ...')
+parser.add_argument('--svg_path', type=str, default='', help='LOVE.svg, ...')
+parser.add_argument('--img_path', type=str, default='', help='images/HighFreq/0831.png, images/LowFreq/0831.png, ...')
 args = parser.parse_args()
-config_path = args.config
 
 # Load configuration
-with open(config_path, "r", encoding="utf-8") as f:
+with open(args.config, "r", encoding="utf-8") as f:
     config = json.load(f)
-# After import or after loading config
+
+# Set random seed
 set_global_seed(config.get("seed", 42))
 
 # Initialize preprocessor
 pp_conf = config["preprocessing"]
-opt_conf = config["optimization"]
-
 preprocessor = Preprocessor(
     final_width=pp_conf.get("final_width", 128),
     trim=pp_conf.get("trim", False),
@@ -52,19 +55,27 @@ preprocessor = Preprocessor(
     transform_mode=pp_conf.get("transform", "none"),
 )
 
-# Load target color image
-I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
-I_target = torch.tensor(I_target, device=device)  # (H, W, 3)
-H = preprocessor.final_height
-W = preprocessor.final_width
-
 # Handle SVG file loading
 svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
-if (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
-    font_parser = FontParser(config["svg"].get("svg_file"))
-    svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode=config["svg"].get("mode", "opt-path")))
+if svg_ext == ".svg":
+    svg_path = os.path.join("assets/svg", config["svg"].get("svg_file"))
+elif svg_ext in (".png", ".jpg", ".jpeg"):
+    img_converter = ImageToSVG()
+    svg_path = img_converter.extract_filled_outlines(config["svg"].get("svg_file"), threshold=100, min_area_ratio=0.000001)
+    del img_converter
+elif (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
+    font_parser = FontParser(config["svg"]["svg_file"])
+    texts = config["svg"]["text"]
+    if isinstance(texts, list):
+        svg_paths = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
+    else:
+        svg_paths = str(font_parser.text_to_svg(texts, mode="opt-path"))
+    svg_path = svg_paths
+    del font_parser
 else:
     svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
+
+print(f"SVG path: {svg_path}")
 
 # Load SVG file
 svg_loader = SVGLoader(
@@ -72,157 +83,97 @@ svg_loader = SVGLoader(
     output_width=config["svg"].get("output_width", 128),
     device=device
 )
+classify_svg = svg_loader.classify_svg()
+print(f"SVG is classified as: {classify_svg}")
 
-# Initialize renderer based on loss type
-renderer_type = opt_conf.get("renderer_type", "mse")
-renderer_class = {
-    "mse": MseRenderer,
-}.get(renderer_type.lower())
+# Load and preprocess target image
+I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
+I_target = torch.tensor(I_target, device=device)
+H = preprocessor.final_height
+W = preprocessor.final_width
+config['canvas_size'] = (H, W)
 
-if renderer_class is None:
-    raise ValueError(f"Invalid renderer type: {renderer_type}")
-
-renderer = renderer_class(
-    canvas_size=(H, W),
-    alpha_upper_bound=opt_conf.get("alpha_upper_bound", 0.5),
-    device=device
-)
-
-print(f"Using {renderer_class.__name__} for optimization")
-
-# Initialize parameters
-print("---Initializing vector graphics with Structure-Aware method---")
-init_conf = config["initialization"]
-if init_conf.get("initializer", "none") == "structure_aware":
-    initializer = StructureAwareInitializer(
-        num_init=init_conf.get("N", 10000),
-        alpha=init_conf.get("alpha", 0.3),
-        min_distance=init_conf.get("min_distance", 5),
-        peak_threshold=init_conf.get("peak_threshold", 0.5),
-        radii_min=init_conf.get("radii_min", 2),
-        radii_max=init_conf.get("radii_max", None),
-        v_init_bias=init_conf.get("v_init_bias", -5.0),
-        v_init_slope=init_conf.get("v_init_slope", 10.0),
-        keypoint_extracting=init_conf.get("keypoint_extracting", False),
-        debug_mode=init_conf.get("debug_mode", False)
-    )
-elif init_conf.get("initializer", "none") == "random":
-    initializer = RandomInitializer(
-        num_init=init_conf.get("N", 10000),
-        alpha=init_conf.get("alpha", 0.3),
-        min_distance=init_conf.get("min_distance", 5),
-        peak_threshold=init_conf.get("peak_threshold", 0.5),
-        radii_min=init_conf.get("radii_min", 2),
-        radii_max=init_conf.get("radii_max", None),
-        v_init_bias=init_conf.get("v_init_bias", -5.0),
-        v_init_slope=init_conf.get("v_init_slope", 10.0),
-        keypoint_extracting=init_conf.get("keypoint_extracting", False),
-        debug_mode=init_conf.get("debug_mode", False)
-    )
+# Create initializer
+if args.initializer == "StructureAwareInitializer":
+    from core.initializer.svgsplat_initializater import StructureAwareInitializer
+    initializer = StructureAwareInitializer(config["initialization"])
+elif args.initializer == "RandomInitializer":
+    from core.initializer.random_initializater import RandomInitializer
+    initializer = RandomInitializer(config["initialization"])
+elif args.initializer == "MultiLevelInitializer":
+    from core.initializer.multilevel_initializer import MultiLevelInitializer
+    initializer = MultiLevelInitializer(config["initialization"])
 else:
-    raise ValueError(f"Invalid initializer: {init_conf.get('initializer', 'none')}")
+    raise ValueError(f"Unknown initializer: {args.initializer}")
 
-# Initialize parameters
-x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target)
+# Create renderer
+if args.renderer == "MseRenderer":
+    from core.renderer.mse_renderer import MseRenderer
+    renderer = MseRenderer((H, W), S=svg_loader.load_alpha_bitmap(), 
+                        alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
+                        device=device,
+                        use_fp16=config["optimization"].get("use_fp16", False),
+                        output_path=config["postprocessing"].get("output_folder", "./outputs/"))
+else:
+    raise ValueError(f"Unknown renderer: {args.renderer}")
 
-bmp_image_tensor = svg_loader.load_alpha_bitmap()
+# Generate initialization parameters
+if "LevelInitializer" in args.initializer:
+    params = initializer.initialize(I_tar=I_target, renderer=renderer, opt_conf=config["optimization"])
+else:
+    params = initializer.initialize(I_target)
+
+x, y, r, v, theta, c = params
 
 # Optimize parameters
 x, y, r, v, theta, c = renderer.optimize_parameters(
     x, y, r, v, theta, c,
     I_target, 
-    opt_conf=opt_conf
+    opt_conf=config["optimization"]
 )
 
-# Generate final masks and render
+# Generate final render
 cached_masks = renderer._batched_soft_rasterize(
     x, y, r, theta,
-    sigma=opt_conf.get("blur_sigma_end", 1.0)
+    sigma=config["optimization"].get("blur_sigma_end", 1.0)
 )
+rendered = renderer.render(cached_masks, v, c)
 
 # Save the final rendered image
-output_path = config["postprocessing"].get("output_folder", "./outputs/")
-output_path = output_path + "output.png"
+output_dir = config["postprocessing"].get("output_folder", "./outputs/")
+os.makedirs(output_dir, exist_ok=True)
+timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+output_path = os.path.join(output_dir, f'output_{timestamp}.png')
 renderer.save_rendered_image(cached_masks, v, c, output_path)
 
-# Create combined visualization with point debug if debug mode was enabled
-if init_conf.get("debug_mode", False):
-    # Ensure outputs directory exists
-    os.makedirs('outputs', exist_ok=True)
-    
-    # Save the final render
-    cv2.imwrite('outputs/final_render.png', cv2.cvtColor(cached_masks.detach().cpu().numpy() * 255, cv2.COLOR_RGB2BGR))
-    
-    # Load point debug visualization
-    point_debug = cv2.imread('outputs/point_debug.png')
-    
-    # Resize if dimensions don't match
-    if point_debug.shape[:2] != cached_masks.shape[:2]:
-        point_debug = cv2.resize(point_debug, (cached_masks.shape[1], cached_masks.shape[0]))
-    
-    # Load original visualization if it exists
-    if os.path.exists('outputs/side_by_side_debug.png'):
-        side_by_side = cv2.imread('outputs/side_by_side_debug.png')
-        
-        # Create a new row with final render
-        final_render_bgr = cv2.cvtColor(cached_masks.detach().cpu().numpy() * 255, cv2.COLOR_RGB2BGR)
-        
-        # Extract original and point debug from side_by_side
-        mid_point = side_by_side.shape[1] // 2
-        original = side_by_side[:, :mid_point]
-        points = side_by_side[:, mid_point:]
-        
-        # Resize final render to match original and points
-        final_render_bgr = cv2.resize(final_render_bgr, (mid_point, side_by_side.shape[0]))
-        
-        # Create three-panel image: original, points, final render
-        combined = np.hstack((original, points, final_render_bgr))
-        
-        timestamp_str = datetime.now().strftime("%m-%d-%H-%M-%S")
-        print(timestamp_str)
-        cv2.imwrite('outputs/combined_visualization_' + timestamp_str + '.png', combined)
-        print("Combined visualization saved to outputs/combined_visualization.png")
-
-filename_only = os.path.splitext(os.path.basename(config['preprocessing']['img_path']))[0]
-output_path=config['postprocessing']['output_folder'] + filename_only + "_N" + str(init_conf.get("N", 1000)) + "_ITER" + str(config["optimization"]["num_iterations"]) \
-    + "_" + str(config['optimization']['sparsifying']['do_sparsify'])[0] + "_SPN" + str(config['optimization']['sparsifying']['sparsified_N']) \
-    + "_" + str(config['initialization']['initializer'])[0:2] + "_" + str(config['optimization']['renderer_type']) + ".pdf"
-config['postprocessing']['output_path'] = output_path
-
-exporter = PDFExporter(svg_loader.svg_path, canvas_size=(W, H), viewbox_size=(svg_loader.get_svg_size()),
-                       alpha_upper_bound=config["optimization"]["alpha_upper_bound"], stroke_width=config["postprocessing"].get("linewidth", 3.0))
+# Export PDF
+pdf_path = os.path.join(output_dir, f'output_{timestamp}.pdf')
+exporter = PDFExporter(
+    svg_loader.svg_path, 
+    canvas_size=(W, H),
+    viewbox_size=svg_loader.get_svg_size(),
+    alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
+    stroke_width=config["postprocessing"].get("linewidth", 3.0)
+)
 
 exporter.export(x, y, r, theta, v, c,
-                output_path=config['postprocessing']['output_path'], 
-                svg_hollow=config['svg'].get('svg_hollow',False))
+                output_path=pdf_path,
+                svg_hollow=config["svg"].get("svg_hollow", False))
 
-end_time = time.time()
-formatted_time = str(timedelta(seconds=int(end_time - start_time)))
-# Output execution time
-print(f"total_cost_time: {formatted_time}")
-
-do_compute_psnr = config['postprocessing'].get('compute_psnr', False)
-# compute PSNR, SSIM, LPIPS between exported PDF and target image
-if do_compute_psnr:
+# Compute metrics if requested
+if config['postprocessing'].get('compute_psnr', False):
     try:
-        from pdf2image import convert_from_path
         import piq
-        # Convert first page of PDF to image at same resolution
-        pages = convert_from_path(config['postprocessing']['output_path'], dpi=300)
-        export_img_pil = pages[0].resize((W, H))
-        export_arr = np.array(export_img_pil).astype(np.float32) / 255.0
-        # If RGBA, drop alpha
-        if export_arr.shape[2] == 4:
-            export_arr = export_arr[..., :3]
-        export_tensor = torch.tensor(export_arr, device=device)
-        # reshape to (1,3,H,W)
-        out = export_tensor.permute(2,0,1).unsqueeze(0)
-        tgt = I_target.permute(2,0,1).unsqueeze(0)
+        # Convert rendered image to tensor format for metrics
+        rendered_t = rendered.permute(2, 0, 1).unsqueeze(0)
+        target_t = I_target.permute(2, 0, 1).unsqueeze(0)
+        
         # Compute metrics
-        psnr_val = piq.psnr(out, tgt, data_range=1.0)
-        ssim_val = piq.ssim(out, tgt, data_range=1.0)
-        vif_val = piq.vif_p(out, tgt, data_range=1.0)
-        lpips_val = piq.LPIPS()(out, tgt)
+        psnr_val = piq.psnr(rendered_t, target_t, data_range=1.0)
+        ssim_val = piq.ssim(rendered_t, target_t, data_range=1.0)
+        vif_val = piq.vif_p(rendered_t, target_t, data_range=1.0)
+        lpips_val = piq.LPIPS()(rendered_t, target_t)
+        
         print(f"PSNR: {psnr_val.item():.2f} dB")
         print(f"SSIM: {ssim_val.item():.4f}")
         print(f"VIF: {vif_val.item():.4f}")
@@ -231,6 +182,10 @@ if do_compute_psnr:
     except ImportError as e:
         print(f"Required library missing: {e}. Cannot compute metrics.")
 
+end_time = time.time()
+formatted_time = str(timedelta(seconds=int(end_time - start_time)))
+print(f"total_cost_time: {formatted_time}")
+
 if "extra_postprocessing" in config:
     # ------------------------------------------------------------------
     # Extra post-processing : Figure-1 (PDF)  ─ original | export | dropout
@@ -238,11 +193,11 @@ if "extra_postprocessing" in config:
     if config.get("extra_postprocessing", {}).get("make_fig1_pdf", False):
 
         #right_pdf = 'outputs/_fig1_right.pdf'
-        if output_path.endswith(".pdf"):
-            extra_output_path = output_path.replace(".pdf", "_extra.pdf")
+        if pdf_path.endswith(".pdf"):
+            extra_output_path = pdf_path.replace(".pdf", "_extra.pdf")
         else:
             raise("Output path must end with .pdf")
-            extra_output_path = output_path + "_extra.pdf"
+            extra_output_path = pdf_path + "_extra.pdf"
 
         exporter.export_dropout_right_third(x, y, r, theta, v, c,
                         output_path=extra_output_path,
