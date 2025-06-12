@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
 from torch import nn
 import torch.utils.checkpoint as cp
+import cv2
 import numpy as np
 from typing import Tuple, Optional, List, Dict, Any
 from tqdm import tqdm
@@ -289,6 +290,71 @@ class VectorRenderer:
             
             return final
 
+    def render_export_mp4(
+        self,
+        cached_masks: torch.Tensor,  # (N, H, W)
+        v: torch.Tensor,             # (N,)
+        c: torch.Tensor,             # (N, 3)
+        video_path: str,
+        fps: int = 60
+    ):
+        """
+        Sequential-over compositing 으로 primitive를 한 장씩 쌓아가며
+        중간 이미지를 MP4로 바로 기록.
+
+        Args:
+        cached_masks: (N, H, W)   – soft masks
+        v           : (N,)        – visibility logits
+        c           : (N, 3)      – RGB logits
+        video_path  : 저장될 MP4 경로
+        fps         : 프레임레이트
+        """
+        # --- 1. 타입/장치 셋업 ---
+        device = cached_masks.device
+        use_fp16 = self.use_fp16
+        context = autocast('cuda') if use_fp16 else nullcontext()
+
+        with context:
+            # 1.1 per-primitive alpha & color
+            v_alpha = self.alpha_upper_bound * torch.sigmoid(v).view(-1, 1, 1)    # (N,1,1)
+            a_all   = v_alpha * cached_masks                                       # (N,H,W)
+            c_eff   = torch.sigmoid(c).view(-1, 1, 1, 3)                           # (N,1,1,3)
+            m_all   = a_all.unsqueeze(-1) * c_eff                                  # (N,H,W,3)
+
+        # --- 2. 비디오 초기화를 위한 첫 프레임 계산 ---
+        N, H, W = a_all.shape
+        # sequential over: comp_m, comp_a 초기값 (맨 아래층 = 첫 프리미티브)
+        comp_m = m_all[0]   # (H,W,3)
+        comp_a = a_all[0]   # (H,W)
+        # 흰 배경과 합성
+        first = comp_m + (1.0 - comp_a).unsqueeze(-1)
+        first_np = (first.clamp(0,1).cpu().numpy() * 255).astype(np.uint8)
+        # OpenCV는 BGR 순서
+        first_bgr = first_np[..., ::-1]
+
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(video_path, fourcc, fps, (W, H))
+
+        # 첫 프레임 기록
+        writer.write(first_bgr)
+
+        # --- 3. 나머지 프리미티브 순차 합성 & 기록 ---
+        for i in range(1, N):
+            with context:
+                # comp = comp + (1 - comp_a) * next
+                comp_m = comp_m + (1.0 - comp_a).unsqueeze(-1) * m_all[i]
+                comp_a = comp_a + (1.0 - comp_a) * a_all[i]
+
+            # 흰 배경과 합성
+            frame = comp_m + (1.0 - comp_a).unsqueeze(-1)
+            frame_np = (frame.clamp(0,1).cpu().numpy() * 255).astype(np.uint8)
+            frame_bgr = frame_np[..., ::-1]
+            writer.write(frame_bgr)
+
+        writer.release()
+        print(f"Saved MP4 video to {video_path}")
+
+        return frame  # Return the last frame for reference
     
     def _stream_render(self,
                     x: torch.Tensor,
