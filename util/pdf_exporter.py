@@ -126,12 +126,12 @@ class PDFExporter:
             root.append(g)
 
         # Write combined SVG to temp and convert to PDF
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.svg')
+        svg_path = output_path.replace(".pdf", ".svg")
         tree = ET.ElementTree(root)
-        tree.write(tmp.name, encoding='utf-8', xml_declaration=True)
-        svg2pdf(url=tmp.name, write_to=output_path)
-        tmp.close()
-        os.remove(tmp.name)
+        tree.write(svg_path, encoding='utf-8', xml_declaration=True)
+        svg2pdf(url=svg_path, write_to=output_path)
+        # tmp.close()
+        # os.remove(tmp.name)
 
     def export_dropout_right_third(self,
                                    x: torch.Tensor,
