@@ -54,7 +54,7 @@ class PDFExporter:
                     return elem
         return None
 
-    def export(self,
+    def export_svg(self,
                x: torch.Tensor,
                y: torch.Tensor,
                r: torch.Tensor,
@@ -132,6 +132,123 @@ class PDFExporter:
         svg2pdf(url=svg_path, write_to=output_path)
         # tmp.close()
         # os.remove(tmp.name)
+
+    def export(self,
+            x: torch.Tensor,
+            y: torch.Tensor,
+            r: torch.Tensor,
+            theta: torch.Tensor,
+            v: torch.Tensor,
+            c: torch.Tensor,
+            output_path: str,
+            svg_hollow: bool = False):
+        
+        output_svg_path = output_path.replace(".pdf", ".svg")
+        output_html_path = output_path.replace(".pdf", ".html")
+        # 1. 텐서 → numpy
+        x_np = x.detach().cpu().numpy()
+        y_np = y.detach().cpu().numpy()
+        r_np = r.detach().cpu().numpy()
+        theta_np = theta.detach().cpu().numpy()
+        v_np = v.detach().cpu().numpy()
+        c_np = torch.sigmoid(c).detach().cpu().numpy()
+        alpha_vals = self.alpha_upper_bound * (1 / (1 + np.exp(-v_np)))
+
+        N = len(x_np)
+        p = len(self.svg_paths)
+
+        # 2. SVG 루트 생성
+        root = ET.Element('svg', {
+            'xmlns': SVG_NS,
+            'id': 'svgsplat1',
+            'overflow': 'visible',
+            'style': 'overflow: visible;',
+            'width': str(self.canvas_w),
+            'height': str(self.canvas_h),
+            'viewBox': f"{-self.canvas_w/2} {-self.canvas_h/2} {self.canvas_w} {self.canvas_h}"
+        })
+
+        # 3. wrapper <g> 추가
+        wrapper_g = ET.Element('g', {
+            'id': 'wrapper',
+            'transform': 'translate(50, 50)'
+        })
+
+        for i in reversed(range(N)):
+            idx = i % p
+            tree = ET.parse(self.svg_paths[idx])
+            template_root = tree.getroot()
+            self._remove_styles(template_root)
+            children = list(template_root)
+
+            theta_deg = np.degrees(theta_np[i])
+            transform = (
+                f"translate({x_np[i]-self.canvas_w/2},{y_np[i]-self.canvas_h/2}) "
+                f"rotate({theta_deg}) "
+                f"scale({r_np[i]}) "
+                f"scale({self.norm_scale}) "
+                f"translate({-self.view_w/2},{-self.view_h/2})"
+            )
+            g = ET.Element('g', {'transform': transform})
+
+            r_color, g_color, b_color = c_np[i]
+            r_int = int(np.clip(r_color * 255, 0, 255))
+            g_int = int(np.clip(g_color * 255, 0, 255))
+            b_int = int(np.clip(b_color * 255, 0, 255))
+            if svg_hollow:
+                g.attrib.update({
+                    'stroke': f'rgb({r_int},{g_int},{b_int})',
+                    'stroke-opacity': str(alpha_vals[i]),
+                    'stroke-width': str(self.stroke_width),
+                    'fill': f'rgb({r_int},{g_int},{b_int})',
+                    'fill-opacity': '0'
+                })
+            else:
+                g.attrib.update({
+                    'fill': f'rgb({r_int},{g_int},{b_int})',
+                    'fill-opacity': str(alpha_vals[i])
+                })
+
+            for child in children:
+                g.append(deepcopy(child))
+            wrapper_g.append(g)
+
+        root.append(wrapper_g)
+
+        # 4. SVG 파일로 저장
+        tree = ET.ElementTree(root)
+        tree.write(output_svg_path, encoding='utf-8', xml_declaration=True)
+
+        # 5. SVG를 문자열로 읽기 (HTML로 감싸기 위해)
+        with open(output_svg_path, 'r', encoding='utf-8') as f:
+            svg_content = f.read()
+
+        # (만약에 wrapper_g가 <svg> 내부에 없다면, svg_content = svg_content.replace('<svg', '<svg ...><g id="wrapper"...>') 등으로 직접 string post-process 가능)
+
+        # 6. HTML 헤더/푸터 정의
+        html_head = """<!DOCTYPE html>
+                    <html lang="en">
+                    <head>
+                    <meta charset="UTF-8">
+                    <title>Seongmin Hong</title>
+                    <link rel="stylesheet" href="style.css">
+                    </head>
+                    <body>
+                    """
+        html_tail = """
+                    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+                    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/Draggable.min.js"></script>
+                    <script src="main.js"></script>
+                    </body>
+                    </html>
+                    """
+
+        # 7. HTML로 저장
+        with open(output_html_path, 'w', encoding='utf-8') as f:
+            f.write(html_head)
+            f.write(svg_content)
+            f.write(html_tail)
+
 
     def export_dropout_right_third(self,
                                    x: torch.Tensor,
