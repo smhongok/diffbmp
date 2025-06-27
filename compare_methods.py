@@ -465,7 +465,8 @@ def process_combination(args):
     
     exporter.export(x, y, r, theta, v, c,
                 output_path=pdf_path,
-                svg_hollow=config["svg"].get("svg_hollow", False))
+                svg_hollow=config["svg"].get("svg_hollow", False),
+                html_extra_path = "output_webpage/src/index.html")
     
     # exporter.export_with_pngs(x,y,r,theta,v,c,
     #             output_folder=folder_path,
@@ -511,6 +512,9 @@ def run_comparison(initializers_configs, renderer_names, config, I_target, svg_l
         elif init_name == "MultiLevelInitializer":
             from core.initializer.multilevel_initializer import MultiLevelInitializer
             initializer = MultiLevelInitializer(init_config)
+        elif init_name == "SequentialInitializer":
+            from core.initializer.sequnetial_initializater import SequentialInitializer
+            initializer = SequentialInitializer(init_config)
         else:
             continue  # Skip unsupported initializer
         
@@ -722,10 +726,9 @@ def main():
         font_parser = FontParser(config["svg"]["svg_file"])
         texts = config["svg"]["text"]
         if isinstance(texts, list):
-            svg_paths = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
+            svg_path = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
         else:
-            svg_paths = str(font_parser.text_to_svg(texts, mode="opt-path"))
-        svg_path = svg_paths
+            svg_path = str(font_parser.text_to_svg(texts, mode="opt-path"))
         del font_parser
     else:
         svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
