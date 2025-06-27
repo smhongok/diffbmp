@@ -7,6 +7,7 @@ import torch
 import glob
 import cv2
 from copy import deepcopy
+import shutil
 
 # Register default namespace so it exports without prefixes
 ET.register_namespace('', 'http://www.w3.org/2000/svg')
@@ -141,7 +142,8 @@ class PDFExporter:
             v: torch.Tensor,
             c: torch.Tensor,
             output_path: str,
-            svg_hollow: bool = False):
+            svg_hollow: bool = False,
+            html_extra_path = "output_webpage/src/index.html"):
         
         output_svg_path = output_path.replace(".pdf", ".svg")
         output_html_path = output_path.replace(".pdf", ".html")
@@ -248,6 +250,9 @@ class PDFExporter:
             f.write(html_head)
             f.write(svg_content)
             f.write(html_tail)
+
+        # 8. 원하는 위치로 복사 (덮어쓰기)
+        shutil.copyfile(output_html_path, html_extra_path)
 
 
     def export_dropout_right_third(self,

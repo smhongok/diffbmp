@@ -465,7 +465,8 @@ def process_combination(args):
     
     exporter.export(x, y, r, theta, v, c,
                 output_path=pdf_path,
-                svg_hollow=config["svg"].get("svg_hollow", False))
+                svg_hollow=config["svg"].get("svg_hollow", False),
+                html_extra_path = "output_webpage/src/index.html")
     
     # exporter.export_with_pngs(x,y,r,theta,v,c,
     #             output_folder=folder_path,
