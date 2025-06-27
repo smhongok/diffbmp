@@ -11,6 +11,8 @@ main_rgb.py
 codes_legacy/*
 extra_outputs/*
 assets/svg/*
+output_webpage/node_modules/
+output_webpage/src/index.html
 !assets/svg/fire.svg
 !assets/svg/fire2.svg
 
