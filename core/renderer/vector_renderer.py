@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
 from torch import nn
 import torch.utils.checkpoint as cp
+import cv2
 import numpy as np
 from typing import Tuple, Optional, List, Dict, Any
 from tqdm import tqdm
@@ -87,6 +88,9 @@ class VectorRenderer:
         """
         Generate soft masks for each primitive, processing in smaller chunks to save memory.
 
+        Now supports a sequence of p different primitives in self.S of shape (p, H, W),
+        assigning them periodically to the B instances.
+
         Args:
             x, y:       [N] position coordinates for N shapes
             r:          [N] scales
@@ -95,72 +99,60 @@ class VectorRenderer:
         Returns:
             masks:     [N, H, W]  (one soft mask per shape)
         """
-        # Choose context manager based on precision mode
         context = autocast('cuda') if self.use_fp16 else nullcontext()
-        
         with context:
             B = len(x)
             _, H, W = self.X.shape
-            
-            # Get target dtype based on use_fp16 flag
             target_dtype = torch.float16 if self.use_fp16 else torch.float32
-            
-            # Apply Gaussian blur if needed
+
+            # Prepare the bitmap(s): either single template or a sequence of p templates
             if sigma > 0.0:
-                bmp = self.S.unsqueeze(0)
+                bmp = self.S.unsqueeze(0)       # -> [1, p, H, W] or [1, H, W]
                 bmp = gaussian_blur(bmp, sigma)
                 bmp_image = bmp.squeeze(0).to(dtype=target_dtype).contiguous()
             else:
                 bmp_image = self.S.to(dtype=target_dtype)
-            
-            # Expand parameters to match grid dimensions and convert to appropriate precision
+
+            # Expand coordinates and parameters
             X_exp = self.X.expand(B, H, W)
             Y_exp = self.Y.expand(B, H, W)
             x_exp = x.view(B, 1, 1).expand(B, H, W)
             y_exp = y.view(B, 1, 1).expand(B, H, W)
             r_exp = r.view(B, 1, 1).expand(B, H, W)
-            
-            # Position normalization and rotation
+
+            # Normalize and rotate positions
             pos = torch.stack([X_exp - x_exp, Y_exp - y_exp], dim=1) / r_exp.unsqueeze(1)
             cos_t = torch.cos(theta)
             sin_t = torch.sin(theta)
             R_inv = torch.zeros(B, 2, 2, device=self.device)
-            R_inv[:, 0, 0] = cos_t
-            R_inv[:, 0, 1] = sin_t
-            R_inv[:, 1, 0] = -sin_t
-            R_inv[:, 1, 1] = cos_t
+            R_inv[:, 0, 0] = cos_t; R_inv[:, 0, 1] = sin_t
+            R_inv[:, 1, 0] = -sin_t; R_inv[:, 1, 1] = cos_t
             uv = torch.einsum('bij,bjhw->bihw', R_inv, pos)
-            
-            # Prepare for grid sampling
             grid = uv.permute(0, 2, 3, 1)  # (B, H, W, 2)
-            bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, -1, -1, -1).contiguous() 
-            
-            # Use gradient checkpointing if enabled
-            if self.use_checkpointing:
-                def grid_sample_func(x, grid):
-                    return F.grid_sample(
-                        x,
-                        grid,
-                        mode='bilinear',
-                        padding_mode='zeros',
-                        align_corners=True
-                    )
 
-                sampled = torch.utils.checkpoint.checkpoint(
-                    grid_sample_func,
-                    bmp_exp,
-                    grid,
-                    use_reentrant=False
-                )
+            # Build bmp_exp: one bitmap per instance, cycling through p if provided
+            if bmp_image.dim() == 2:
+                # single primitive template [H, W]
+                bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(B, 1, -1, -1).contiguous()
+            elif bmp_image.dim() == 3:
+                # sequence of p templates [p, H, W]
+                p = bmp_image.size(0)
+                # periodic assignment
+                idx = torch.arange(B, device=self.device, dtype=torch.long) % p  # [B]
+                bmp_sel = bmp_image[idx, :, :]            # [B, H, W]
+                bmp_exp = bmp_sel.unsqueeze(1).contiguous()  # [B, 1, H, W]
             else:
-                sampled = F.grid_sample(
-                    bmp_exp,
-                    grid,
-                    mode='bilinear',
-                    padding_mode='zeros',
-                    align_corners=True
-                )
-            
+                raise ValueError(f"Unsupported self.S shape: {bmp_image.shape}")
+
+            # Sample masks via grid_sample (with optional checkpointing)
+            if self.use_checkpointing:
+                def grid_fn(img, g):
+                    return F.grid_sample(img, g, mode='bilinear', padding_mode='zeros', align_corners=True)
+                sampled = cp.checkpoint(grid_fn, bmp_exp, grid, use_reentrant=False)
+            else:
+                sampled = F.grid_sample(bmp_exp, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
+
+            # Return single-channel masks
             return sampled.squeeze(1)  # (B, H, W)
     
     def _tree_over(self, m: torch.Tensor, a: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -298,6 +290,71 @@ class VectorRenderer:
             
             return final
 
+    def render_export_mp4(
+        self,
+        cached_masks: torch.Tensor,  # (N, H, W)
+        v: torch.Tensor,             # (N,)
+        c: torch.Tensor,             # (N, 3)
+        video_path: str,
+        fps: int = 60
+    ):
+        """
+        Sequential-over compositing 으로 primitive를 한 장씩 쌓아가며
+        중간 이미지를 MP4로 바로 기록.
+
+        Args:
+        cached_masks: (N, H, W)   – soft masks
+        v           : (N,)        – visibility logits
+        c           : (N, 3)      – RGB logits
+        video_path  : 저장될 MP4 경로
+        fps         : 프레임레이트
+        """
+        # --- 1. 타입/장치 셋업 ---
+        device = cached_masks.device
+        use_fp16 = self.use_fp16
+        context = autocast('cuda') if use_fp16 else nullcontext()
+
+        with context:
+            # 1.1 per-primitive alpha & color
+            v_alpha = self.alpha_upper_bound * torch.sigmoid(v).view(-1, 1, 1)    # (N,1,1)
+            a_all   = v_alpha * cached_masks                                       # (N,H,W)
+            c_eff   = torch.sigmoid(c).view(-1, 1, 1, 3)                           # (N,1,1,3)
+            m_all   = a_all.unsqueeze(-1) * c_eff                                  # (N,H,W,3)
+
+        # --- 2. 비디오 초기화를 위한 첫 프레임 계산 ---
+        N, H, W = a_all.shape
+        # sequential over: comp_m, comp_a 초기값 (맨 아래층 = 첫 프리미티브)
+        comp_m = m_all[0]   # (H,W,3)
+        comp_a = a_all[0]   # (H,W)
+        # 흰 배경과 합성
+        first = comp_m + (1.0 - comp_a).unsqueeze(-1)
+        first_np = (first.clamp(0,1).cpu().numpy() * 255).astype(np.uint8)
+        # OpenCV는 BGR 순서
+        first_bgr = first_np[..., ::-1]
+
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(video_path, fourcc, fps, (W, H))
+
+        # 첫 프레임 기록
+        writer.write(first_bgr)
+
+        # --- 3. 나머지 프리미티브 순차 합성 & 기록 ---
+        for i in range(1, N):
+            with context:
+                # comp = comp + (1 - comp_a) * next
+                comp_m = comp_m + (1.0 - comp_a).unsqueeze(-1) * m_all[i]
+                comp_a = comp_a + (1.0 - comp_a) * a_all[i]
+
+            # 흰 배경과 합성
+            frame = comp_m + (1.0 - comp_a).unsqueeze(-1)
+            frame_np = (frame.clamp(0,1).cpu().numpy() * 255).astype(np.uint8)
+            frame_bgr = frame_np[..., ::-1]
+            writer.write(frame_bgr)
+
+        writer.release()
+        print(f"Saved MP4 video to {video_path}")
+
+        return frame  # Return the last frame for reference
     
     def _stream_render(self,
                     x: torch.Tensor,

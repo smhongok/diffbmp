@@ -385,6 +385,17 @@ def process_combination(args):
     # End timing after optimization completes
     runtime = time.time() - start_time
     
+    # Export PDF
+    output_dir = config["postprocessing"].get("output_folder", "./outputs/")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    pdf_path = os.path.join(output_dir, 
+                        f"{init.__class__.__name__}_{renderer_name}_{timestamp}.pdf")
+    folder_path = os.path.join(output_dir,
+                        f"{init.__class__.__name__}_{renderer_name}_{timestamp}")
+    os.makedirs(folder_path, exist_ok=True)
+
     # Generate final render (not included in timing)
     if use_fp16:
         with torch.no_grad():  # Disable gradient computation for final render
@@ -395,20 +406,20 @@ def process_combination(args):
             if stream_render:
                 rendered = renderer._stream_render(
                     x, y, r, theta, v, c,
-                    sigma=opt_conf.get("blur_sigma_end", 1.0)
+                    sigma=0.0
                 )
             else:
                 cached_masks = renderer._batched_soft_rasterize(
                     x, y, r, theta,
-                    sigma=opt_conf.get("blur_sigma_end", 1.0)
+                    sigma=0.0
                 )
-                rendered = renderer.render(cached_masks, v, c)
+                rendered = renderer.render_export_mp4(cached_masks, v, c, video_path=folder_path+".mp4")
                 del cached_masks
     else:
         with torch.no_grad():  # Disable gradient computation for final render
             cached_masks = renderer._batched_soft_rasterize(
                 x, y, r, theta,
-                sigma=config['optimization'].get("blur_sigma_end", 1.0)
+                sigma=0.
             )
             rendered = renderer.render(cached_masks, v, c)
             del cached_masks
@@ -442,15 +453,7 @@ def process_combination(args):
     
     # Clear CPU tensors
     del I_target_cpu
-    
-    # Export PDF
-    output_dir = config["postprocessing"].get("output_folder", "./outputs/")
-    os.makedirs(output_dir, exist_ok=True)
-    
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    pdf_path = os.path.join(output_dir, 
-                        f"{init.__class__.__name__}_{renderer_name}_{timestamp}.pdf")
-    
+
     H, W = config['canvas_size']
     exporter = PDFExporter(
         svg_loader.svg_path, 
@@ -463,6 +466,10 @@ def process_combination(args):
     exporter.export(x, y, r, theta, v, c,
                 output_path=pdf_path,
                 svg_hollow=config["svg"].get("svg_hollow", False))
+    
+    # exporter.export_with_pngs(x,y,r,theta,v,c,
+    #             output_folder=folder_path,
+    #             svg_hollow=config["svg"].get("svg_hollow", False))
     
     # Copy parameters to CPU before returning
     params_cpu = (
@@ -712,8 +719,13 @@ def main():
         svg_path = img_converter.extract_filled_outlines(config["svg"].get("svg_file"), threshold=100, min_area_ratio=0.000001)
         del img_converter
     elif (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
-        font_parser = FontParser(config["svg"].get("svg_file"))
-        svg_path = str(font_parser.text_to_svg(config["svg"].get("text"), mode="opt-path"))
+        font_parser = FontParser(config["svg"]["svg_file"])
+        texts = config["svg"]["text"]
+        if isinstance(texts, list):
+            svg_paths = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
+        else:
+            svg_paths = str(font_parser.text_to_svg(texts, mode="opt-path"))
+        svg_path = svg_paths
         del font_parser
     else:
         svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")

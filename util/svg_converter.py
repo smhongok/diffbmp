@@ -112,7 +112,7 @@ class FontParser:
             raise ValueError(f"Invalid mode: {mode}")
         
     def generate_path_optimized(self, text: str, font_size: float, position: tuple, margin: int) -> Path:
-        pen = SVGPathPen(self.glyph_set)
+        # pen = SVGPathPen(self.glyph_set)
         x, y = position
         scale = font_size / self.upem
         hhea = self.font['hhea']
@@ -133,9 +133,15 @@ class FontParser:
                 x += font_size * 0.6
                 continue
             glyph = self.glyph_set[glyph_name]
-            pen.path = ''
+            # pen.path = ''
+            # glyph.draw(pen)
+            # d = pen.getCommands()
+            # ───────────────────────────────────────────────
+            # 루프마다 새로운 pen 생성 → 이전 경로 누적 방지
+            pen = SVGPathPen(self.glyph_set)
             glyph.draw(pen)
             d = pen.getCommands()
+            # ───────────────────────────────────────────────
             dwg.add(
                 dwg.path(
                     d=d,
@@ -143,6 +149,7 @@ class FontParser:
                     transform=f"translate({x},{baseline}) scale({scale}, {-scale})"
                 )
             )
+            
             x += glyph.width * scale
 
         # Save and then minify
