@@ -174,12 +174,12 @@ def process_combination(args):
             if stream_render:
                 rendered = renderer._stream_render(
                     x, y, r, theta, v, c,
-                    sigma=opt_conf.get("blur_sigma_end", 1.0)
+                    sigma=0.0
                 )
             else:
                 cached_masks = renderer._batched_soft_rasterize(
                     x, y, r, theta,
-                    sigma=opt_conf.get("blur_sigma_end", 1.0)
+                    sigma=0.0
                 )
                 rendered = renderer.render(cached_masks, v, c)
                 del cached_masks
@@ -187,7 +187,7 @@ def process_combination(args):
         with torch.no_grad():  # Disable gradient computation for final render
             cached_masks = renderer._batched_soft_rasterize(
                 x, y, r, theta,
-                sigma=config['optimization'].get("blur_sigma_end", 1.0)
+                sigma=0.0
             )
             rendered = renderer.render(cached_masks, v, c)
             del cached_masks
