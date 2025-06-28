@@ -1,12 +1,9 @@
 {
     "preprocessing": {
-        "final_width": [256],
+        "final_width": 256,
         "trim": false,
         "FM_halftone": false,
         "transform": "none",
-        "img_path": [
-            "images/artwork/seurat.jpg"
-        ],
         "bg_threshold": 250,
         "do_equalize": false,
         "do_local_contrast": false,
@@ -25,13 +22,13 @@
     },
     "svg": {
         "svg_file": "arial.ttf",
-        "text": "S",
+        "text": ["H","B","D"],
         "svg_hollow": false,
         "output_width": 128
     },
     "initialization": {
-        "initializer": "structure_aware",
-        "N": [3000],
+        "initializer": "random",
+        "N": 3000,
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
@@ -48,7 +45,7 @@
     },
     "optimization": {
         "use_fp16": true,
-        "renderer_type": "mse",
+        "renderer_type": "lpips",
         "num_iterations": 100,
         "batch_optimization": false,
         "batch_size": 256,
@@ -85,7 +82,6 @@
         "save_epoch": false
     },
     "postprocessing": {
-        "output_folder": "outputs/",
         "linewidth": 3.0,
         "compute_psnr": true
     }

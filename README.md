@@ -13,6 +13,12 @@ Install dependencies using pip:
 pip install -r requirements.txt
 ```
 
+Install Poppler
+
+```
+sudo apt-get install poppler-utils
+```
+
 ## Usage
 
 ### Running the Main Script
@@ -28,7 +34,7 @@ python main.py --config configs/default.json
 To compare different circle-art methods:
 
 ```
-python compare_methods.py
+python compare_methods.py --config configs/default.json
 ```
 
 ### Running Evaluations

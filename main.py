@@ -15,10 +15,8 @@ import argparse
 import cv2
 from datetime import datetime
 from core.renderer.mse_renderer import MseRenderer
-from core.renderer.lpips_renderer import LpipsRenderer
-from core.renderer.mix_renderer import MixRenderer
 from util.svg_loader import SVGLoader
-from util.svg_converter import FontParser
+from util.svg_converter import FontParser, ImageToSVG
 from core.initializer.svgsplat_initializater import StructureAwareInitializer
 from core.initializer.random_initializater import RandomInitializer
 
@@ -32,28 +30,43 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # Argument parser setup
 parser = argparse.ArgumentParser(description="Process images with Structure-Aware Graphics Synthesis")
 parser.add_argument('--config', type=str, required=True, help='Path to the config file')
-parser.add_argument('--initializer', type=str, default='StructureAwareInitializer', help='StructureAwareInitializer, RandomInitializer, MultiLevelInitializer, ...')
-parser.add_argument('--renderer', type=str, default='MseRenderer', help='MseRenderer, ...')
-parser.add_argument('--svg_text', type=str, default='', help='G, B, M, ...')
-parser.add_argument('--svg_path', type=str, default='', help='LOVE.svg, ...')
-parser.add_argument('--img_path', type=str, default='', help='images/HighFreq/0831.png, images/LowFreq/0831.png, ...')
 args = parser.parse_args()
+config_path = args.config
 
 # Load configuration
-with open(args.config, "r", encoding="utf-8") as f:
+with open(config_path, "r", encoding="utf-8") as f:
     config = json.load(f)
-
-# Set random seed
+# After import or after loading config
 set_global_seed(config.get("seed", 42))
+
+# Force list attributes to single item
+if type(config["preprocessing"]["img_path"]) is list:
+    config["preprocessing"]["img_path"] = config["preprocessing"]["img_path"][0]
+    print("Use only one file to inference")
+if type(config["preprocessing"]["final_width"]) is list:
+    config["preprocessing"]["final_width"] = config["preprocessing"]["final_width"][0]
+    print("Use only one final_width to inference")
+if type(config["initialization"]["N"]) is list: 
+    config["initialization"]["N"] = config["initialization"]["N"][0]
+    print("Use only one N to inference")
 
 # Initialize preprocessor
 pp_conf = config["preprocessing"]
+opt_conf = config["optimization"]
+use_fp16 = opt_conf.get("use_fp16", False)  # Default to False for CPU compatibility
+
 preprocessor = Preprocessor(
     final_width=pp_conf.get("final_width", 128),
     trim=pp_conf.get("trim", False),
     FM_halftone=pp_conf.get("FM_halftone", False),
     transform_mode=pp_conf.get("transform", "none"),
 )
+
+# Load target color image
+I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
+I_target = torch.tensor(I_target, device=device)  # (H, W, 3)
+H = preprocessor.final_height
+W = preprocessor.final_width
 
 # Handle SVG file loading
 svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
@@ -75,67 +88,65 @@ elif (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
 else:
     svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
 
-print(f"SVG path: {svg_path}")
-
 # Load SVG file
 svg_loader = SVGLoader(
     svg_path=svg_path,
     output_width=config["svg"].get("output_width", 128),
     device=device
 )
-classify_svg = svg_loader.classify_svg()
-print(f"SVG is classified as: {classify_svg}")
 
-# Load and preprocess target image
-I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
-I_target = torch.tensor(I_target, device=device)
+# Initialize renderer based on loss type
+renderer_type = opt_conf.get("renderer_type", "mse")
+renderer_class = {
+    "mse": MseRenderer,
+}.get(renderer_type.lower())
+
+if renderer_class is None:
+    raise ValueError(f"Invalid renderer type: {renderer_type}")
+
+bmp_tensor = svg_loader.load_alpha_bitmap()
+if use_fp16:
+    bmp_tensor = bmp_tensor.to(dtype=torch.float16)
+else:
+    bmp_tensor = bmp_tensor.to(dtype=torch.float32)
+    
 H = preprocessor.final_height
 W = preprocessor.final_width
-config['canvas_size'] = (H, W)
 
-# Create initializer
-if args.initializer == "StructureAwareInitializer":
-    from core.initializer.svgsplat_initializater import StructureAwareInitializer
-    initializer = StructureAwareInitializer(config["initialization"])
-elif args.initializer == "RandomInitializer":
-    from core.initializer.random_initializater import RandomInitializer
-    initializer = RandomInitializer(config["initialization"])
-elif args.initializer == "MultiLevelInitializer":
-    from core.initializer.multilevel_initializer import MultiLevelInitializer
-    initializer = MultiLevelInitializer(config["initialization"])
-else:
-    raise ValueError(f"Unknown initializer: {args.initializer}")
-
-# Create renderer
-if args.renderer == "MseRenderer":
-    from core.renderer.mse_renderer import MseRenderer
-    renderer = MseRenderer((H, W), S=svg_loader.load_alpha_bitmap(), 
+# Create renderer only when needed - defer instantiation
+renderer = renderer_class((H, W), S=bmp_tensor, 
                         alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
                         device=device,
-                        use_fp16=config["optimization"].get("use_fp16", False),
+                        use_fp16=use_fp16,
                         output_path=config["postprocessing"].get("output_folder", "./outputs/"))
-else:
-    raise ValueError(f"Unknown renderer: {args.renderer}")
+print(f"Using {renderer_class.__name__} for optimization")
 
-# Generate initialization parameters
-if "LevelInitializer" in args.initializer:
-    params = initializer.initialize(I_tar=I_target, renderer=renderer, opt_conf=config["optimization"])
+# Initialize parameters
+print("---Initializing vector graphics with Structure-Aware method---")
+init_conf = config["initialization"]
+if init_conf.get("initializer", "none") == "structure_aware":
+    initializer = StructureAwareInitializer(init_conf)
+elif init_conf.get("initializer", "none") == "random":
+    initializer = RandomInitializer(init_conf)
 else:
-    params = initializer.initialize(I_target)
+    raise ValueError(f"Invalid initializer: {init_conf.get('initializer', 'none')}")
 
-x, y, r, v, theta, c = params
+# Initialize parameters
+x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target)
+
+bmp_image_tensor = svg_loader.load_alpha_bitmap()
 
 # Optimize parameters
 x, y, r, v, theta, c = renderer.optimize_parameters(
     x, y, r, v, theta, c,
     I_target, 
-    opt_conf=config["optimization"]
+    opt_conf=opt_conf
 )
 
-# Generate final render
+# Generate final masks and render
 cached_masks = renderer._batched_soft_rasterize(
     x, y, r, theta,
-    sigma=config["optimization"].get("blur_sigma_end", 1.0)
+    sigma=0
 )
 rendered = renderer.render(cached_masks, v, c)
 
@@ -158,7 +169,13 @@ exporter = PDFExporter(
 
 exporter.export(x, y, r, theta, v, c,
                 output_path=pdf_path,
-                svg_hollow=config["svg"].get("svg_hollow", False))
+                svg_hollow=config["svg"].get("svg_hollow", False),
+                html_extra_path = "output_webpage/src/index.html",
+                export_pdf=True)
+
+with torch.no_grad():
+    video_path = os.path.join(output_dir, f'output_{timestamp}.mp4')
+    renderer.render_export_mp4(cached_masks, v, c, video_path=video_path)
 
 # Compute metrics if requested
 if config['postprocessing'].get('compute_psnr', False):
@@ -185,21 +202,3 @@ if config['postprocessing'].get('compute_psnr', False):
 end_time = time.time()
 formatted_time = str(timedelta(seconds=int(end_time - start_time)))
 print(f"total_cost_time: {formatted_time}")
-
-if "extra_postprocessing" in config:
-    # ------------------------------------------------------------------
-    # Extra post-processing : Figure-1 (PDF)  ─ original | export | dropout
-    # ------------------------------------------------------------------
-    if config.get("extra_postprocessing", {}).get("make_fig1_pdf", False):
-
-        #right_pdf = 'outputs/_fig1_right.pdf'
-        if pdf_path.endswith(".pdf"):
-            extra_output_path = pdf_path.replace(".pdf", "_extra.pdf")
-        else:
-            raise("Output path must end with .pdf")
-            extra_output_path = pdf_path + "_extra.pdf"
-
-        exporter.export_dropout_right_third(x, y, r, theta, v, c,
-                        output_path=extra_output_path,
-                        svg_hollow=config['svg'].get('svg_hollow', False))
-

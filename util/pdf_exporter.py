@@ -143,7 +143,8 @@ class PDFExporter:
             c: torch.Tensor,
             output_path: str,
             svg_hollow: bool = False,
-            html_extra_path = "output_webpage/src/index.html"):
+            html_extra_path = "output_webpage/src/index.html",
+            export_pdf: bool = False):
         
         output_svg_path = output_path.replace(".pdf", ".svg")
         output_html_path = output_path.replace(".pdf", ".html")
@@ -160,10 +161,8 @@ class PDFExporter:
         p = len(self.svg_paths)
 
         # 2. SVG 루트 생성
-        root = ET.Element('svg', {
-            'xmlns': SVG_NS,
+        root = ET.Element(f'{{{SVG_NS}}}svg', {
             'id': 'svgsplat1',
-            'overflow': 'visible',
             'style': 'overflow: visible;',
             'width': str(self.canvas_w),
             'height': str(self.canvas_h),
@@ -171,9 +170,9 @@ class PDFExporter:
         })
 
         # 3. wrapper <g> 추가
-        wrapper_g = ET.Element('g', {
+        wrapper_g = ET.Element(f'g', {
             'id': 'wrapper',
-            'transform': 'translate(50, 50)'
+            #'transform': 'translate(50, 50)'
         })
 
         for i in reversed(range(N)):
@@ -191,7 +190,7 @@ class PDFExporter:
                 f"scale({self.norm_scale}) "
                 f"translate({-self.view_w/2},{-self.view_h/2})"
             )
-            g = ET.Element('g', {'transform': transform})
+            g = ET.Element(f'g', {'transform': transform})
 
             r_color, g_color, b_color = c_np[i]
             r_int = int(np.clip(r_color * 255, 0, 255))
@@ -254,6 +253,12 @@ class PDFExporter:
         # 8. 원하는 위치로 복사 (덮어쓰기)
         shutil.copyfile(output_html_path, html_extra_path)
 
+        if export_pdf:
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.svg')
+            tree.write(tmp.name)
+            svg2pdf(url=tmp.name, write_to=output_path)
+            tmp.close()
+            os.remove(tmp.name)
 
     def export_dropout_right_third(self,
                                    x: torch.Tensor,
