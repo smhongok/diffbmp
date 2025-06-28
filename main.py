@@ -146,7 +146,7 @@ x, y, r, v, theta, c = renderer.optimize_parameters(
 # Generate final masks and render
 cached_masks = renderer._batched_soft_rasterize(
     x, y, r, theta,
-    sigma=opt_conf.get("blur_sigma_end", 1.0)
+    sigma=0
 )
 rendered = renderer.render(cached_masks, v, c)
 
@@ -170,7 +170,12 @@ exporter = PDFExporter(
 exporter.export(x, y, r, theta, v, c,
                 output_path=pdf_path,
                 svg_hollow=config["svg"].get("svg_hollow", False),
-                html_extra_path = "output_webpage/src/index.html")
+                html_extra_path = "output_webpage/src/index.html",
+                export_pdf=True)
+
+with torch.no_grad():
+    video_path = os.path.join(output_dir, f'output_{timestamp}.mp4')
+    renderer.render_export_mp4(cached_masks, v, c, video_path=video_path)
 
 # Compute metrics if requested
 if config['postprocessing'].get('compute_psnr', False):
@@ -197,21 +202,3 @@ if config['postprocessing'].get('compute_psnr', False):
 end_time = time.time()
 formatted_time = str(timedelta(seconds=int(end_time - start_time)))
 print(f"total_cost_time: {formatted_time}")
-
-if "extra_postprocessing" in config:
-    # ------------------------------------------------------------------
-    # Extra post-processing : Figure-1 (PDF)  ─ original | export | dropout
-    # ------------------------------------------------------------------
-    if config.get("extra_postprocessing", {}).get("make_fig1_pdf", False):
-
-        #right_pdf = 'outputs/_fig1_right.pdf'
-        if pdf_path.endswith(".pdf"):
-            extra_output_path = pdf_path.replace(".pdf", "_extra.pdf")
-        else:
-            raise("Output path must end with .pdf")
-            extra_output_path = pdf_path + "_extra.pdf"
-
-        exporter.export_dropout_right_third(x, y, r, theta, v, c,
-                        output_path=extra_output_path,
-                        svg_hollow=config['svg'].get('svg_hollow', False))
-
