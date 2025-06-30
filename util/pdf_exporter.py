@@ -172,7 +172,7 @@ class PDFExporter:
         # 3. wrapper <g> 추가
         wrapper_g = ET.Element(f'g', {
             'id': 'wrapper',
-            #'transform': 'translate(50, 50)'
+            'transform': 'translate(50, 50)'
         })
 
         for i in reversed(range(N)):
@@ -227,10 +227,11 @@ class PDFExporter:
         # (만약에 wrapper_g가 <svg> 내부에 없다면, svg_content = svg_content.replace('<svg', '<svg ...><g id="wrapper"...>') 등으로 직접 string post-process 가능)
 
         # 6. HTML 헤더/푸터 정의
-        html_head = """<!DOCTYPE html>
+        html_head = f"""<!DOCTYPE html>
                     <html lang="en">
                     <head>
                     <meta charset="UTF-8">
+                    <meta name="numClass" content="{self.svg_paths.__len__()}">
                     <title>Seongmin Hong</title>
                     <link rel="stylesheet" href="style.css">
                     </head>
