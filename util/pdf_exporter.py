@@ -145,9 +145,12 @@ class PDFExporter:
             svg_hollow: bool = False,
             html_extra_path = "output_webpage/src/index.html",
             export_pdf: bool = False):
-        
+
+        SVG_NS = "http://www.w3.org/2000/svg"
+
         output_svg_path = output_path.replace(".pdf", ".svg")
         output_html_path = output_path.replace(".pdf", ".html")
+
         # 1. 텐서 → numpy
         x_np = x.detach().cpu().numpy()
         y_np = y.detach().cpu().numpy()
@@ -160,21 +163,18 @@ class PDFExporter:
         N = len(x_np)
         p = len(self.svg_paths)
 
+        # --- SVG 파일용 (transform 없음) ---
         # 2. SVG 루트 생성
-        root = ET.Element(f'{{{SVG_NS}}}svg', {
+        root_svg = ET.Element(f'{{{SVG_NS}}}svg', {
             'id': 'svgsplat1',
             'style': 'overflow: visible;',
             'width': str(self.canvas_w),
             'height': str(self.canvas_h),
             'viewBox': f"{-self.canvas_w/2} {-self.canvas_h/2} {self.canvas_w} {self.canvas_h}"
         })
+        wrapper_g_svg = ET.Element('g', {'id': 'wrapper'})
 
-        # 3. wrapper <g> 추가
-        wrapper_g = ET.Element(f'g', {
-            'id': 'wrapper',
-            'transform': 'translate(50, 50)'
-        })
-
+        # 원소들 생성
         for i in reversed(range(N)):
             idx = i % p
             tree = ET.parse(self.svg_paths[idx])
@@ -190,7 +190,7 @@ class PDFExporter:
                 f"scale({self.norm_scale}) "
                 f"translate({-self.view_w/2},{-self.view_h/2})"
             )
-            g = ET.Element(f'g', {'transform': transform})
+            g = ET.Element('g', {'transform': transform})
 
             r_color, g_color, b_color = c_np[i]
             r_int = int(np.clip(r_color * 255, 0, 255))
@@ -212,26 +212,42 @@ class PDFExporter:
 
             for child in children:
                 g.append(deepcopy(child))
-            wrapper_g.append(g)
+            wrapper_g_svg.append(g)
 
-        root.append(wrapper_g)
+        root_svg.append(wrapper_g_svg)
 
-        # 4. SVG 파일로 저장
-        tree = ET.ElementTree(root)
-        tree.write(output_svg_path, encoding='utf-8', xml_declaration=True)
+        # 3. SVG 파일로 저장
+        tree_svg = ET.ElementTree(root_svg)
+        tree_svg.write(output_svg_path, encoding='utf-8', xml_declaration=True)
 
-        # 5. SVG를 문자열로 읽기 (HTML로 감싸기 위해)
-        with open(output_svg_path, 'r', encoding='utf-8') as f:
+        # --- HTML 임베드용 (transform 있음) ---
+        root_html = ET.Element(f'{{{SVG_NS}}}svg', {
+            'id': 'svgsplat1',
+            'style': 'overflow: visible;',
+            'width': str(self.canvas_w),
+            'height': str(self.canvas_h),
+            'viewBox': f"{-self.canvas_w/2} {-self.canvas_h/2} {self.canvas_w} {self.canvas_h}"
+        })
+        wrapper_g_html = ET.Element('g', {'id': 'wrapper', 'transform': 'translate(50,50)'})
+        # 기존 g 복사해서 추가
+        for g in list(wrapper_g_svg):
+            wrapper_g_html.append(deepcopy(g))
+        root_html.append(wrapper_g_html)
+
+        # 임시 SVG 파일로 저장 (HTML용)
+        tmp_html_svg = output_svg_path.replace(".svg", ".html_temp.svg")
+        tree_html = ET.ElementTree(root_html)
+        tree_html.write(tmp_html_svg, encoding='utf-8', xml_declaration=True)
+        with open(tmp_html_svg, 'r', encoding='utf-8') as f:
             svg_content = f.read()
-
-        # (만약에 wrapper_g가 <svg> 내부에 없다면, svg_content = svg_content.replace('<svg', '<svg ...><g id="wrapper"...>') 등으로 직접 string post-process 가능)
+        os.remove(tmp_html_svg)
 
         # 6. HTML 헤더/푸터 정의
         html_head = f"""<!DOCTYPE html>
                     <html lang="en">
                     <head>
                     <meta charset="UTF-8">
-                    <meta name="numClass" content="{self.svg_paths.__len__()}">
+                    <meta name="numClass" content="{len(self.svg_paths)}">
                     <title>Seongmin Hong</title>
                     <link rel="stylesheet" href="style.css">
                     </head>
@@ -254,9 +270,10 @@ class PDFExporter:
         # 8. 원하는 위치로 복사 (덮어쓰기)
         shutil.copyfile(output_html_path, html_extra_path)
 
+        # 9. PDF도 내보낼 경우
         if export_pdf:
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.svg')
-            tree.write(tmp.name)
+            tree_svg.write(tmp.name)
             svg2pdf(url=tmp.name, write_to=output_path)
             tmp.close()
             os.remove(tmp.name)
