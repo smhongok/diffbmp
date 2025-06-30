@@ -821,7 +821,7 @@ class VectorRenderer:
                 x.clamp_(0, self.W)
                 y.clamp_(0, self.H)
                 r.clamp_(2, min(self.H, self.W) // 4)
-                theta.clamp_(0, 2 * np.pi)
+                # theta.clamp_(0, 2 * np.pi)
                 
                 # Sparsification logic
                 if do_sparsify:

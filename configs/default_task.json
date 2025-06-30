@@ -4,6 +4,7 @@
         "trim": false,
         "FM_halftone": false,
         "transform": "none",
+        "img_path": "images/person/junghun.png",
         "bg_threshold": 250,
         "do_equalize": false,
         "do_local_contrast": false,
@@ -22,12 +23,12 @@
     },
     "svg": {
         "svg_file": "arial.ttf",
-        "text": ["H","B","D"],
+        "text": ["D","B","H"],
         "svg_hollow": false,
         "output_width": 128
     },
     "initialization": {
-        "initializer": "random",
+        "initializer": "structure_aware",
         "N": 3000,
         "alpha": 0.3,
         "min_distance": 5,
@@ -45,7 +46,7 @@
     },
     "optimization": {
         "use_fp16": true,
-        "renderer_type": "lpips",
+        "renderer_type": "mse",
         "num_iterations": 100,
         "batch_optimization": false,
         "batch_size": 256,
@@ -55,7 +56,7 @@
             "gain_y": 10.0,
             "gain_r": 10.0,
             "gain_v": 1.5,
-            "gain_theta": 10.0,
+            "gain_theta": 1.0,
             "gain_c": 1.0
         },
         "do_decay": true,
