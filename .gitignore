@@ -16,6 +16,10 @@ output_webpage/src/index.html
 !assets/svg/fire.svg
 !assets/svg/fire2.svg
 
+assets/font/*
+!assets/font/arial.ttf
+!assets/font/MaruBuri-Regular.otf
+
 configs/*
 !configs/default.json
 
