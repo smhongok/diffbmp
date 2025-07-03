@@ -231,15 +231,15 @@ class PDFExporter:
                     <html lang="en">
                     <head>
                     <meta charset="UTF-8">
-                    <title>Seongmin Hong</title>
-                    <link rel="stylesheet" href="style.css">
+                    <title>HTML Demo</title>
+                    <link rel="stylesheet" href="demo_html.css">
                     </head>
-                    <body>
+                    <body id="demo_html">
                     """
         html_tail = """
                     <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
                     <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/Draggable.min.js"></script>
-                    <script src="main.js"></script>
+                    <script src="demo_html.js"></script>
                     </body>
                     </html>
                     """
