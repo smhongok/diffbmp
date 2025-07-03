@@ -15,6 +15,8 @@ import pkg_resources
 from collections import defaultdict
 import datetime
 from PIL import Image
+import tempfile
+import subprocess
 
 class VectorRenderer:
     """
@@ -289,7 +291,7 @@ class VectorRenderer:
                 del comp_m, comp_a, ones
             
             return final
-
+    
     def render_export_mp4(
         self,
         cached_masks: torch.Tensor,  # (N, H, W)
@@ -309,10 +311,7 @@ class VectorRenderer:
         video_path  : 저장될 MP4 경로
         fps         : 프레임레이트
         """
-        # --- 1. 타입/장치 셋업 ---
-        device = cached_masks.device
-        use_fp16 = self.use_fp16
-        context = autocast('cuda') if use_fp16 else nullcontext()
+        context = autocast('cuda') if self.use_fp16 else nullcontext()
 
         with context:
             # 1.1 per-primitive alpha & color
@@ -323,36 +322,91 @@ class VectorRenderer:
 
         # --- 2. 비디오 초기화를 위한 첫 프레임 계산 ---
         N, H, W = a_all.shape
-        # sequential over: comp_m, comp_a 초기값 (맨 아래층 = 첫 프리미티브)
-        comp_m = m_all[0]   # (H,W,3)
-        comp_a = a_all[0]   # (H,W)
-        # 흰 배경과 합성
-        first = comp_m + (1.0 - comp_a).unsqueeze(-1)
-        first_np = (first.clamp(0,1).cpu().numpy() * 255).astype(np.uint8)
-        # OpenCV는 BGR 순서
-        first_bgr = first_np[..., ::-1]
+        
+        # 임시 파일 생성 (OpenCV 중간 결과용)
+        temp_video = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.avi', delete=False) as tmp:
+                temp_video = tmp.name
 
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        writer = cv2.VideoWriter(video_path, fourcc, fps, (W, H))
-
-        # 첫 프레임 기록
-        writer.write(first_bgr)
-
-        # --- 3. 나머지 프리미티브 순차 합성 & 기록 ---
-        for i in range(1, N):
-            with context:
-                # comp = comp + (1 - comp_a) * next
-                comp_m = comp_m + (1.0 - comp_a).unsqueeze(-1) * m_all[i]
-                comp_a = comp_a + (1.0 - comp_a) * a_all[i]
-
+            # sequential over: comp_m, comp_a 초기값 (맨 아래층 = 첫 프리미티브)
+            comp_m = m_all[0]   # (H,W,3)
+            comp_a = a_all[0]   # (H,W)
             # 흰 배경과 합성
-            frame = comp_m + (1.0 - comp_a).unsqueeze(-1)
-            frame_np = (frame.clamp(0,1).cpu().numpy() * 255).astype(np.uint8)
-            frame_bgr = frame_np[..., ::-1]
-            writer.write(frame_bgr)
+            first = comp_m + (1.0 - comp_a).unsqueeze(-1)
+            first_np = (first.clamp(0,1).cpu().numpy() * 255).astype(np.uint8)
+            # OpenCV는 BGR 순서
+            first_bgr = first_np[..., ::-1]
 
-        writer.release()
-        print(f"Saved MP4 video to {video_path}")
+            # 임시 비디오 작성 (무손실 코덱 사용)
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')  # 무손실 중간 포맷
+            writer = cv2.VideoWriter(temp_video, fourcc, fps, (W, H))
+
+            if not writer.isOpened():
+                raise RuntimeError("Failed to open video writer")
+
+            # 첫 프레임 기록
+            writer.write(first_bgr)
+
+            # --- 3. 나머지 프리미티브 순차 합성 & 기록 ---
+            for i in range(1, N):
+                with context:
+                    # comp = comp + (1 - comp_a) * next
+                    comp_m = comp_m + (1.0 - comp_a).unsqueeze(-1) * m_all[i]
+                    comp_a = comp_a + (1.0 - comp_a) * a_all[i]
+
+                # 흰 배경과 합성
+                frame = comp_m + (1.0 - comp_a).unsqueeze(-1)
+                frame_np = (frame.clamp(0,1).cpu().numpy() * 255).astype(np.uint8)
+                frame_bgr = frame_np[..., ::-1]
+                writer.write(frame_bgr)
+
+            writer.release()
+
+            # --- 4. FFmpeg으로 웹 호환 H.264 MP4 변환 ---
+            ffmpeg_cmd = [
+                'ffmpeg', '-y',  # 덮어쓰기 허용
+                '-i', temp_video,
+                
+                # 비디오 코덱 설정 (웹 호환)
+                '-c:v', 'libx264',
+                '-profile:v', 'baseline',  # 최대 브라우저 호환성
+                '-level', '3.1',
+                '-crf', '23',              # 품질 (18-28, 낮을수록 고품질)
+                
+                # 픽셀 포맷 (필수)
+                '-pix_fmt', 'yuv420p',
+                
+                # 웹 스트리밍 최적화
+                '-movflags', '+faststart',
+                
+                # 오디오 없음 (비디오만)
+                '-an',
+                
+                video_path
+            ]
+            
+            # FFmpeg 실행
+            result = subprocess.run(
+                ffmpeg_cmd, 
+                capture_output=True, 
+                text=True,
+                timeout=300  # 5분 타임아웃
+            )
+            
+            if result.returncode != 0:
+                print(f"FFmpeg stderr: {result.stderr}")
+                raise RuntimeError(f"FFmpeg conversion failed: {result.stderr}")
+            
+            print(f"Saved web-compatible H.264 MP4 to {video_path}")
+            
+        finally:
+            # 임시 파일 정리
+            if temp_video and os.path.exists(temp_video):
+                try:
+                    os.unlink(temp_video)
+                except Exception as e:
+                    print(f"Warning: Could not delete temp file {temp_video}: {e}")
 
         return frame  # Return the last frame for reference
     
