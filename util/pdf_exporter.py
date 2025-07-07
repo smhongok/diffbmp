@@ -170,7 +170,7 @@ class PDFExporter:
             'style': 'overflow: visible;',
             'width': str(self.canvas_w),
             'height': str(self.canvas_h),
-            'viewBox': f"{-self.canvas_w/2} {-self.canvas_h/2} {self.canvas_w} {self.canvas_h}"
+            'viewBox': f"0 0 {self.canvas_w} {self.canvas_h}"
         })
         wrapper_g_svg = ET.Element('g', {'id': 'wrapper'})
 
@@ -226,9 +226,9 @@ class PDFExporter:
             'style': 'overflow: visible;',
             'width': str(self.canvas_w),
             'height': str(self.canvas_h),
-            'viewBox': f"{-self.canvas_w/2} {-self.canvas_h/2} {self.canvas_w} {self.canvas_h}"
+            'viewBox': f"0 0 {self.canvas_w} {self.canvas_h}"
         })
-        wrapper_g_html = ET.Element('g', {'id': 'wrapper', 'transform': 'translate(50,50)'})
+        wrapper_g_html = ET.Element('g', {'id': 'wrapper', 'transform': 'translate(0,0)'})
         # 기존 g 복사해서 추가
         for g in list(wrapper_g_svg):
             wrapper_g_html.append(deepcopy(g))
@@ -248,15 +248,15 @@ class PDFExporter:
                     <head>
                     <meta charset="UTF-8">
                     <meta name="numClass" content="{len(self.svg_paths)}">
-                    <title>Seongmin Hong</title>
-                    <link rel="stylesheet" href="style.css">
+                    <title>HTML Demo</title>
+                    <link rel="stylesheet" href="demo_html.css">
                     </head>
-                    <body>
+                    <body id="demo_html">
                     """
         html_tail = """
                     <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
                     <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/Draggable.min.js"></script>
-                    <script src="main.js"></script>
+                    <script src="demo_html.js"></script>
                     </body>
                     </html>
                     """

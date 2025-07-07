@@ -13,6 +13,14 @@ import os
 from itertools import product
 import gc
 import pandas as pd
+from tqdm import tqdm
+
+# tqdm 설정 - ASCII 문자만 사용 및 열 너비 고정
+tqdm.monitor_interval = 0   # 모니터링 간격 비활성화
+tqdm.ncols = 80             # 열 너비 고정
+# ASCII 진행 바만 사용
+if not os.environ.get('TQDM_ASCII'):
+    os.environ['TQDM_ASCII'] = '1'
 
 from core.preprocessing import Preprocessor
 from util.svg_loader import SVGLoader
@@ -113,9 +121,7 @@ def process_combination(args):
     # Enable checkpointing for memory-intensive renderers
     if hasattr(renderer, 'enable_checkpointing'):
         renderer.enable_checkpointing()
-        if hasattr(renderer, 'memory_report'):
-            renderer.memory_report(f"Initial memory for {renderer_name}")
-    0
+    
     x, y, r, v, theta, c = [t.clone().detach().to(device).requires_grad_(True) for t in initial_params]
     
     # Start timing the initialization and optimization
@@ -130,25 +136,13 @@ def process_combination(args):
             if hasattr(renderer, 'enable_checkpointing'):
                 renderer.enable_checkpointing()
                 print(f"Enabled checkpointing for {renderer_name}")
-            
-            # Add memory report at start if available
-            if hasattr(renderer, 'memory_report'):
-                renderer.memory_report(f"Before optimization with {renderer_name}")
-            
-            # Enable debug_memory in optimization config if the renderer supports memory reporting
-            if hasattr(renderer, 'memory_report'):
-                config['optimization']['debug_memory'] = False
-            
+
             # Optimize parameters - this is the memory-intensive part
             x, y, r, v, theta, c = renderer.optimize_parameters(
                 x, y, r, v, theta, c,
                 I_target, 
                 opt_conf=config['optimization']
             )
-            
-            # Memory report after optimization
-            if hasattr(renderer, 'memory_report'):
-                renderer.memory_report(f"After optimization with {renderer_name}")
     else:
         # Standard FP32 processing without autocast
         if "LevelInitializer" in init.__class__.__name__:
@@ -164,6 +158,19 @@ def process_combination(args):
     # End timing after optimization completes
     runtime = time.time() - start_time
     
+    # Export PDF
+    output_dir = config["postprocessing"].get("output_folder", "./outputs/")
+    
+    # task_id 추출 (파일명에서 task_id_input.ext 형태에서 task_id만 추출)
+    img_filename = os.path.basename(config["preprocessing"].get("img_path", "unknown"))
+    if "_input" in img_filename:
+        task_id = img_filename.split("_input")[0]
+    else:
+        task_id = os.path.splitext(img_filename)[0]
+    
+    # 파일명은 task_id만 사용
+    base_path = os.path.join(output_dir, task_id)
+
     # Generate final render (not included in timing)
     if use_fp16:
         with torch.no_grad():  # Disable gradient computation for final render
@@ -181,7 +188,8 @@ def process_combination(args):
                     x, y, r, theta,
                     sigma=0.0
                 )
-                rendered = renderer.render(cached_masks, v, c)
+                rendered = renderer.render_export_mp4(cached_masks, v, c, video_path=base_path+".mp4")
+                renderer.save_rendered_image(cached_masks, v, c, base_path+'.png')
                 del cached_masks
     else:
         with torch.no_grad():  # Disable gradient computation for final render
@@ -221,14 +229,6 @@ def process_combination(args):
     
     # Clear CPU tensors
     del I_target_cpu
-    
-    # Export PDF
-    output_dir = config["postprocessing"].get("output_folder", "./outputs/")
-    os.makedirs(output_dir, exist_ok=True)
-    
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    base_name = os.path.splitext(os.path.basename(config["preprocessing"]["img_path"]))[0]
-    pdf_path = os.path.join(output_dir, f"{base_name}__{timestamp}.pdf")
 
     H, W = config['canvas_size']
     exporter = PDFExporter(
@@ -240,14 +240,14 @@ def process_combination(args):
     )
     
     exporter.export(x, y, r, theta, v, c,
-                output_path=pdf_path,
-                svg_hollow=config["svg"].get("svg_hollow", False))
+                output_path = base_path + ".pdf",
+                svg_hollow = config["svg"].get("svg_hollow", False),
+                html_extra_path = "output_webpage/src/index.html",
+                export_pdf=True)
     
-    '''
-    exporter.export_with_pngs(x,y,r,theta,v,c,
-                output_folder=folder_path,
-                svg_hollow=config["svg"].get("svg_hollow", False))
-    '''
+    # exporter.export_with_pngs(x,y,r,theta,v,c,
+    #             output_folder=folder_path,
+    #             svg_hollow=config["svg"].get("svg_hollow", False))
     
     # Copy parameters to CPU before returning
     params_cpu = (
@@ -259,16 +259,12 @@ def process_combination(args):
         c.detach().cpu()
     )
     
-    with open(pdf_path, "rb") as f:
-        pdf_file = f.read()
-    
     res = {
-        'initializer': init.__class__.__name__,
-        'renderer': renderer_name,
-        'rendered': rendered_cpu.numpy(),
         'metrics': metrics,
-        'params': params_cpu,
-        'pdf_file': pdf_file,
+        'pdf_path': base_path + ".pdf",
+        'mp4_path': base_path + ".mp4",
+        'png_path': base_path + ".png",
+        'html_path': base_path + ".html",
     }
     print("[RUN COMPLETE] {}".format(res))
     
@@ -287,8 +283,11 @@ def run(initializers_config, renderer_name, config, I_target, svg_loader, device
     elif init_name == "MultiLevelInitializer":
         from core.initializer.multilevel_initializer import MultiLevelInitializer
         initializer = MultiLevelInitializer(init_config)
+    elif init_name == "SequentialInitializer":
+        from core.initializer.sequnetial_initializater import SequentialInitializer
+        initializer = SequentialInitializer(init_config)
     else:
-        raise ValueError(f"Unsupported initializer: {init_name}")
+        raise ValueError(f"Unknown initializer: {init_name}")
         
     # Create VectorRenderer only when needed
     bmp_tensor = svg_loader.load_alpha_bitmap()
@@ -331,6 +330,7 @@ def main():
     parser.add_argument('--primitive_type', type=str, default='circle', help='circle, line, ...')
     parser.add_argument('--img_path', type=str, default='', help='images/HighFreq/0831.png, images/LowFreq/0831.png, ...')
     parser.add_argument('--output_path', type=str, default='', help='results/0831.png, results/0831.gif, ...')
+    parser.add_argument('--timestamp', type=str, default='', help='timestamp for folder structure')
     args = parser.parse_args()
        
     # Load configuration
@@ -347,7 +347,20 @@ def main():
     if args.svg_path != '':
         config["svg"]["svg_file"] = args.svg_path        
     elif args.svg_text != '':
-        config["svg"]["text"] = args.svg_text
+        config["svg"]["text"] = args.svg_text.split(',')
+        
+        # Check if any text contains non-English characters
+        def has_non_english_chars(text_list):
+            for text in text_list:
+                for char in text:
+                    # Check if character is outside ASCII range (0-127) or not a basic Latin letter
+                    if ord(char) > 127 or not char.isascii():
+                        return True
+            return False
+        
+        # If non-English characters are found, use Korean font
+        if has_non_english_chars(config["svg"]["text"]):
+            config["svg"]["svg_file"] = "MaruBuri-Regular.otf"
     else:
         config["svg"]["text"] = args.primitive_type #[TODO]
         
@@ -355,7 +368,14 @@ def main():
     print(f"img_path: {args.img_path}")
     config["postprocessing"]["output_folder"] = args.output_path
     
+    # timestamp를 config에 추가
+    if args.timestamp:
+        config["postprocessing"]["timestamp"] = args.timestamp
+    
     print(f"Using FP16 (half precision): {config['optimization'].get('use_fp16', False)}")
+    
+    # Force disable memory report at start if available
+    config['optimization']['debug_memory'] = False
     
     # Set random seed
     set_global_seed(config.get("seed", 42))
