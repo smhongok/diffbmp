@@ -170,7 +170,7 @@ class PDFExporter:
             'style': 'overflow: visible;',
             'width': str(self.canvas_w),
             'height': str(self.canvas_h),
-            'viewBox': f"{-self.canvas_w/2} {-self.canvas_h/2} {self.canvas_w} {self.canvas_h}"
+            'viewBox': f"0 0 {self.canvas_w} {self.canvas_h}"
         })
         wrapper_g_svg = ET.Element('g', {'id': 'wrapper'})
 
@@ -226,9 +226,9 @@ class PDFExporter:
             'style': 'overflow: visible;',
             'width': str(self.canvas_w),
             'height': str(self.canvas_h),
-            'viewBox': f"{-self.canvas_w/2} {-self.canvas_h/2} {self.canvas_w} {self.canvas_h}"
+            'viewBox': f"0 0 {self.canvas_w} {self.canvas_h}"
         })
-        wrapper_g_html = ET.Element('g', {'id': 'wrapper', 'transform': 'translate(50,50)'})
+        wrapper_g_html = ET.Element('g', {'id': 'wrapper', 'transform': 'translate(0,0)'})
         # 기존 g 복사해서 추가
         for g in list(wrapper_g_svg):
             wrapper_g_html.append(deepcopy(g))
