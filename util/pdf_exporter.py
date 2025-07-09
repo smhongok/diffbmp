@@ -170,7 +170,7 @@ class PDFExporter:
             'style': 'overflow: visible;',
             'width': str(self.canvas_w),
             'height': str(self.canvas_h),
-            'viewBox': f"0 0 {self.canvas_w} {self.canvas_h}"
+            'viewBox': f"{-self.canvas_w/2} {-self.canvas_h/2} {self.canvas_w} {self.canvas_h}"
         })
         wrapper_g_svg = ET.Element('g', {'id': 'wrapper'})
 
