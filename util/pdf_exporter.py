@@ -176,7 +176,7 @@ class PDFExporter:
 
         # 원소들 생성
         for i in reversed(range(N)):
-            idx = i % p
+            idx = (N-i-1) % p
             tree = ET.parse(self.svg_paths[idx])
             template_root = tree.getroot()
             self._remove_styles(template_root)
