@@ -141,6 +141,7 @@ class VectorRenderer:
                 p = bmp_image.size(0)
                 # periodic assignment
                 idx = torch.arange(B, device=self.device, dtype=torch.long) % p  # [B]
+                idx = idx.flip(0)
                 bmp_sel = bmp_image[idx, :, :]            # [B, H, W]
                 bmp_exp = bmp_sel.unsqueeze(1).contiguous()  # [B, 1, H, W]
             else:
