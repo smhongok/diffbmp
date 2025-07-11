@@ -12,3 +12,7 @@ npm install
 ```
 npx live-server src
 ```
+or for the lyric video,
+```
+npx live-server src_lyrics
+```
