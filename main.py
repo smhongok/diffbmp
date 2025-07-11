@@ -22,7 +22,7 @@ from core.initializer.random_initializater import RandomInitializer
 
 # Import our modules
 from core.preprocessing import Preprocessor
-from util.utils import set_global_seed, gaussian_blur, compute_psnr
+from util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
 from util.pdf_exporter import PDFExporter
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -76,15 +76,35 @@ elif svg_ext in (".png", ".jpg", ".jpeg"):
     img_converter = ImageToSVG()
     svg_path = img_converter.extract_filled_outlines(config["svg"].get("svg_file"), threshold=100, min_area_ratio=0.000001)
     del img_converter
-elif (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
-    font_parser = FontParser(config["svg"]["svg_file"])
-    texts = config["svg"]["text"]
-    if isinstance(texts, list):
-        svg_paths = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
+elif svg_ext in (".otf", ".ttf"):
+    # 텍스트 소스 결정
+    texts = None
+    if "text" in config["svg"]:
+        texts = config["svg"]["text"]
+    elif "text_file" in config["svg"]:
+        # 파일에서 텍스트 추출 (예시: txt, lrc 등 처리)
+        text_ext = os.path.splitext(config["svg"].get("text_file"))[1].lower()
+        text_path = os.path.join("assets/texts", config["svg"].get("text_file")) 
+        
+        # 전용 파서 클래스 (여기서는 간단 예시)
+        if text_ext == ".txt" or text_ext == ".lrc":
+            texts = extract_chars_from_file(text_path, text_ext, remove_punct=config["svg"].get("remove_punctuation", False))
+            html_extra_path_special = "output_webpage/src_lyrics/index.html"
+        else:
+            raise ValueError(f"Unsupported text_file type: {text_ext}")
+
+    if texts is not None:
+        font_parser = FontParser(config["svg"]["svg_file"])
+        # texts = config["svg"]["text"]
+        if isinstance(texts, list):
+            svg_paths = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
+        else:
+            svg_paths = str(font_parser.text_to_svg(texts, mode="opt-path"))
+        svg_path = svg_paths
+        del font_parser
     else:
-        svg_paths = str(font_parser.text_to_svg(texts, mode="opt-path"))
-    svg_path = svg_paths
-    del font_parser
+        raise ValueError("No text source ('text' or 'text_file') provided in svg config.")
+
 else:
     svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
 
@@ -170,7 +190,7 @@ exporter = PDFExporter(
 exporter.export(x, y, r, theta, v, c,
                 output_path=pdf_path,
                 svg_hollow=config["svg"].get("svg_hollow", False),
-                html_extra_path = "output_webpage/src/index.html",
+                html_extra_path = "output_webpage/src/index.html" if html_extra_path_special is None else html_extra_path_special,
                 export_pdf=True)
 
 with torch.no_grad():

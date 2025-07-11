@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torchvision
 import torch.nn.functional as F
+import string
 from typing import Tuple
 
 def set_global_seed(seed: int = 42):
@@ -83,3 +84,22 @@ def make_batch_indices(N: int, chunk: int, step: int) -> Tuple[slice, slice, sli
     fg    = slice(0, start)                  # Front of screen
     bg    = slice(end, N)                    # Back of screen
     return fg, batch, bg
+
+
+def extract_chars_from_file(file, ext, remove_whitespace=True, remove_punct=False):
+    chars = []
+    with open(file, encoding="utf-8") as f:
+        if ext == ".lrc":
+            import pylrc
+            lrc = pylrc.parse(f.read())
+            texts = [line.text for line in lrc if line.text.strip()]
+        else:
+            texts = [line.strip() for line in f if line.strip()]
+    for line in texts:
+        for c in line:
+            if remove_whitespace and c.isspace():
+                continue
+            if remove_punct and c in string.punctuation:
+                continue
+            chars.append(c)
+    return chars

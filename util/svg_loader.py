@@ -54,7 +54,7 @@ class SVGLoader:
             # Render SVG to PNG via cairosvg
             svg_bytes = Path(path).read_bytes()
             with tempfile.NamedTemporaryFile(suffix='.png', delete=True) as tmp:
-                svg2png(bytestring=svg_bytes, write_to=tmp.name, output_width=self.output_width)
+                svg2png(bytestring=svg_bytes, write_to=tmp.name, output_width=self.output_width,  output_height=self.output_width)
                 img = Image.open(tmp.name).convert('RGBA')
                 arr = np.array(img)
 
