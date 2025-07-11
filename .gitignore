@@ -13,6 +13,7 @@ extra_outputs/*
 assets/svg/*
 output_webpage/node_modules/
 output_webpage/src/index.html
+output_webpage/src_lyrics/index.html
 !assets/svg/fire.svg
 !assets/svg/fire2.svg
 
@@ -20,8 +21,12 @@ assets/font/*
 !assets/font/arial.ttf
 !assets/font/MaruBuri-Regular.otf
 
+assets/texts/*
+!assets/texts/BTY.txt
+
 configs/*
 !configs/default.json
+!configs/default_lyrics.json
 
 images/person/*
 
