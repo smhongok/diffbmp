@@ -86,8 +86,22 @@ def make_batch_indices(N: int, chunk: int, step: int) -> Tuple[slice, slice, sli
     return fg, batch, bg
 
 
-def extract_chars_from_file(file, ext, remove_whitespace=True, remove_punct=False):
+def extract_chars_from_file(
+    file, ext,
+    remove_whitespace=True,
+    remove_punct=False,
+    punct_to_remove=None
+):
     chars = []
+    char_counts = []
+    word_lengths_per_line = []  # <--- 추가: 각 line의 단어별 글자수 리스트
+
+    # 기본 제거 문자
+    if remove_punct and punct_to_remove is None:
+        punct_to_remove = set(string.punctuation)
+    elif punct_to_remove is not None:
+        punct_to_remove = set(punct_to_remove)
+
     with open(file, encoding="utf-8") as f:
         if ext == ".lrc":
             import pylrc
@@ -95,11 +109,22 @@ def extract_chars_from_file(file, ext, remove_whitespace=True, remove_punct=Fals
             texts = [line.text for line in lrc if line.text.strip()]
         else:
             texts = [line.strip() for line in f if line.strip()]
+
     for line in texts:
-        for c in line:
-            if remove_whitespace and c.isspace():
-                continue
-            if remove_punct and c in string.punctuation:
-                continue
-            chars.append(c)
-    return chars
+        line_chars = []
+        words = line.split()
+        word_lengths = []
+        for word in words:
+            # 공백·특수문자 제외한 글자 수를 word_chars로 셈
+            word_chars = [
+                c for c in word
+                if not (remove_whitespace and c.isspace())
+                and not (remove_punct and c in punct_to_remove)
+            ]
+            word_lengths.append(len(word_chars))
+            # 전체 문자 목록에는 실제 사용되는 글자만 추가
+            line_chars.extend(word_chars)
+        chars.extend(line_chars)
+        char_counts.append(len(line_chars))
+        word_lengths_per_line.append(word_lengths)
+    return chars, char_counts, word_lengths_per_line

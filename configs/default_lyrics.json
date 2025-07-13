@@ -32,7 +32,7 @@
     },
     "initialization": {
         "initializer": "structure_aware",
-        "N": [1994],
+        "N": "unspecified",
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
