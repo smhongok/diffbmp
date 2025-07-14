@@ -88,8 +88,9 @@ elif svg_ext in (".otf", ".ttf"):
         
         # 전용 파서 클래스 (여기서는 간단 예시)
         if text_ext == ".txt" or text_ext == ".lrc":
-            texts = extract_chars_from_file(text_path, text_ext, remove_punct=config["svg"].get("remove_punctuation", False))
+            texts, char_counts, word_lengths_per_line = extract_chars_from_file(text_path, text_ext, remove_punct=config["svg"].get("remove_punctuation", False), punct_to_remove=".,;:()\{\}[]\"\'")
             html_extra_path_special = "output_webpage/src_lyrics/index.html"
+            config["initialization"]["N"] = sum(char_counts)  # N은 텍스트의 개수로 설정
         else:
             raise ValueError(f"Unsupported text_file type: {text_ext}")
 
@@ -191,8 +192,9 @@ exporter.export(x, y, r, theta, v, c,
                 output_path=pdf_path,
                 svg_hollow=config["svg"].get("svg_hollow", False),
                 html_extra_path = "output_webpage/src/index.html" if html_extra_path_special is None else html_extra_path_special,
-                export_pdf=True)
-
+                export_pdf=True,
+                html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
+)
 with torch.no_grad():
     video_path = os.path.join(output_dir, f'output_{timestamp}.mp4')
     renderer.render_export_mp4(cached_masks, v, c, video_path=video_path)
