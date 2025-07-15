@@ -17,6 +17,7 @@ import datetime
 from PIL import Image
 import tempfile
 import subprocess
+import glob
 
 class VectorRenderer:
     """
@@ -56,6 +57,9 @@ class VectorRenderer:
         
         # Pre-compute pixel coordinates
         self.X, self.Y = self._create_coordinate_grid()
+        
+        # Initialize video creation tracking
+        self.saved_frames = []
     
     def enable_checkpointing(self):
         """Enable gradient checkpointing for memory efficiency."""
@@ -761,11 +765,12 @@ class VectorRenderer:
                             rendered = self.render(cached_masks, v, c)
                             
                             # Save image at specified epochs
-                            if opt_conf.get("save_epoch", False) and epoch + 1 in save_image_intervals:
+                            if opt_conf.get("save_epoch", False):
                                 output_path = os.path.join(self.output_path, f"epoch_{epoch+1}_{timestamp}.jpg")
                                 rendered_np = rendered.detach().cpu().numpy()
                                 rendered_np = (rendered_np * 255).astype(np.uint8)
                                 Image.fromarray(rendered_np).save(output_path)
+                                self.saved_frames.append(output_path)
                                 del rendered_np
                             
                             # Save reference for cleanup
@@ -826,11 +831,12 @@ class VectorRenderer:
                     rendered = self.render(cached_masks, v, c)
                     
                     # Save image at specified epochs
-                    if opt_conf.get("save_epoch", False) and epoch + 1 in save_image_intervals:
+                    if opt_conf.get("save_epoch", False):
                         output_path = os.path.join(self.output_path, f"epoch_{epoch+1}_{timestamp}.jpg")
                         rendered_np = rendered.detach().cpu().numpy()
                         rendered_np = (rendered_np * 255).astype(np.uint8)
                         Image.fromarray(rendered_np).save(output_path)
+                        self.saved_frames.append(output_path)
                         del rendered_np
                 
                 # Compute loss
@@ -988,10 +994,15 @@ class VectorRenderer:
             
             if epoch % 20 == 0:
                 print(f"Epoch {epoch}, Loss: {loss_value:.4f}")
-                
+
         # Final memory report
         if opt_conf.get("debug_memory", False):
             self.memory_report("After optimization")
+        
+        if opt_conf.get("save_epoch", False):
+            video_path = os.path.join(self.output_path, f"optimization_progress_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+            self.create_video_from_collected_frames(video_path, fps=30)
+            print(f"Optimization progress video saved to: {video_path}")
             
         return x, y, r, v, theta, c
     
@@ -1022,7 +1033,6 @@ class VectorRenderer:
         lr = lr_conf.get("default", 0.1)
         
         # Create output directory for saving images if it doesn't exist
-        save_image_intervals = [1, 5, 10, 20, 50, 100]
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(self.output_path, exist_ok=True)
         
@@ -1127,7 +1137,7 @@ class VectorRenderer:
                 )
 
             # Save image at specified epochs
-            if opt_conf.get("save_epoch", False) and step + 1 in save_image_intervals:
+            if opt_conf.get("save_epoch", False):
                 with torch.no_grad():
                     # Render the complete image for saving
                     rendered_img = self.render(cached_masks, v, c)
@@ -1135,6 +1145,7 @@ class VectorRenderer:
                     rendered_np = rendered_img.detach().cpu().numpy()
                     rendered_np = (rendered_np * 255).astype(np.uint8)
                     Image.fromarray(rendered_np).save(output_path)
+                    self.saved_frames.append(output_path)
                     del rendered_img, rendered_np
                     torch.cuda.empty_cache()
             
@@ -1144,6 +1155,12 @@ class VectorRenderer:
         # Clean up cached masks
         del cached_masks
         torch.cuda.empty_cache()
+        
+        # Create video from collected frames if enabled
+        if opt_conf.get("save_epoch", False):
+            video_path = os.path.join(self.output_path, f"optimization_progress_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+            self.create_video_from_collected_frames(video_path, fps=30)
+            print(f"Optimization progress video saved to: {video_path}")
         
         return x, y, r, v, theta, c
 
@@ -1166,7 +1183,56 @@ class VectorRenderer:
         final_render_np = (final_render_np * 255).astype(np.uint8)
         
         # Save the image using PIL
-        Image.fromarray(final_render_np).save(output_path) 
+        Image.fromarray(final_render_np).save(output_path)
+       
+    def create_video_from_collected_frames(self, output_video_path: str, fps: int = 30) -> str:
+        """
+        Create an MP4 video from frames collected during optimization.
+        
+        Args:
+            output_video_path: Path for the output MP4 file
+            fps: Frames per second for the video
+            
+        Returns:
+            Path to the created video file
+        """
+        if not self.saved_frames:
+            print("No frames collected during optimization.")
+            return None
+        
+        print(f"Creating video from {len(self.saved_frames)} collected frames...")
+        
+        # Read the first frame to get dimensions
+        first_frame = cv2.imread(self.saved_frames[0])
+        if first_frame is None:
+            print(f"Could not read first frame: {self.saved_frames[0]}")
+            return None
+        
+        height, width, layers = first_frame.shape
+        
+        # Create video writer
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_writer = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+        
+        if not video_writer.isOpened():
+            print(f"Could not create video writer for: {output_video_path}")
+            return None
+        
+        # Add frames to video
+        for i, frame_path in enumerate(tqdm(self.saved_frames, desc="Creating video")):
+            frame = cv2.imread(frame_path)
+            if frame is not None:
+                video_writer.write(frame)
+            else:
+                print(f"Warning: Could not read frame {frame_path}")
+        
+        # Release video writer
+        video_writer.release()
+        
+        print(f"Video created successfully: {output_video_path}")
+        print(f"Video contains {len(self.saved_frames)} frames at {fps} FPS")
+        
+        return output_video_path 
         
     def render_image(self, x, y, r, v, theta, c):
         """

@@ -13,14 +13,6 @@ import os
 from itertools import product
 import gc
 import pandas as pd
-from tqdm import tqdm
-
-# tqdm 설정 - ASCII 문자만 사용 및 열 너비 고정
-tqdm.monitor_interval = 0   # 모니터링 간격 비활성화
-tqdm.ncols = 80             # 열 너비 고정
-# ASCII 진행 바만 사용
-if not os.environ.get('TQDM_ASCII'):
-    os.environ['TQDM_ASCII'] = '1'
 
 from core.preprocessing import Preprocessor
 from util.svg_loader import SVGLoader
