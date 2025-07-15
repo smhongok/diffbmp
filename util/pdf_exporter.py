@@ -144,7 +144,8 @@ class PDFExporter:
             output_path: str,
             svg_hollow: bool = False,
             html_extra_path = "output_webpage/src/index.html",
-            export_pdf: bool = False):
+            export_pdf: bool = False,
+            html_extra_meta: dict = {}):
 
         SVG_NS = "http://www.w3.org/2000/svg"
 
@@ -243,11 +244,15 @@ class PDFExporter:
         os.remove(tmp_html_svg)
 
         # 6. HTML 헤더/푸터 정의
+        meta_tags = []
+        for k, v in html_extra_meta.items():
+            meta_tags.append(f'<meta name="{k}" content="{v}">')
         html_head = f"""<!DOCTYPE html>
                     <html lang="en">
                     <head>
                     <meta charset="UTF-8">
                     <meta name="numClass" content="{len(self.svg_paths)}">
+                    {chr(10).join(meta_tags)}
                     <title>HTML Demo</title>
                     <link rel="stylesheet" href="demo_html.css">
                     </head>

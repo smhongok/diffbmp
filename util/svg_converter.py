@@ -3,6 +3,7 @@ from fontTools.ttLib import TTFont
 from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.subset import Subsetter, Options
 from pathlib import Path
+import urllib.parse
 from scour import scour
 import torch
 import os
@@ -71,9 +72,11 @@ class FontParser:
         }}
         """
         dwg.defs.add(dwg.style(css))
-    
     def get_output_path(self, text: str) -> Path:
-        safe = ''.join(c for c in text if c.isalnum()) or 'text'
+
+        safe = urllib.parse.quote(text, safe='A-Za-z0-9가-힣_-')
+        if not safe:
+            safe = 'text'
         filename = f"{self.font_path.stem}_{safe}.svg"
         return self.svg_folder / filename
 
