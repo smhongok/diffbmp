@@ -18,6 +18,7 @@ from PIL import Image
 import tempfile
 import subprocess
 import glob
+import wandb
 
 class VectorRenderer:
     """
@@ -60,6 +61,10 @@ class VectorRenderer:
         
         # Initialize video creation tracking
         self.saved_frames = []
+        
+        # Initialize wandb
+        wandb.login(key="08d57452958261449694f652099a45203ab23a2e")
+        wandb.init(entity="svgsplat",project="svgsplat", name=f"experiment_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
     
     def enable_checkpointing(self):
         """Enable gradient checkpointing for memory efficiency."""
@@ -583,6 +588,11 @@ class VectorRenderer:
                           c: torch.Tensor,
                           target_image: torch.Tensor,
                           opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
+        N = x.shape[0]
+        self.sample_size = max(1, int(0.2 * N))  # 20% of primitives
+        # Randomly sample indices
+        self.sample_indices = torch.randperm(N, device=self.device)[:self.sample_size]
+
         if opt_conf.get("batch_optimization", False):
             return self._optimize_parameters_batched(
                 x, y, r, v, theta, c, target_image, opt_conf
@@ -869,6 +879,11 @@ class VectorRenderer:
                 
             # Record loss value for next epoch logging
             loss_value = loss.item()
+            
+            # Log gradient statistics to wandb
+            if opt_conf.get("log_gradients", False):
+                self.log_gradient_statistics(x, y, r, v, theta, c, epoch)
+            
             if self.use_fp16:
                 del loss
                 torch.cuda.empty_cache()
@@ -999,6 +1014,10 @@ class VectorRenderer:
         if opt_conf.get("debug_memory", False):
             self.memory_report("After optimization")
         
+        # Finish wandb run
+        if opt_conf.get("log_gradients", False):
+            wandb.finish()
+        
         if opt_conf.get("save_epoch", False):
             video_path = os.path.join(self.output_path, f"optimization_progress_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
             self.create_video_from_collected_frames(video_path, fps=30)
@@ -1119,6 +1138,10 @@ class VectorRenderer:
             loss.backward()
             optimizer.step()            
             
+            # Log gradient statistics to wandb
+            if opt_conf.get("log_gradients", False):
+                self.log_gradient_statistics(x, y, r, v, theta, c, step)
+            
             # Explicitly clean up used tensors
             del masks_bt, rgb_bt, alpha_bt, comp1, inv_alpha_product, final, rgb_fg, alpha_fg, rgb_bg
             torch.cuda.empty_cache()
@@ -1155,6 +1178,10 @@ class VectorRenderer:
         # Clean up cached masks
         del cached_masks
         torch.cuda.empty_cache()
+        
+        # Finish wandb run
+        if opt_conf.get("log_gradients", False):
+            wandb.finish()
         
         # Create video from collected frames if enabled
         if opt_conf.get("save_epoch", False):
@@ -1305,6 +1332,57 @@ class VectorRenderer:
             print(f"  FP32: {fp32_count} tensors, {fp32_bytes/1024/1024:.2f}MB")
         
         return current, peak, reserved
+
+    def log_gradient_statistics(self, x, y, r, v, theta, c, epoch):
+        """
+        Log gradient statistics for 20% of primitives to wandb.
+        
+        Args:
+            x, y, r, v, theta, c: Parameter tensors
+            epoch: Current epoch number
+        """
+        
+        # Collect gradients for sampled primitives
+        gradients = {}
+        params = {'x': x, 'y': y, 'r': r, 'v': v, 'theta': theta, 'c': c}
+        
+        for param_name, param in params.items():
+            if param.grad is not None:
+                # Get gradients for sampled indices
+                if param_name == 'c':
+                    # c has shape (N, 3), so we need to handle it differently
+                    grad_sample = param.grad[self.sample_indices]  # (sample_size, 3)
+                    gradients[f'{param_name}_grad_mean'] = grad_sample.mean().item()
+                    gradients[f'{param_name}_grad_std'] = grad_sample.std().item()
+                    gradients[f'{param_name}_grad_norm'] = grad_sample.norm().item()
+                    
+                    # Log individual RGB channel gradients
+                    for i, color in enumerate(['r', 'g', 'b']):
+                        gradients[f'{param_name}_{color}_grad_mean'] = grad_sample[:, i].mean().item()
+                        gradients[f'{param_name}_{color}_grad_std'] = grad_sample[:, i].std().item()
+                else:
+                    # Other parameters have shape (N,)
+                    grad_sample = param.grad[self.sample_indices]
+                    gradients[f'{param_name}_grad_mean'] = grad_sample.mean().item()
+                    gradients[f'{param_name}_grad_std'] = grad_sample.std().item()
+                    gradients[f'{param_name}_grad_norm'] = grad_sample.norm().item()
+            else:
+                # No gradients available
+                gradients[f'{param_name}_grad_mean'] = 0.0
+                gradients[f'{param_name}_grad_std'] = 0.0
+                gradients[f'{param_name}_grad_norm'] = 0.0
+                if param_name == 'c':
+                    for color in ['r', 'g', 'b']:
+                        gradients[f'{param_name}_{color}_grad_mean'] = 0.0
+                        gradients[f'{param_name}_{color}_grad_std'] = 0.0
+        
+        # Add epoch and sample size info
+        gradients['epoch'] = epoch
+        gradients['sample_size'] = self.sample_size
+        gradients['total_primitives'] = x.shape[0] # N
+        
+        # Log to wandb
+        wandb.log(gradients)
 
     def clear_cuda_cache(self):
         """
