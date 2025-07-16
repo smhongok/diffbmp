@@ -1335,7 +1335,7 @@ class VectorRenderer:
 
     def log_gradient_statistics(self, x, y, r, v, theta, c, epoch):
         """
-        Log gradient statistics for 20% of primitives to wandb.
+        Log gradient statistics for 20% of primitives and 0th primitive to wandb.
         
         Args:
             x, y, r, v, theta, c: Parameter tensors
@@ -1346,40 +1346,62 @@ class VectorRenderer:
         gradients = {}
         params = {'x': x, 'y': y, 'r': r, 'v': v, 'theta': theta, 'c': c}
         
+        # for param_name, param in params.items():
+        #     if param.grad is not None:
+        #         # Get gradients for sampled indices
+        #         if param_name == 'c':
+        #             # c has shape (N, 3), so we need to handle it differently
+        #             grad_sample = param.grad[self.sample_indices]  # (sample_size, 3)
+        #             gradients[f'{param_name}_grad_mean'] = grad_sample.mean().item()
+        #             gradients[f'{param_name}_grad_std'] = grad_sample.std().item()
+        #             gradients[f'{param_name}_grad_norm'] = grad_sample.norm().item()
+                    
+        #             # Log individual RGB channel gradients
+        #             for i, color in enumerate(['r', 'g', 'b']):
+        #                 gradients[f'{param_name}_{color}_grad_mean'] = grad_sample[:, i].mean().item()
+        #                 gradients[f'{param_name}_{color}_grad_std'] = grad_sample[:, i].std().item()
+        #         else:
+        #             # Other parameters have shape (N,)
+        #             grad_sample = param.grad[self.sample_indices]
+        #             gradients[f'{param_name}_grad_mean'] = grad_sample.mean().item()
+        #             gradients[f'{param_name}_grad_std'] = grad_sample.std().item()
+        #             gradients[f'{param_name}_grad_norm'] = grad_sample.norm().item()
+        #     else:
+        #         # No gradients available
+        #         gradients[f'{param_name}_grad_mean'] = 0.0
+        #         gradients[f'{param_name}_grad_std'] = 0.0
+        #         gradients[f'{param_name}_grad_norm'] = 0.0
+        #         if param_name == 'c':
+        #             for color in ['r', 'g', 'b']:
+        #                 gradients[f'{param_name}_{color}_grad_mean'] = 0.0
+        #                 gradients[f'{param_name}_{color}_grad_std'] = 0.0
+        
+        # Log 0th primitive gradients and values
         for param_name, param in params.items():
             if param.grad is not None:
-                # Get gradients for sampled indices
                 if param_name == 'c':
-                    # c has shape (N, 3), so we need to handle it differently
-                    grad_sample = param.grad[self.sample_indices]  # (sample_size, 3)
-                    gradients[f'{param_name}_grad_mean'] = grad_sample.mean().item()
-                    gradients[f'{param_name}_grad_std'] = grad_sample.std().item()
-                    gradients[f'{param_name}_grad_norm'] = grad_sample.norm().item()
+                    # c has shape (N, 3)
+                    grad_0th = param.grad[0]  # (3,)
+                    param_0th = param[0]      # (3,)
                     
-                    # Log individual RGB channel gradients
-                    for i, color in enumerate(['r', 'g', 'b']):
-                        gradients[f'{param_name}_{color}_grad_mean'] = grad_sample[:, i].mean().item()
-                        gradients[f'{param_name}_{color}_grad_std'] = grad_sample[:, i].std().item()
+                    # Log 0th primitive gradient values
+                    gradients[f'{param_name}_0th_r'] = grad_0th[0].item()
+                    gradients[f'{param_name}_0th_g'] = grad_0th[1].item()
+                    gradients[f'{param_name}_0th_b'] = grad_0th[2].item()
                 else:
                     # Other parameters have shape (N,)
-                    grad_sample = param.grad[self.sample_indices]
-                    gradients[f'{param_name}_grad_mean'] = grad_sample.mean().item()
-                    gradients[f'{param_name}_grad_std'] = grad_sample.std().item()
-                    gradients[f'{param_name}_grad_norm'] = grad_sample.norm().item()
+                    grad_0th = param.grad[0]
+                    param_0th = param[0]
+                    
+                    # Log 0th primitive gradient and value
+                    gradients[f'{param_name}_0th_grad'] = grad_0th.item()
             else:
-                # No gradients available
-                gradients[f'{param_name}_grad_mean'] = 0.0
-                gradients[f'{param_name}_grad_std'] = 0.0
-                gradients[f'{param_name}_grad_norm'] = 0.0
+                # No gradients available for 0th primitive
                 if param_name == 'c':
                     for color in ['r', 'g', 'b']:
-                        gradients[f'{param_name}_{color}_grad_mean'] = 0.0
-                        gradients[f'{param_name}_{color}_grad_std'] = 0.0
-        
-        # Add epoch and sample size info
-        gradients['epoch'] = epoch
-        gradients['sample_size'] = self.sample_size
-        gradients['total_primitives'] = x.shape[0] # N
+                        gradients[f'{param_name}_0th_grad_{color}'] = 0.0
+                else:
+                    gradients[f'{param_name}_0th_grad'] = 0.0
         
         # Log to wandb
         wandb.log(gradients)
