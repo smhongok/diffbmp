@@ -82,7 +82,8 @@
         },
         "freq_gamma":1.0,
         "do_dwa": true,
-        "save_epoch": false
+        "save_epoch": false,
+        "log_gradients": false
     },
     "postprocessing": {
         "output_folder": "outputs/",
