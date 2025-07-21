@@ -31,7 +31,7 @@
     },
     "initialization": {
         "initializer": "structure_aware",
-        "N": [3000],
+        "N": [2000],
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,

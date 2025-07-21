@@ -25,6 +25,8 @@ from core.preprocessing import Preprocessor
 from util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
 from util.pdf_exporter import PDFExporter
 
+
+html_extra_path_special = None
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Argument parser setup

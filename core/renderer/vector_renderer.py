@@ -167,51 +167,44 @@ class VectorRenderer:
             # Return single-channel masks
             return sampled.squeeze(1)  # (B, H, W)
     
-    def _tree_over(self, m: torch.Tensor, a: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Efficient tree-based alpha compositing.
+    def _transmit_over(self, m: torch.Tensor, a: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    
         
-        Args:
-            m: Color tensor
-            a: Alpha tensor
-            
-        Returns:
-            Tuple of (composited color, composited alpha)
         """
-        if self.use_fp16:
-            with autocast('cuda'):
-                while m.size(0) > 1:
-                    n = m.size(0)
-                    if n % 2 == 1:
-                        pad_m = torch.zeros((1, *m.shape[1:]), device=m.device, dtype=m.dtype)
-                        pad_a = torch.zeros((1, *a.shape[1:]), device=a.device, dtype=a.dtype)
-                        m = torch.cat([m, pad_m], dim=0)
-                        a = torch.cat([a, pad_a], dim=0)
-                        n += 1
-                    new_n = n // 2
-                    # reshape with view → no additional memory
-                    m = m.view(new_n, 2, *m.shape[1:])
-                    a = a.view(new_n, 2, *a.shape[1:])
-                    # pairwise compositing (could overwrite in-place)
-                    m = m[:,0] + (1 - a[:,0]).unsqueeze(-1) * m[:,1]
-                    a = a[:,0] + (1 - a[:,0]) * a[:,1]
-                return m.squeeze(0), a.squeeze(0)
-        else:
-            while m.size(0) > 1:
-                n = m.size(0)
-                if n % 2 == 1:
-                    pad_m = torch.zeros((1, *m.shape[1:]), device=m.device, dtype=m.dtype)
-                    pad_a = torch.zeros((1, *a.shape[1:]), device=a.device, dtype=a.dtype)
-                    m = torch.cat([m, pad_m], dim=0)
-                    a = torch.cat([a, pad_a], dim=0)
-                    n = m.size(0)
-                new_n = n // 2
-                m = m.reshape(new_n, 2, m.size(1), m.size(2), 3)
-                a = a.reshape(new_n, 2, a.size(1), a.size(2))
-                m = m[:, 0] + (1 - a[:, 0]).unsqueeze(-1) * m[:, 1]
-                a = a[:, 0] + (1 - a[:, 0]) * a[:, 1]
-                
-            return m.squeeze(0), a.squeeze(0)
+        Vectorized weighted-sum alpha compositing (Porter–Duff “Over”).
+        Inputs:
+        m: (N, H, W, 3) premultiplied colors
+        a: (N, H, W) alphas
+        Outputs:
+        comp_m: (H, W, 3) composited RGB before blending white background
+        comp_a: (H, W)   composited alpha
+        """
+        # 1. Compute transmittance T[k] = prod_{i<k}(1 - a[i]) for k=0..N
+        #    T has shape (N+1, H, W), with T[0] = 1
+        alpha_inv = 1.0 - a                               # (N, H, W)
+        T_partial = torch.cumprod(alpha_inv, dim=0)       # (N, H, W)
+        ones = torch.ones_like(T_partial[0:1])            # (1, H, W)
+        T = torch.cat([ones, T_partial], dim=0)           # (N+1, H, W)
+
+        # 2. Composite alpha: A_out = 1 - T[N]
+        comp_a = 1.0 - T[-1]                               # (H, W)
+
+        # 3. Composite color before blending white background:
+        #    C_out = sum_{k=0..N-1} (m[k] * T[k]) + T[N]*white
+        #    Here m[k] already = a[k] * c[k], so weight = T[k]
+        #    Weighted sum is sum_{k=0..N-1} (m[k] * T[k])
+        weights = T[:-1].unsqueeze(-1)                     # (N, H, W, 1)
+        weighted = m * weights                            # (N, H, W, 3)
+        comp_m = weighted.sum(dim=0)                     # (H, W, 3)
+
+        return comp_m, comp_a
+
+        # as a lab intern who edited this code without deep knowledge about computing, 
+        # carfully suggest this method because
+        # 1. Similar PSNR, increased SSIM, VIF, and lowered LPIPS compared to the original method
+        # 2. significant decrease of total cost time
+
+
     
     def _get_checkpoint_kwargs(self):
         """
@@ -278,11 +271,11 @@ class VectorRenderer:
             # 2. Porter–Duff reduction (tree)
             if self.use_checkpointing:
                 comp_m, comp_a = self._safe_checkpoint(
-                    lambda mm, aa: self._tree_over(mm, aa),
+                    lambda mm, aa: self._transmit_over(mm, aa),
                     m, a
                 )
             else:
-                comp_m, comp_a = self._tree_over(m, a)    
+                comp_m, comp_a = self._transmit_over(m, a)    
             
             # Free large tensors as soon as possible if in FP16 mode
             if self.use_fp16:
