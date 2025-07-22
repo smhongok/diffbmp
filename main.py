@@ -25,7 +25,7 @@ from core.initializer.random_initializater import RandomInitializer
 from core.preprocessing import Preprocessor
 from util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
 from util.pdf_exporter import PDFExporter
-from util.html_exporter import HTMLExporter
+
 
 
 html_extra_path_special = None
@@ -192,26 +192,36 @@ os.makedirs(output_dir, exist_ok=True)
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 output_path = os.path.join(output_dir, f'output_{timestamp}.png')
 
-# Export based on primitive types
-if primitive_loader and primitive_loader.has_raster_primitives():
-    # Use HTML export for raster primitives
-    html_path = os.path.join(output_dir, f'output_{timestamp}.html')
-    html_exporter = HTMLExporter(
-        primitive_loader=primitive_loader,
-        canvas_size=(W, H),
-        alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5)
+# High-resolution export configuration
+hires_enabled = config["postprocessing"].get("hires_export", False)
+scale_factor = config["postprocessing"].get("hires_scale_factor", 4.0)
+chunk_size = config["postprocessing"].get("hires_chunk_size", 10)
+
+if hires_enabled:
+    # TODO: this is not well-implemented (not efficient)
+    # High-resolution PNG export using streaming approach
+    hires_png_path = os.path.join(output_dir, f'output_{timestamp}_hires.png')
+    print(f"Generating high-resolution PNG ({scale_factor}x scale)...")
+    renderer.save_rendered_image_hires(
+        x, y, r, theta, v, c,
+        output_path=hires_png_path,
+        scale_factor=scale_factor,
+        chunk_size=chunk_size
     )
     
-    html_exporter.export(
+    # High-resolution MP4 export using streaming approach
+    hires_mp4_path = os.path.join(output_dir, f'output_{timestamp}_hires.mp4')
+    print(f"Generating high-resolution MP4 ({scale_factor}x scale)...")
+    renderer.render_export_mp4_hires(
         x, y, r, theta, v, c,
-        output_path=html_path,
-        enable_animation=True,
-        animation_speed=1.0,
-        title=f"SVGSplat Result - {timestamp}"
+        video_path=hires_mp4_path,
+        scale_factor=scale_factor,
+        chunk_size=chunk_size,
+        fps=60
     )
-    print(f"Exported interactive HTML with raster primitives to {html_path}")
-else:
-    # Use PDF export for SVG-only primitives
+
+# Standard PDF export for SVG-only primitives (if no raster primitives)
+if not (primitive_loader and primitive_loader.has_raster_primitives()):
     pdf_path = os.path.join(output_dir, f'output_{timestamp}.pdf')
     exporter = PDFExporter(
         svg_loader.svg_path, 
