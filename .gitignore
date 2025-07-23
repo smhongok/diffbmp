@@ -31,6 +31,7 @@ configs/*
 !configs/default*.json
 
 images/person/*
+!images/person/pororo.jpg
 
 wandb
 
