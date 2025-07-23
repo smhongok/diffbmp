@@ -1205,6 +1205,106 @@ class VectorRenderer:
         # Save the image using PIL
         Image.fromarray(final_render_np).save(output_path)
        
+    def render_export_mp4_hires(self,
+                              x: torch.Tensor,
+                              y: torch.Tensor,
+                              r: torch.Tensor,
+                              theta: torch.Tensor,
+                              v: torch.Tensor,
+                              c: torch.Tensor,
+                              video_path: str,
+                              scale_factor: float = 4.0,
+                              chunk_size: int = 10,
+                              fps: int = 60) -> None:
+        """
+        Export high-resolution MP4 video using streaming approach to avoid VRAM overflow.
+        Shows progressive primitive addition at high resolution.
+        
+        Args:
+            x, y, r, theta, v, c: Primitive parameters
+            video_path: Path to save the MP4 video
+            scale_factor: Resolution multiplier (e.g., 4.0 = 4x resolution)
+            chunk_size: Number of primitives to process at once (smaller = less VRAM)
+            fps: Frames per second for the video
+        """
+        import cv2
+        
+        # Store original resolution
+        orig_H, orig_W = self.H, self.W
+        
+        # Temporarily scale up resolution
+        self.H = int(orig_H * scale_factor)
+        self.W = int(orig_W * scale_factor)
+        
+        # Scale up coordinates and sizes
+        x_scaled = x * scale_factor
+        y_scaled = y * scale_factor
+        r_scaled = r * scale_factor
+        
+        # Recreate coordinate grid for new resolution
+        old_X, old_Y = self.X, self.Y
+        self.X, self.Y = self._create_coordinate_grid()
+        
+        # Initialize video writer
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(video_path, fourcc, fps, (self.W, self.H))
+        
+        if not writer.isOpened():
+            raise RuntimeError(f"Could not open video writer for {video_path}")
+        
+        try:
+            N = len(x_scaled)
+            print(f"Generating high-resolution MP4 with {N} primitives at {self.W}x{self.H}...")
+            
+            # Process primitives incrementally for animation
+            for frame_idx in range(N + 1):
+                if frame_idx % max(1, N // 20) == 0:  # Progress updates
+                    print(f"Processing frame {frame_idx}/{N}...")
+                
+                if frame_idx == 0:
+                    # First frame: white background
+                    frame = torch.ones((self.H, self.W, 3), device=x.device, dtype=torch.float32)
+                else:
+                    # Render up to current primitive using streaming approach
+                    curr_x = x_scaled[:frame_idx]
+                    curr_y = y_scaled[:frame_idx]
+                    curr_r = r_scaled[:frame_idx]
+                    curr_theta = theta[:frame_idx]
+                    curr_v = v[:frame_idx]
+                    curr_c = c[:frame_idx]
+                    
+                    # Use streaming render to avoid VRAM overflow
+                    frame = self._stream_render(
+                        curr_x, curr_y, curr_r, curr_theta, curr_v, curr_c,
+                        sigma=0.0,
+                        raster_chunk_size=chunk_size
+                    )
+                
+                # Convert to numpy and write frame
+                frame_np = frame.detach().cpu().numpy()
+                frame_np = (frame_np * 255).astype(np.uint8)
+                
+                # Convert RGB to BGR for OpenCV
+                frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
+                writer.write(frame_bgr)
+                
+                # Clear GPU memory periodically
+                if frame_idx % 10 == 0:
+                    torch.cuda.empty_cache()
+            
+            print(f"Saved high-resolution MP4 ({self.W}x{self.H}) to {video_path}")
+            
+        finally:
+            # Clean up
+            writer.release()
+            
+            # Restore original resolution and coordinate grid
+            self.H, self.W = orig_H, orig_W
+            self.X, self.Y = old_X, old_Y
+            
+            # Clear GPU memory
+            torch.cuda.empty_cache()
+
     def create_video_from_collected_frames(self, output_video_path: str, fps: int = 30) -> str:
         """
         Create an MP4 video from frames collected during optimization.

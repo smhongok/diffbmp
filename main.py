@@ -16,6 +16,7 @@ import cv2
 from datetime import datetime
 from core.renderer.mse_renderer import MseRenderer
 from util.svg_loader import SVGLoader
+from util.primitive_loader import PrimitiveLoader
 from util.svg_converter import FontParser, ImageToSVG
 from core.initializer.svgsplat_initializater import StructureAwareInitializer
 from core.initializer.random_initializater import RandomInitializer
@@ -24,6 +25,7 @@ from core.initializer.random_initializater import RandomInitializer
 from core.preprocessing import Preprocessor
 from util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
 from util.pdf_exporter import PDFExporter
+
 
 
 html_extra_path_special = None
@@ -75,9 +77,12 @@ svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
 if svg_ext == ".svg":
     svg_path = os.path.join("assets/svg", config["svg"].get("svg_file"))
 elif svg_ext in (".png", ".jpg", ".jpeg"):
-    img_converter = ImageToSVG()
-    svg_path = img_converter.extract_filled_outlines(config["svg"].get("svg_file"), threshold=100, min_area_ratio=0.000001)
-    del img_converter
+    if config["svg"].get("convert_to_svg", True):
+        img_converter = ImageToSVG()
+        svg_path = img_converter.extract_filled_outlines(config["svg"].get("svg_file"), threshold=100, min_area_ratio=0.000001)
+        del img_converter
+    else:
+        svg_path = os.path.join("assets/primitives", config["svg"].get("svg_file"))
 elif svg_ext in (".otf", ".ttf"):
     # 텍스트 소스 결정
     texts = None
@@ -111,12 +116,27 @@ elif svg_ext in (".otf", ".ttf"):
 else:
     svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
 
-# Load SVG file
-svg_loader = SVGLoader(
-    svg_path=svg_path,
-    output_width=config["svg"].get("output_width", 128),
-    device=device
-)
+# Load primitives (SVG, PNG, JPG)
+# Use PrimitiveLoader for hybrid support, fallback to SVGLoader for compatibility
+try:
+    primitive_loader = PrimitiveLoader(
+        primitive_paths=svg_path,
+        output_width=config["svg"].get("output_width", 128),
+        device=device,
+        bg_threshold=config["svg"].get("bg_threshold", 250)
+    )
+    # Keep reference for backward compatibility
+    svg_loader = primitive_loader
+    print(f"Loaded primitives: {len(primitive_loader.primitive_paths)} files")
+    print(f"Primitive types: {primitive_loader.primitive_types}")
+except Exception as e:
+    print(f"PrimitiveLoader failed, falling back to SVGLoader: {e}")
+    svg_loader = SVGLoader(
+        svg_path=svg_path,
+        output_width=config["svg"].get("output_width", 128),
+        device=device
+    )
+    primitive_loader = None
 
 # Initialize renderer based on loss type
 renderer_type = opt_conf.get("renderer_type", "mse")
@@ -166,38 +186,67 @@ x, y, r, v, theta, c = renderer.optimize_parameters(
     opt_conf=opt_conf
 )
 
-# Generate final masks and render
-cached_masks = renderer._batched_soft_rasterize(
-    x, y, r, theta,
-    sigma=0
-)
-rendered = renderer.render(cached_masks, v, c)
-
 # Save the final rendered image
 output_dir = config["postprocessing"].get("output_folder", "./outputs/")
 os.makedirs(output_dir, exist_ok=True)
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 output_path = os.path.join(output_dir, f'output_{timestamp}.png')
-renderer.save_rendered_image(cached_masks, v, c, output_path)
 
-# Export PDF
-pdf_path = os.path.join(output_dir, f'output_{timestamp}.pdf')
-exporter = PDFExporter(
-    svg_loader.svg_path, 
-    canvas_size=(W, H),
-    viewbox_size=svg_loader.get_svg_size(),
-    alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
-    stroke_width=config["postprocessing"].get("linewidth", 3.0)
-)
+# High-resolution export configuration
+hires_enabled = config["postprocessing"].get("hires_export", False)
+scale_factor = config["postprocessing"].get("hires_scale_factor", 4.0)
+chunk_size = config["postprocessing"].get("hires_chunk_size", 10)
 
-exporter.export(x, y, r, theta, v, c,
-                output_path=pdf_path,
-                svg_hollow=config["svg"].get("svg_hollow", False),
-                html_extra_path = "output_webpage/src/index.html" if html_extra_path_special is None else html_extra_path_special,
-                export_pdf=True,
-                html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
-)
+if hires_enabled:
+    # TODO: this is not well-implemented (not efficient)
+    # High-resolution PNG export using streaming approach
+    hires_png_path = os.path.join(output_dir, f'output_{timestamp}_hires.png')
+    print(f"Generating high-resolution PNG ({scale_factor}x scale)...")
+    renderer.save_rendered_image_hires(
+        x, y, r, theta, v, c,
+        output_path=hires_png_path,
+        scale_factor=scale_factor,
+        chunk_size=chunk_size
+    )
+    
+    # High-resolution MP4 export using streaming approach
+    hires_mp4_path = os.path.join(output_dir, f'output_{timestamp}_hires.mp4')
+    print(f"Generating high-resolution MP4 ({scale_factor}x scale)...")
+    renderer.render_export_mp4_hires(
+        x, y, r, theta, v, c,
+        video_path=hires_mp4_path,
+        scale_factor=scale_factor,
+        chunk_size=chunk_size,
+        fps=60
+    )
+
+# Standard PDF export for SVG-only primitives (if no raster primitives)
+if not (primitive_loader and primitive_loader.has_raster_primitives()):
+    pdf_path = os.path.join(output_dir, f'output_{timestamp}.pdf')
+    exporter = PDFExporter(
+        svg_loader.svg_path, 
+        canvas_size=(W, H),
+        viewbox_size=svg_loader.get_svg_size(),
+        alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
+        stroke_width=config["postprocessing"].get("linewidth", 3.0)
+    )
+    
+    exporter.export(x, y, r, theta, v, c,
+                    output_path=pdf_path,
+                    svg_hollow=config["svg"].get("svg_hollow", False),
+                    html_extra_path = "output_webpage/src/index.html" if html_extra_path_special is None else html_extra_path_special,
+                    export_pdf=True,
+                    html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
+    )
 with torch.no_grad():
+    # Generate final masks and render
+    cached_masks = renderer._batched_soft_rasterize(
+        x, y, r, theta,
+        sigma=0
+    )
+    rendered = renderer.render(cached_masks, v, c)
+    renderer.save_rendered_image(cached_masks, v, c, output_path)
+
     video_path = os.path.join(output_dir, f'output_{timestamp}.mp4')
     renderer.render_export_mp4(cached_masks, v, c, video_path=video_path)
 

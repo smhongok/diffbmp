@@ -83,7 +83,7 @@
         },
         "freq_gamma":1.0,
         "do_dwa": true,
-        "save_epoch": false
+        "save_epoch": true
     },
     "postprocessing": {
         "output_folder": "outputs/",
