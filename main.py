@@ -4,6 +4,7 @@ from datetime import timedelta
 start_time = time.time()
 
 import os
+import warnings
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -192,31 +193,19 @@ os.makedirs(output_dir, exist_ok=True)
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 output_path = os.path.join(output_dir, f'output_{timestamp}.png')
 
-# High-resolution export configuration
+# High-resolution export configuration (recommended only when you have raster primitives)
 hires_enabled = config["postprocessing"].get("hires_export", False)
 scale_factor = config["postprocessing"].get("hires_scale_factor", 4.0)
-chunk_size = config["postprocessing"].get("hires_chunk_size", 10)
 
 if hires_enabled:
-    # TODO: this is not well-implemented (not efficient)
-    # High-resolution PNG export using streaming approach
-    hires_png_path = os.path.join(output_dir, f'output_{timestamp}_hires.png')
-    print(f"Generating high-resolution PNG ({scale_factor}x scale)...")
-    renderer.save_rendered_image_hires(
-        x, y, r, theta, v, c,
-        output_path=hires_png_path,
-        scale_factor=scale_factor,
-        chunk_size=chunk_size
-    )
-    
     # High-resolution MP4 export using streaming approach
+    warnings.warn("High-resolution export is not recommended for vector primitives. Use it only when you have raster primitives.")
     hires_mp4_path = os.path.join(output_dir, f'output_{timestamp}_hires.mp4')
     print(f"Generating high-resolution MP4 ({scale_factor}x scale)...")
     renderer.render_export_mp4_hires(
         x, y, r, theta, v, c,
         video_path=hires_mp4_path,
         scale_factor=scale_factor,
-        chunk_size=chunk_size,
         fps=60
     )
 

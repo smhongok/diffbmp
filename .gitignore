@@ -11,13 +11,14 @@ main_rgb.py
 codes_legacy/*
 extra_outputs/*
 assets/svg/*
-assets/primitives/
+assets/primitives/*
 output_webpage/node_modules/
 output_webpage/src/index.html
 output_webpage/src_lyrics/index.html
 !assets/svg/fire.svg
 !assets/svg/fire2.svg
 !assets/primitives/paint_brush.png
+!assets/primitives/hand.jpeg
 
 assets/font/*
 !assets/font/arial.ttf

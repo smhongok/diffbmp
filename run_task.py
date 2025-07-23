@@ -171,10 +171,9 @@ def process_combination(args):
             stream_render = opt_conf.get("streaming_render", False)
             
             if stream_render:
-                rendered = renderer._stream_render(
-                    x, y, r, theta, v, c,
-                    sigma=0.0
-                )
+                # Use standard rendering (streaming removed as inefficient)
+                cached_masks = renderer._batched_soft_rasterize(x, y, r, theta, sigma=0.0)
+                rendered = renderer.render(cached_masks, v, c)
             else:
                 cached_masks = renderer._batched_soft_rasterize(
                     x, y, r, theta,
