@@ -413,115 +413,6 @@ class VectorRenderer:
 
         return frame  # Return the last frame for reference
     
-    def _stream_render(self,
-                    x: torch.Tensor,
-                    y: torch.Tensor,
-                    r: torch.Tensor,
-                    theta: torch.Tensor,
-                    v: torch.Tensor,
-                    c: torch.Tensor,
-                    sigma: float = 0.0,
-                    raster_chunk_size: int = 20) -> torch.Tensor:
-        """
-        Streaming‐composite render: rasterize in small chunks and
-        composite immediately, never buffering all N masks.
-        """
-        N = x.shape[0]
-        H, W = self.H, self.W
-        device = x.device
-        target_dtype = x.dtype  # Use the same dtype as input tensors
-
-        # 1) Pre-blur the source bitmap once
-        with torch.no_grad():
-            bmp = self.S.unsqueeze(0)
-            if sigma > 0:
-                bmp = gaussian_blur(bmp, sigma)
-                #bmp_processed = bmp.to(dtype=target_dtype).squeeze(0)  # [C_bmp, H, W]
-                bmp_processed = bmp.squeeze(0)  # [C_bmp, H, W]
-            else:
-                bmp_processed = self.S
-            del bmp
-
-        # 2) Prepare alphas & colors
-        with torch.no_grad():
-            # Process v and c in smaller chunks
-            chunk_size = min(100, max(1, N // 2))
-            
-            # 3) Running composite buffers - use local variables for checkpointing compatibility
-            comp_m = torch.zeros((H, W, 3), device=device, dtype=target_dtype)
-            comp_a = torch.zeros((H, W), device=device, dtype=target_dtype)
-        
-        # 4) Process in small shape‐chunks
-        for i in range(0, N, raster_chunk_size):
-            j = min(i + raster_chunk_size, N)
-            curr_chunk_size = j - i
-            
-            # Calculate visibility and color for current chunk
-            with torch.no_grad():
-                v_chunk = v[i:j]
-                c_chunk = c[i:j]
-                v_alpha = (self.alpha_upper_bound * torch.sigmoid(v_chunk)).view(curr_chunk_size, 1, 1)
-                c_eff = torch.sigmoid(c_chunk).view(curr_chunk_size, 1, 1, 3)
-                
-                # Get position parameters
-                x_chunk = x[i:j]
-                y_chunk = y[i:j]
-                r_chunk = r[i:j]
-                theta_chunk = theta[i:j]
-                
-            # a) Rasterize just this subset
-            context = autocast('cuda') if self.use_fp16 else nullcontext()
-            with context:
-                masks_chunk = self._batched_soft_rasterize(
-                    x_chunk, y_chunk,
-                    r_chunk, theta_chunk,
-                    sigma=0.0                # already applied blur to bmp_processed
-                )     # [C, H, W]
-                
-                # b) Split into smaller sub-chunks instead of compositing all masks at once
-                sub_chunk_size = 5  # small sub-chunk size
-                
-                for k in range(0, curr_chunk_size, sub_chunk_size):
-                    end_k = min(k + sub_chunk_size, curr_chunk_size)
-                    
-                    # Current sub-chunk masks, alphas, colors
-                    masks_subchunk = masks_chunk[k:end_k]
-                    v_subchunk = v_alpha[k:end_k]
-                    c_subchunk = c_eff[k:end_k]
-                    
-                    # Sequential compositing for each shape
-                    for s in range(end_k - k):
-                        a_s = v_subchunk[s] * masks_subchunk[s]          # [H, W]
-                        m_s = a_s.unsqueeze(-1) * c_subchunk[s]       # [H, W, 3]
-                        
-                        # Use inplace operations
-                        inv_a_s = 1.0 - a_s
-                        comp_m = m_s + inv_a_s.unsqueeze(-1) * comp_m
-                        comp_a = a_s + inv_a_s * comp_a
-                        
-                        # Free temporary tensors immediately if in FP16 mode
-                        if self.use_fp16:
-                            del a_s, m_s, inv_a_s
-                    
-                    # Free sub-chunk tensors if in FP16 mode
-                    if self.use_fp16:
-                        del masks_subchunk, v_subchunk, c_subchunk
-                        torch.cuda.empty_cache()
-
-            # Free chunk tensors if in FP16 mode
-            if self.use_fp16:
-                del masks_chunk, v_chunk, c_chunk, v_alpha, c_eff, x_chunk, y_chunk, r_chunk, theta_chunk
-                torch.cuda.empty_cache()
-
-        # 5) Finalize with white background
-        with torch.no_grad():
-            final = comp_m + (1 - comp_a).unsqueeze(-1)
-            # Free memory before return if in FP16 mode
-            if self.use_fp16:
-                del comp_m, comp_a
-        
-        return final
-    
     def compute_loss(self, 
                     rendered: torch.Tensor, 
                     target: torch.Tensor, 
@@ -573,27 +464,24 @@ class VectorRenderer:
         return x, y, r, v, theta, c
     
     def optimize_parameters(self,
-                          x: torch.Tensor,
-                          y: torch.Tensor,
-                          r: torch.Tensor,
-                          v: torch.Tensor,
-                          theta: torch.Tensor,
-                          c: torch.Tensor,
-                          target_image: torch.Tensor,
-                          opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
+                      x: torch.Tensor,
+                      y: torch.Tensor,
+                      r: torch.Tensor,
+                      v: torch.Tensor,
+                      theta: torch.Tensor,
+                      c: torch.Tensor,
+                      target_image: torch.Tensor,
+                      opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
+        """Optimize rendering parameters to match target image."""
         N = x.shape[0]
         self.sample_size = max(1, int(0.2 * N))  # 20% of primitives
         # Randomly sample indices
         self.sample_indices = torch.randperm(N, device=self.device)[:self.sample_size]
 
-        if opt_conf.get("batch_optimization", False):
-            return self._optimize_parameters_batched(
-                x, y, r, v, theta, c, target_image, opt_conf
-            )
-        else:
-            return self._optimize_parameters_whole(
-                x, y, r, v, theta, c, target_image, opt_conf
-            )   
+        # Use whole optimization (batch optimization removed as it's never used)
+        return self._optimize_parameters_whole(
+            x, y, r, v, theta, c, target_image, opt_conf
+        )   
 
     def _optimize_parameters_whole(self,
                           x: torch.Tensor,
@@ -748,12 +636,9 @@ class VectorRenderer:
                         rendered = self.render(self.S, v, c)
                     else:
                         if streaming_render:
-                            rendered = self._stream_render(
-                                x, y, r, theta,
-                                v, c,
-                                sigma=sigma,
-                                raster_chunk_size=raster_chunk_size
-                            )
+                            # Use standard rendering instead of inefficient streaming
+                            cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=sigma)
+                            rendered = self.render(cached_masks, v, c)
                         else:
                             # Generate masks (memory efficient)
                             cached_masks = self._batched_soft_rasterize(
@@ -1017,172 +902,6 @@ class VectorRenderer:
             print(f"Optimization progress video saved to: {video_path}")
             
         return x, y, r, v, theta, c
-    
-    def _optimize_parameters_batched(self,
-                          x: torch.Tensor,
-                          y: torch.Tensor,
-                          r: torch.Tensor,
-                          v: torch.Tensor,
-                          theta: torch.Tensor,
-                          c: torch.Tensor,
-                          target_image: torch.Tensor,
-                          opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
-        """
-        Optimize the rendering parameters to match the target image.
-        
-        Args:
-            x, y, r, v, theta, c: Initial parameters
-            target_image: Target image to match
-            opt_conf: Optimization configuration
-            
-        Returns:
-            Tuple of optimized parameters (x, y, r, v, theta, c)
-        """
-        # Get optimization parameters from config
-        num_iterations = opt_conf.get("num_iterations", 100)
-        chunk = opt_conf.get("batch_size", 256)
-        lr_conf = opt_conf["learning_rate"]
-        lr = lr_conf.get("default", 0.1)
-        
-        # Create output directory for saving images if it doesn't exist
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        os.makedirs(self.output_path, exist_ok=True)
-        
-        # Create optimizer
-        optimizer = torch.optim.Adam([
-            {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
-            {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
-            {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
-            {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},
-            {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
-            {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
-        ])
-
-        # For batch optimization, pre-generate cached masks
-        with torch.no_grad():
-            cached_masks = self._batched_soft_rasterize(
-                x, y, r, theta, sigma=opt_conf.get("blur_sigma", 1.0)
-            )
-
-        N = x.numel()
-        print(f"Starting optimization for Mini-batch GD: N={N}  chunk={chunk}  iterations={num_iterations}...")
-        for step in tqdm(range(num_iterations)):
-            # -------- 0. Front/batch/back index slices --------
-            start = (step * chunk) % N
-            end   = min(start + chunk, N)
-            fg_sl     = slice(0, start)   # Front (near)
-            batch_sl  = slice(start, end) # Training target
-            bg_sl     = slice(end, N)     # Back (far)
-
-            # -------- 1. no-grad composition (FG,BG) --------
-            with torch.no_grad():
-                # Front layers → rgb_fg, alpha_fg
-                if start > 0:
-                    # Render with new buffer each time
-                    rgb_fg, alpha_fg = self.render(
-                        cached_masks[fg_sl], v[fg_sl], c[fg_sl],
-                        return_alpha=True
-                    )
-                else:  # If nothing, then transparent
-                    rgb_fg  = torch.zeros((self.H, self.W, 3), device=self.device, dtype=torch.float16)
-                    alpha_fg = torch.zeros((self.H, self.W, 1), device=self.device, dtype=torch.float16)
-                    
-                # Back layers → rgb_bg (composite with white background, discard alpha)
-                if end < N:
-                    rgb_bg = self.render(
-                        cached_masks[bg_sl], v[bg_sl], c[bg_sl],
-                        return_alpha=False
-                    )
-                else:
-                    rgb_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float16)
-
-            # -------- 2. Forward pass for batch learning --------
-            optimizer.zero_grad()
-            # Render image
-            if opt_conf.get("multi_level", False):
-                # Multi-level rendering not implemented
-                raise NotImplementedError("Multi-level rendering not implemented")
-            else:
-                # Generate current batch masks
-                masks_bt = self._batched_soft_rasterize(
-                    x[batch_sl], y[batch_sl], r[batch_sl], theta[batch_sl],
-                    sigma=opt_conf.get("blur_sigma", 1.0)
-                )
-                
-                # Batch rendering
-                rgb_bt, alpha_bt = self.render(
-                        masks_bt, v[batch_sl], c[batch_sl],
-                        return_alpha=True
-                    )
-            
-            # -------- 3. Porter-Duff over(fg → batch → bg) --------
-            # Create new tensor explicitly to improve checkpointing compatibility
-            comp1 = rgb_fg + (1 - alpha_fg) * rgb_bt
-            
-            # Final composition also creates new tensor
-            inv_alpha_product = (1 - alpha_fg) * (1 - alpha_bt)
-            final = comp1 + inv_alpha_product * rgb_bg
-
-            # Compute loss
-            loss = self.compute_loss(final, target_image,
-                                    x, y, r, v, theta, c)
-            
-            # Backward pass and update
-            loss.backward()
-            optimizer.step()            
-            
-            # Log gradient statistics to wandb
-            if opt_conf.get("log_gradients", False):
-                self.log_gradient_statistics(x, y, r, v, theta, c, step)
-            
-            # Explicitly clean up used tensors
-            del masks_bt, rgb_bt, alpha_bt, comp1, inv_alpha_product, final, rgb_fg, alpha_fg, rgb_bg
-            torch.cuda.empty_cache()
-            
-            # Clamp parameters
-            with torch.no_grad():
-                x.clamp_(0, self.W)
-                y.clamp_(0, self.H)
-                r.clamp_(2, min(self.H, self.W) // 4)
-                theta.clamp_(0, 2 * np.pi)
-            
-                # ── (NEW) Recalculate masks for changed batch slice and cache update ──
-                cached_masks[batch_sl] = self._batched_soft_rasterize(
-                    x[batch_sl], y[batch_sl], r[batch_sl], theta[batch_sl],
-                    sigma=opt_conf.get("blur_sigma", 1.0)        # Use same blur parameter
-                )
-
-            # Save image at specified epochs
-            if opt_conf.get("save_epoch", False):
-                with torch.no_grad():
-                    # Render the complete image for saving
-                    rendered_img = self.render(cached_masks, v, c)
-                    output_path = os.path.join(self.output_path, f"epoch_{step+1}_{timestamp}.jpg")
-                    rendered_np = rendered_img.detach().cpu().numpy()
-                    rendered_np = (rendered_np * 255).astype(np.uint8)
-                    Image.fromarray(rendered_np).save(output_path)
-                    self.saved_frames.append(output_path)
-                    del rendered_img, rendered_np
-                    torch.cuda.empty_cache()
-            
-            if step % 20 == 0:
-                print(f"Epoch {step}, Loss: {loss.item():.4f}")
-        
-        # Clean up cached masks
-        del cached_masks
-        torch.cuda.empty_cache()
-        
-        # Finish wandb run
-        if opt_conf.get("log_gradients", False):
-            wandb.finish()
-        
-        # Create video from collected frames if enabled
-        if opt_conf.get("save_epoch", False):
-            video_path = os.path.join(self.output_path, f"optimization_progress_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
-            self.create_video_from_collected_frames(video_path, fps=30)
-            print(f"Optimization progress video saved to: {video_path}")
-        
-        return x, y, r, v, theta, c
 
     def save_rendered_image(self,
                           cached_masks: torch.Tensor,
@@ -1214,7 +933,6 @@ class VectorRenderer:
                               c: torch.Tensor,
                               video_path: str,
                               scale_factor: float = 4.0,
-                              chunk_size: int = 10,
                               fps: int = 60) -> None:
         """
         Export high-resolution MP4 video using streaming approach to avoid VRAM overflow.
@@ -1256,32 +974,51 @@ class VectorRenderer:
             N = len(x_scaled)
             print(f"Generating high-resolution MP4 with {N} primitives at {self.W}x{self.H}...")
             
-            # Process primitives incrementally for animation
-            for frame_idx in range(N + 1):
+            # Initialize with white background
+            current_frame = torch.ones((self.H, self.W, 3), device=x.device, dtype=torch.float32)
+            
+            # Write first frame (white background)
+            frame_np = current_frame.detach().cpu().numpy()
+            frame_np = (frame_np * 255).astype(np.uint8)
+            frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
+            writer.write(frame_bgr)
+            
+            # Process primitives incrementally (efficient approach)
+            for frame_idx in range(N):
                 if frame_idx % max(1, N // 20) == 0:  # Progress updates
                     print(f"Processing frame {frame_idx}/{N}...")
                 
-                if frame_idx == 0:
-                    # First frame: white background
-                    frame = torch.ones((self.H, self.W, 3), device=x.device, dtype=torch.float32)
-                else:
-                    # Render up to current primitive using streaming approach
-                    curr_x = x_scaled[:frame_idx]
-                    curr_y = y_scaled[:frame_idx]
-                    curr_r = r_scaled[:frame_idx]
-                    curr_theta = theta[:frame_idx]
-                    curr_v = v[:frame_idx]
-                    curr_c = c[:frame_idx]
+                # Get current primitive parameters (single primitive)
+                curr_x = x_scaled[frame_idx:frame_idx + 1]
+                curr_y = y_scaled[frame_idx:frame_idx + 1]
+                curr_r = r_scaled[frame_idx:frame_idx + 1]
+                curr_theta = theta[frame_idx:frame_idx + 1]
+                curr_v = v[frame_idx:frame_idx + 1]
+                curr_c = c[frame_idx:frame_idx + 1]
+                
+                # Render only the current primitive
+                with torch.no_grad():
+                    # Generate mask for current primitive
+                    mask = self._batched_soft_rasterize(
+                        curr_x, curr_y, curr_r, curr_theta, sigma=0.0
+                    ).squeeze(0)  # Remove batch dimension -> [H, W]
                     
-                    # Use streaming render to avoid VRAM overflow
-                    frame = self._stream_render(
-                        curr_x, curr_y, curr_r, curr_theta, curr_v, curr_c,
-                        sigma=0.0,
-                        raster_chunk_size=chunk_size
-                    )
+                    # Calculate alpha and color for current primitive
+                    alpha = (self.alpha_upper_bound * torch.sigmoid(curr_v)).item()
+                    color = torch.sigmoid(curr_c).squeeze(0)  # [3]
+                    
+                    # Apply alpha to mask
+                    alpha_mask = alpha * mask  # [H, W]
+                    
+                    # Create colored primitive: alpha_mask * color
+                    colored_primitive = alpha_mask.unsqueeze(-1) * color.unsqueeze(0).unsqueeze(0)  # [H, W, 3]
+                    
+                    # Alpha composite: new_frame = colored_primitive + (1 - alpha_mask) * current_frame
+                    inv_alpha = 1.0 - alpha_mask.unsqueeze(-1)  # [H, W, 1]
+                    current_frame = colored_primitive + inv_alpha * current_frame
                 
                 # Convert to numpy and write frame
-                frame_np = frame.detach().cpu().numpy()
+                frame_np = current_frame.detach().cpu().numpy()
                 frame_np = (frame_np * 255).astype(np.uint8)
                 
                 # Convert RGB to BGR for OpenCV
