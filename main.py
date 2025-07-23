@@ -193,22 +193,6 @@ os.makedirs(output_dir, exist_ok=True)
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 output_path = os.path.join(output_dir, f'output_{timestamp}.png')
 
-# High-resolution export configuration (recommended only when you have raster primitives)
-hires_enabled = config["postprocessing"].get("hires_export", False)
-scale_factor = config["postprocessing"].get("hires_scale_factor", 4.0)
-
-if hires_enabled:
-    # High-resolution MP4 export using streaming approach
-    warnings.warn("High-resolution export is not recommended for vector primitives. Use it only when you have raster primitives.")
-    hires_mp4_path = os.path.join(output_dir, f'output_{timestamp}_hires.mp4')
-    print(f"Generating high-resolution MP4 ({scale_factor}x scale)...")
-    renderer.render_export_mp4_hires(
-        x, y, r, theta, v, c,
-        video_path=hires_mp4_path,
-        scale_factor=scale_factor,
-        fps=60
-    )
-
 # Standard PDF export for SVG-only primitives (if no raster primitives)
 if not (primitive_loader and primitive_loader.has_raster_primitives()):
     pdf_path = os.path.join(output_dir, f'output_{timestamp}.pdf')
@@ -235,9 +219,23 @@ with torch.no_grad():
     )
     rendered = renderer.render(cached_masks, v, c)
     renderer.save_rendered_image(cached_masks, v, c, output_path)
-
-    video_path = os.path.join(output_dir, f'output_{timestamp}.mp4')
-    renderer.render_export_mp4(cached_masks, v, c, video_path=video_path)
+    # High-resolution export configuration (recommended only when you have raster primitives)
+    hires_enabled = config["postprocessing"].get("hires_export", False)
+    scale_factor = config["postprocessing"].get("hires_scale_factor", 4.0)
+    if hires_enabled:
+        # High-resolution MP4 export using streaming approach
+        warnings.warn("High-resolution export is not recommended for vector primitives. Use it only when you have raster primitives.")
+        hires_mp4_path = os.path.join(output_dir, f'output_{timestamp}_hires.mp4')
+        print(f"Generating high-resolution MP4 ({scale_factor}x scale)...")
+        renderer.render_export_mp4_hires(
+            x, y, r, theta, v, c,
+            video_path=hires_mp4_path,
+            scale_factor=scale_factor,
+            fps=60
+        )
+    else:
+        video_path = os.path.join(output_dir, f'output_{timestamp}.mp4')
+        renderer.render_export_mp4(cached_masks, v, c, video_path=video_path)
 
 # Compute metrics if requested
 if config['postprocessing'].get('compute_psnr', False):

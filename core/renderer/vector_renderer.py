@@ -986,7 +986,7 @@ class VectorRenderer:
             # Process primitives incrementally (efficient approach)
             for frame_idx in range(N):
                 if frame_idx % max(1, N // 20) == 0:  # Progress updates
-                    print(f"Processing frame {frame_idx + 1}/{N}...")
+                    print(f"Processing frame {frame_idx}/{N}...")
                 
                 # Get current primitive parameters (single primitive)
                 curr_x = x_scaled[frame_idx:frame_idx + 1]
