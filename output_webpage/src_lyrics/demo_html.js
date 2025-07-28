@@ -96,7 +96,13 @@ function setupSplatGroupAnimation(svgId, numClass, minY, maxY, yBase, scaleParam
         }
         const charInWord = i - charPos;
         const xOffset = startX + wordOffsets[wordIndex] + charInWord * letterSpacing;
-
+        g.removeAttribute("data-svg-origin");
+        delete g.dataset.svgOrigin;
+        if (g._gsap) {
+          g._gsap.xOrigin = 0;
+          g._gsap.yOrigin = 0;
+          g._gsap.origin = "0 0";
+        }
         gsap.set(g, {
           x: offsetAxis === 'x' ? xOffset : finalState.x,
           y: offsetAxis === 'y' ? xOffset : yBase,
