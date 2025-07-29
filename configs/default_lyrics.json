@@ -26,7 +26,7 @@
     "svg": {
         "svg_file": "MaruBuri-Regular.otf",
         "text_file": "BTY.txt",
-        "remove_punctuation": true,
+        "remove_punctuation": false,
         "svg_hollow": false,
         "output_width": 128
     },

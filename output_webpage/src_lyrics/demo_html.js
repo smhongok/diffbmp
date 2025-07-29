@@ -9,7 +9,7 @@ const wordLengthsPerLine = JSON.parse(getMeta('word_lengths_per_line') || '[]');
 const minY = -180; // 원하는 영역 시작 y
 const maxY = 140;  // 원하는 영역 끝 y
 const centerY = (minY + maxY) / 2; // 중심 y 좌표
-const letterSpacing = 20; // 글자 간 간격 (픽셀)
+const letterSpacing = 2; // 글자 간 간격 (픽셀)
 const wordSpacing = 10; // 단어 간 간격 (픽셀)
 
 const maxScale = 0.8;
@@ -64,42 +64,48 @@ function setupSplatGroupAnimation(svgId, numClass, minY, maxY, yBase, scaleParam
       const wordLengths = wordLengthsPerLine[currentSentenceIndex] || [];
       const charCount = sentence.length;
 
+      const charWidths = sentence.map(g => g.getBBox().width);
+
       // 단어와 글자 수를 기반으로 x 좌표 계산 (가운데 정렬)
       let totalWidth = 0;
-      wordLengths.forEach((wordLength, i) => {
-        totalWidth += (wordLength - 1) * letterSpacing;
-        if (i < wordLengths.length - 1) totalWidth += wordSpacing;
-      });
-
-      const startX = centerY - totalWidth / 2; // 문장의 중심을 centerY에 맞춤
-
-      // 단어의 시작 위치 계산
-      const wordOffsets = [];
-      let currentOffset = 0;
-      wordLengths.forEach((wordLength) => {
-        wordOffsets.push(currentOffset);
-        currentOffset += wordLength * letterSpacing + wordSpacing;
-      });
+      let charOffsets = [];
+      let currentCharOffset = 0;
+      let charIndex = 0;
+      for (let wordIdx = 0; wordIdx < wordLengths.length; wordIdx++) {
+        const wordLen = wordLengths[wordIdx];
+        for (let j = 0; j < wordLen; j++) {
+          charOffsets[charIndex] = currentCharOffset;
+          currentCharOffset += charWidths[charIndex]/3 + letterSpacing;
+          // 단어의 마지막 글자면 wordSpacing 추가 (마지막 단어는 빼기)
+          if (j === wordLen - 1 && wordIdx < wordLengths.length - 1) {
+            currentCharOffset += wordSpacing;
+          }
+          charIndex++;
+        }
+      }
+      totalWidth = currentCharOffset - letterSpacing - (wordLengths.length - 1 > 0 ? wordSpacing : 0);
+      
+      const startX = centerY - totalWidth / 2;
 
       // 문장의 모든 글자에 대해 출발점 설정
       sentence.forEach((g, i) => {
         const finalState = finalStates[layers.indexOf(g)];
-        // 해당 글자가 속한 단어와 단어 내 위치 찾기
-        let charPos = 0;
-        let wordIndex = 0;
-        for (let j = 0; j < wordLengths.length; j++) {
-          if (i < charPos + wordLengths[j]) {
-            wordIndex = j;
-            break;
-          }
-          charPos += wordLengths[j];
-        }
-        const charInWord = i - charPos;
-        const xOffset = startX + wordOffsets[wordIndex] + charInWord * letterSpacing;
 
+        //g.removeAttribute("data-svg-origin");
+        //delete g.dataset.svgOrigin;
+        if (g._gsap) {
+          // Store original origin values before modifying
+          g._originalXOrigin = g._gsap.xOrigin || 0;
+          g._originalYOrigin = g._gsap.yOrigin || 0;
+          g._originalOrigin = g._gsap.origin || "0 0";
+          
+          g._gsap.xOrigin = 0;
+          g._gsap.yOrigin = 0;
+          g._gsap.origin = "0 0";
+        }
         gsap.set(g, {
-          x: offsetAxis === 'x' ? xOffset : finalState.x,
-          y: offsetAxis === 'y' ? xOffset : yBase,
+          x: offsetAxis === 'x' ? startX + charOffsets[i] : finalState.x,
+          y: offsetAxis === 'y' ? startX + charOffsets[i] : yBase,
           scale: scale,
           rotation: 0,
           fill: "#000000",
@@ -127,6 +133,7 @@ function setupSplatGroupAnimation(svgId, numClass, minY, maxY, yBase, scaleParam
       // 페이드인 완료 후 각 글자를 HTML의 원래 상태로 이동
       sentence.forEach((g, i) => {
         const finalState = finalStates[layers.indexOf(g)];
+        
         gsap.to(g, {
           duration: 1,
           x: finalState.x,
@@ -136,12 +143,43 @@ function setupSplatGroupAnimation(svgId, numClass, minY, maxY, yBase, scaleParam
           fill: finalState.fill,
           "fill-opacity": finalState.fillOpacity,
           ease: "back.out(1.4)",
-          delay: i * 0.05 // 이동 애니메이션도 순차적으로
+          delay: i * 0.05, // 이동 애니메이션도 순차적으로
+          onStart: function() {
+            // Add extra delay before restoring origin values
+            setTimeout(() => {
+              if (g._gsap && g._originalXOrigin !== undefined) {
+                g._gsap.xOrigin = g._originalXOrigin;
+                g._gsap.yOrigin = g._originalYOrigin;
+                g._gsap.origin = g._originalOrigin;
+              }
+            }, 200); // 200ms additional delay
+          }
         });
       });
       currentSentenceIndex++; // 다음 문장으로 이동
       isFadedIn = false; // 다음 문장을 위해 초기화
     }
+  }
+
+  function triggerFinalState() {
+    // 모든 레이어를 최종 상태로 즉시 이동
+    layers.forEach((g, i) => {
+      const finalState = finalStates[i];
+      gsap.set(g, {
+        x: finalState.x,
+        y: finalState.y,
+        scale: finalState.scale,
+        rotation: finalState.rotation,
+        fill: finalState.fill,
+        "fill-opacity": finalState.fillOpacity,
+        opacity: 1
+      });
+    });
+    
+    // 상태 초기화
+    currentSentenceIndex = sentences.length; // 모든 문장 완료로 설정
+    isFadedIn = false;
+    console.log('All elements moved to final state');
   }
 
   // 키보드 이벤트 리스너
@@ -150,6 +188,8 @@ function setupSplatGroupAnimation(svgId, numClass, minY, maxY, yBase, scaleParam
       triggerFadeIn(); // 'f' 키로 페이드인
     } else if (event.key === 'm') {
       triggerMove(); // 'm' 키로 이동
+    } else if (event.key === 'r') {
+      triggerFinalState(); // 'r' 키로 최종 상태
     }
   });
 }
