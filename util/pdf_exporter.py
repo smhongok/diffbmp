@@ -94,10 +94,10 @@ class PDFExporter:
             # Compute transform string
             theta_deg = np.degrees(theta_np[i])
             transform = (
-                f"translate({x_np[i]-self.canvas_w/2},{y_np[i]-self.canvas_h/2}) "
-                f"rotate({theta_deg}) "
-                f"scale({r_np[i]}) "
-                f"scale({self.norm_scale}) "
+                f"translate({x_np[i]-self.canvas_w/2:.3f},{y_np[i]-self.canvas_h/2:.3f}) "
+                f"rotate({theta_deg:.3f}) "
+                f"scale({r_np[i]:.3f}) "
+                f"scale({self.norm_scale:.4f}) "
                 f"translate({-self.view_w/2},{-self.view_h/2})"
             )
             g = ET.Element(f'{{{SVG_NS}}}g', {'transform': transform})
@@ -110,7 +110,7 @@ class PDFExporter:
             if svg_hollow:
                 g.attrib.update({
                     'stroke': f'rgb({r_int},{g_int},{b_int})',
-                    'stroke-opacity': str(alpha_vals[i]),
+                    'stroke-opacity': f"{alpha_vals[i]:.4f}",
                     'stroke-width': str(self.stroke_width),
                     'fill': f'rgb({r_int},{g_int},{b_int})',
                     'fill-opacity': '0'
@@ -118,7 +118,7 @@ class PDFExporter:
             else:
                 g.attrib.update({
                     'fill': f'rgb({r_int},{g_int},{b_int})',
-                    'fill-opacity': str(alpha_vals[i])
+                    'fill-opacity': f"{alpha_vals[i]:.4f}"
                 })
 
             # Append fresh children
@@ -169,9 +169,9 @@ class PDFExporter:
         root_svg = ET.Element(f'{{{SVG_NS}}}svg', {
             'id': 'svgsplat1',
             'style': 'overflow: visible;',
-            'width': str(self.canvas_w),
-            'height': str(self.canvas_h),
-            'viewBox': f"{-self.canvas_w/2} {-self.canvas_h/2} {self.canvas_w} {self.canvas_h}"
+            'width': str(int(self.canvas_w)),
+            'height': str(int(self.canvas_h)),
+            'viewBox': f"{int(-self.canvas_w/2)} {int(-self.canvas_h/2)} {int(self.canvas_w)} {int(self.canvas_h)}"
         })
         wrapper_g_svg = ET.Element('g', {'id': 'wrapper'})
 
@@ -185,10 +185,10 @@ class PDFExporter:
 
             theta_deg = np.degrees(theta_np[i])
             transform = (
-                f"translate({x_np[i]-self.canvas_w/2},{y_np[i]-self.canvas_h/2}) "
-                f"rotate({theta_deg}) "
-                f"scale({r_np[i]}) "
-                f"scale({self.norm_scale}) "
+                f"translate({x_np[i]-self.canvas_w/2:.3f},{y_np[i]-self.canvas_h/2:.3f}) "
+                f"rotate({theta_deg:.3f}) "
+                f"scale({r_np[i]:.3f}) "
+                f"scale({self.norm_scale:.4f}) "
                 f"translate({-self.view_w/2},{-self.view_h/2})"
             )
             g = ET.Element('g', {'transform': transform})
@@ -200,7 +200,7 @@ class PDFExporter:
             if svg_hollow:
                 g.attrib.update({
                     'stroke': f'rgb({r_int},{g_int},{b_int})',
-                    'stroke-opacity': str(alpha_vals[i]),
+                    'stroke-opacity': f"{alpha_vals[i]:.4f}",
                     'stroke-width': str(self.stroke_width),
                     'fill': f'rgb({r_int},{g_int},{b_int})',
                     'fill-opacity': '0'
@@ -208,7 +208,7 @@ class PDFExporter:
             else:
                 g.attrib.update({
                     'fill': f'rgb({r_int},{g_int},{b_int})',
-                    'fill-opacity': str(alpha_vals[i])
+                    'fill-opacity': f"{alpha_vals[i]:.4f}"
                 })
 
             for child in children:
@@ -342,9 +342,9 @@ class PDFExporter:
         for frame_idx, idx in enumerate(rev_indices):
             # Build SVG root
             root = ET.Element(f'{{{SVG_NS}}}svg', {
-                'width': str(self.canvas_w),
-                'height': str(self.canvas_h),
-                'viewBox': f"{-self.canvas_w/2} {-self.canvas_h/2} {self.canvas_w} {self.canvas_h}"
+                'width': str(int(self.canvas_w)),
+                'height': str(int(self.canvas_h)),
+                'viewBox': f"{int(-self.canvas_w/2)} {int(-self.canvas_h/2)} {int(self.canvas_w)} {int(self.canvas_h)}"
             })
             # Draw all primitives up to this step
             for j in rev_indices[:frame_idx+1]:
@@ -356,10 +356,10 @@ class PDFExporter:
 
                 theta_deg = np.degrees(theta_np[j])
                 transform = (
-                    f"translate({x_np[j]-self.canvas_w/2},{y_np[j]-self.canvas_h/2}) "
-                    f"rotate({theta_deg}) "
-                    f"scale({r_np[j]}) "
-                    f"scale({self.norm_scale}) "
+                    f"translate({x_np[j]-self.canvas_w/2:.3f},{y_np[j]-self.canvas_h/2:.3f}) "
+                    f"rotate({theta_deg:.3f}) "
+                    f"scale({r_np[j]:.3f}) "
+                    f"scale({self.norm_scale:.4f}) "
                     f"translate({-self.view_w/2},{-self.view_h/2})"
                 )
 
@@ -369,10 +369,10 @@ class PDFExporter:
                 r_col, g_col, b_col = c_np[j]
                 style = ({
                     'fill': f'rgb({int(r_col*255)},{int(g_col*255)},{int(b_col*255)})',
-                    'fill-opacity': str(alpha_vals[j])
+                    'fill-opacity': f"{alpha_vals[j]:.4f}"
                 } if not svg_hollow else {
                     'stroke': f'rgb({int(r_col*255)},{int(g_col*255)},{int(b_col*255)})',
-                    'stroke-opacity': str(alpha_vals[j]),
+                    'stroke-opacity': f"{alpha_vals[j]:.4f}",
                     'stroke-width': str(border_width),
                     'fill': f'rgb({int(r_col*255)},{int(g_col*255)},{int(b_col*255)})',
                     'fill-opacity': '0'
@@ -476,9 +476,9 @@ class PDFExporter:
 
         # 2) 빈 SVG 루트 하나만 만든 뒤, 프리미티브와 강조 테두리를 여기에 누적
         root = ET.Element(f'{{{SVG_NS}}}svg', {
-            'width': str(self.canvas_w),
-            'height': str(self.canvas_h),
-            'viewBox': f"{-self.canvas_w/2} {-self.canvas_h/2} {self.canvas_w} {self.canvas_h}"
+            'width': str(int(self.canvas_w)),
+            'height': str(int(self.canvas_h)),
+            'viewBox': f"{int(-self.canvas_w/2)} {int(-self.canvas_h/2)} {int(self.canvas_w)} {int(self.canvas_h)}"
         })
 
         # 3) 비디오 크기 알아내기 — 첫 프레임 생성
@@ -563,10 +563,10 @@ class PDFExporter:
 
         theta_deg = np.degrees(theta_np[j])
         transform = (
-            f"translate({x_np[j]-self.canvas_w/2},{y_np[j]-self.canvas_h/2}) "
-            f"rotate({theta_deg}) "
-            f"scale({r_np[j]}) "
-            f"scale({self.norm_scale}) "
+            f"translate({x_np[j]-self.canvas_w/2:.3f},{y_np[j]-self.canvas_h/2:.3f}) "
+            f"rotate({theta_deg:.3f}) "
+            f"scale({r_np[j]:.3f}) "
+            f"scale({self.norm_scale:.4f}) "
             f"translate({-self.view_w/2},{-self.view_h/2})"
         )
 
@@ -575,12 +575,12 @@ class PDFExporter:
         if not svg_hollow:
             g.attrib.update({
                 'fill':   f'rgb({int(c_np[j][0]*255)},{int(c_np[j][1]*255)},{int(c_np[j][2]*255)})',
-                'fill-opacity': str(alpha_vals[j])
+                'fill-opacity': f"{alpha_vals[j]:.4f}"
             })
         else:
             g.attrib.update({
                 'stroke':       f'rgb({int(c_np[j][0]*255)},{int(c_np[j][1]*255)},{int(c_np[j][2]*255)})',
-                'stroke-opacity': str(alpha_vals[j]),
+                'stroke-opacity': f"{alpha_vals[j]:.4f}",
                 'stroke-width': str(border_width),
                 'fill':         f'rgb({int(c_np[j][0]*255)},{int(c_np[j][1]*255)},{int(c_np[j][2]*255)})',
                 'fill-opacity': '0'
