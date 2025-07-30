@@ -5,7 +5,7 @@
     "FM_halftone": false,
     "transform": "none",
     "img_path": [
-      "images/gif/pororo_monkey_crop_first5.gif"
+      "images/gif/popcorn.gif"
     ],
     "bg_threshold": 250,
     "do_equalize": false,
@@ -97,19 +97,18 @@
       "decay_rate": 0.99
     },
     "subsequent_frames": {
-      "num_iterations": 50,
+      "num_iterations": 100,
       "learning_rate": {
-        "default": 0.08,
-        "gain_x": 8.0,
-        "gain_y": 8.0,
-        "gain_r": 5.0,
-        "gain_v": 1.0,
-        "gain_theta": 2.0,
+        "default": 0.1,
+        "gain_x": 10.0,
+        "gain_y": 10.0,
+        "gain_r": 10.0,
+        "gain_v": 1.5,
+        "gain_theta": 1.0,
         "gain_c": 1.0
       },
       "decay_rate": 0.98,
-      "optimization_mode": "full_temporal",
-      "rigidity_weight": 0.1
+      "warmup_steps": 10
     }
   },
   "sequential": {

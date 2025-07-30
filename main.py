@@ -246,57 +246,20 @@ if sequential_config.get("enabled", False):
             )
             end_time_frame = time.time()
             
-            # Compute neighbor indices and spatial weights for rigidity loss
-            # This will be used for subsequent frames
-            neighbor_indices = sequential_renderer._find_spatial_neighbors(x, y, c, k=8)
-            
-            # Compute spatial weights based on distance (negative exponential)
-            N, k = neighbor_indices.shape
-            spatial_weights = torch.zeros((N, k), device=x.device)
-            
-            for i in range(N):
-                neighbors = neighbor_indices[i]
-                # Compute distances to neighbors
-                curr_pos = torch.stack([x[i], y[i]])
-                neighbor_pos = torch.stack([x[neighbors], y[neighbors]], dim=1)
-                distances = torch.norm(neighbor_pos - curr_pos.unsqueeze(0), dim=1)
-                # Apply negative exponential weighting
-                spatial_weights[i] = torch.exp(-distances / distances.mean())
+            # No need for neighbor computation with simple anchoring loss
             
         else:
             # Subsequent frames: use SequentialFrameRenderer with temporal consistency
             print(f"Subsequent frame: initializing from frame {frame_idx} with SequentialFrameRenderer")
             
             # Use subsequent frame optimization settings
-            frame_opt_conf = opt_conf.copy()
-            subsequent_frame_conf = config["optimization"].get("subsequent_frames", {})
-            frame_opt_conf.update(subsequent_frame_conf)
-            
-            # Add rigidity loss weight
-            frame_opt_conf["rigidity_weight"] = subsequent_frame_conf.get("rigidity_weight", 0.1)
+            sequential_config = config["optimization"].get("subsequent_frames", {})
             
             # Choose optimization strategy
-            optimization_mode = subsequent_frame_conf.get("optimization_mode", "full_temporal")  # "position_only" or "full_temporal"
-            
             start_time_frame = time.time()
-            
-            if optimization_mode == "position_only":
-                print("  Using position-only optimization (x, y, theta)")
-                x, y, r, v, theta, c = sequential_renderer.optimize_parameters_position_only(
-                    x, y, r, v, theta, c,
-                    I_target_frame,
-                    prev_params=prev_params,
-                    opt_conf=frame_opt_conf
-                )
-            else:  # full_temporal
-                print("  Using full temporal optimization with consistency")
-                x, y, r, v, theta, c = sequential_renderer.optimize_parameters_full_temporal(
-                    x, y, r, v, theta, c,
-                    I_target_frame,
-                    prev_params=prev_params,
-                    opt_conf=frame_opt_conf
-                )
-            
+            x, y, r, v, theta, c = sequential_renderer.optimize_parameters_full_temporal(
+                x, y, r, v, theta, c, I_target_frame, prev_params, sequential_config
+            )
             end_time_frame = time.time()
         
         # Store results for this frame
@@ -309,14 +272,7 @@ if sequential_config.get("enabled", False):
             'c': c.clone()
         }
         
-        # Add neighbor information for rigidity loss (computed from first frame)
-        if frame_idx == 0:
-            current_params['neighbor_indices'] = neighbor_indices
-            current_params['spatial_weights'] = spatial_weights
-        elif prev_params is not None:
-            # Reuse neighbor information from first frame
-            current_params['neighbor_indices'] = prev_params['neighbor_indices']
-            current_params['spatial_weights'] = prev_params['spatial_weights']
+        # Store frame parameters for next iteration
         
         frame_results.append({
             **current_params,
