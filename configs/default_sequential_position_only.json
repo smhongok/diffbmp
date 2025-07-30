@@ -97,19 +97,19 @@
       "decay_rate": 0.99
     },
     "subsequent_frames": {
-      "num_iterations": 50,
+      "num_iterations": 30,
       "learning_rate": {
-        "default": 0.08,
+        "default": 0.05,
         "gain_x": 8.0,
         "gain_y": 8.0,
-        "gain_r": 5.0,
-        "gain_v": 1.0,
-        "gain_theta": 2.0,
-        "gain_c": 1.0
+        "gain_r": 2.0,
+        "gain_v": 0.5,
+        "gain_theta": 3.0,
+        "gain_c": 0.5
       },
       "decay_rate": 0.98,
-      "optimization_mode": "full_temporal",
-      "rigidity_weight": 0.1
+      "optimization_mode": "position_only",
+      "rigidity_weight": 0.2
     }
   },
   "sequential": {

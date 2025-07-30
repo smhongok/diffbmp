@@ -16,6 +16,7 @@ import argparse
 import cv2
 from datetime import datetime
 from core.renderer.mse_renderer import MseRenderer
+from core.renderer.sequential_renderer import SequentialFrameRenderer
 from util.svg_loader import SVGLoader
 from util.primitive_loader import PrimitiveLoader
 from util.svg_converter import FontParser, ImageToSVG
@@ -210,15 +211,25 @@ if sequential_config.get("enabled", False):
     # Sequential frame-by-frame optimization
     print("Starting sequential frame-by-frame optimization...")
     
+    # Create sequential renderer for subsequent frames
+    sequential_renderer = SequentialFrameRenderer(
+        (H, W), S=bmp_tensor,
+        alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
+        device=device,
+        use_fp16=use_fp16,
+        gamma=config["optimization"].get("gamma", 1.0)
+    )
+    
     # Store optimized parameters for each frame
     frame_results = []
+    prev_params = None
     
     for frame_idx, I_target_frame in enumerate(I_targets):
         print(f"\nOptimizing frame {frame_idx + 1}/{len(I_targets)}...")
         
         if frame_idx == 0:
-            # First frame: initialize from scratch
-            print("First frame: initializing from scratch")
+            # First frame: initialize from scratch using standard MseRenderer
+            print("First frame: initializing from scratch with MseRenderer")
             x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target_frame)
             
             # Use first frame optimization settings
@@ -226,35 +237,94 @@ if sequential_config.get("enabled", False):
             first_frame_conf = config["optimization"].get("first_frame", {})
             frame_opt_conf.update(first_frame_conf)
             
+            # Optimize with standard renderer
+            start_time_frame = time.time()
+            x, y, r, v, theta, c = renderer.optimize_parameters(
+                x, y, r, v, theta, c,
+                I_target_frame, 
+                opt_conf=frame_opt_conf
+            )
+            end_time_frame = time.time()
+            
+            # Compute neighbor indices and spatial weights for rigidity loss
+            # This will be used for subsequent frames
+            neighbor_indices = sequential_renderer._find_spatial_neighbors(x, y, c, k=8)
+            
+            # Compute spatial weights based on distance (negative exponential)
+            N, k = neighbor_indices.shape
+            spatial_weights = torch.zeros((N, k), device=x.device)
+            
+            for i in range(N):
+                neighbors = neighbor_indices[i]
+                # Compute distances to neighbors
+                curr_pos = torch.stack([x[i], y[i]])
+                neighbor_pos = torch.stack([x[neighbors], y[neighbors]], dim=1)
+                distances = torch.norm(neighbor_pos - curr_pos.unsqueeze(0), dim=1)
+                # Apply negative exponential weighting
+                spatial_weights[i] = torch.exp(-distances / distances.mean())
+            
         else:
-            # Subsequent frames: initialize from previous frame's result
-            print(f"Subsequent frame: initializing from frame {frame_idx}")
-            # Parameters are already set from previous frame
+            # Subsequent frames: use SequentialFrameRenderer with temporal consistency
+            print(f"Subsequent frame: initializing from frame {frame_idx} with SequentialFrameRenderer")
             
             # Use subsequent frame optimization settings
             frame_opt_conf = opt_conf.copy()
             subsequent_frame_conf = config["optimization"].get("subsequent_frames", {})
             frame_opt_conf.update(subsequent_frame_conf)
-        
-        # Optimize parameters for current frame
-        start_time_frame = time.time()
-        x, y, r, v, theta, c = renderer.optimize_parameters(
-            x, y, r, v, theta, c,
-            I_target_frame, 
-            opt_conf=frame_opt_conf
-        )
-        end_time_frame = time.time()
+            
+            # Add rigidity loss weight
+            frame_opt_conf["rigidity_weight"] = subsequent_frame_conf.get("rigidity_weight", 0.1)
+            
+            # Choose optimization strategy
+            optimization_mode = subsequent_frame_conf.get("optimization_mode", "full_temporal")  # "position_only" or "full_temporal"
+            
+            start_time_frame = time.time()
+            
+            if optimization_mode == "position_only":
+                print("  Using position-only optimization (x, y, theta)")
+                x, y, r, v, theta, c = sequential_renderer.optimize_parameters_position_only(
+                    x, y, r, v, theta, c,
+                    I_target_frame,
+                    prev_params=prev_params,
+                    opt_conf=frame_opt_conf
+                )
+            else:  # full_temporal
+                print("  Using full temporal optimization with consistency")
+                x, y, r, v, theta, c = sequential_renderer.optimize_parameters_full_temporal(
+                    x, y, r, v, theta, c,
+                    I_target_frame,
+                    prev_params=prev_params,
+                    opt_conf=frame_opt_conf
+                )
+            
+            end_time_frame = time.time()
         
         # Store results for this frame
-        frame_results.append({
+        current_params = {
             'x': x.clone(),
             'y': y.clone(), 
             'r': r.clone(),
             'v': v.clone(),
             'theta': theta.clone(),
-            'c': c.clone(),
+            'c': c.clone()
+        }
+        
+        # Add neighbor information for rigidity loss (computed from first frame)
+        if frame_idx == 0:
+            current_params['neighbor_indices'] = neighbor_indices
+            current_params['spatial_weights'] = spatial_weights
+        elif prev_params is not None:
+            # Reuse neighbor information from first frame
+            current_params['neighbor_indices'] = prev_params['neighbor_indices']
+            current_params['spatial_weights'] = prev_params['spatial_weights']
+        
+        frame_results.append({
+            **current_params,
             'optimization_time': end_time_frame - start_time_frame
         })
+        
+        # Update previous parameters for next frame
+        prev_params = current_params
         
         print(f"Frame {frame_idx + 1} optimization completed in {end_time_frame - start_time_frame:.2f}s")
     
