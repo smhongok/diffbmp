@@ -252,15 +252,20 @@ if sequential_config.get("enabled", False):
             # Subsequent frames: use SequentialFrameRenderer with temporal consistency
             print(f"Subsequent frame: initializing from frame {frame_idx} with SequentialFrameRenderer")
             
-            # Use subsequent frame optimization settings
-            sequential_config = config["optimization"].get("subsequent_frames", {})
+            # Use sequential optimization settings
+            optimization_config = sequential_config.get("optimization", {})
             
             # Choose optimization strategy
             start_time_frame = time.time()
             x, y, r, v, theta, c = sequential_renderer.optimize_parameters_full_temporal(
-                x, y, r, v, theta, c, I_target_frame, prev_params, sequential_config
+                x, y, r, v, theta, c, I_target_frame, prev_params, optimization_config
             )
             end_time_frame = time.time()
+        
+        # Render final frame for export
+        with torch.no_grad():
+            cached_masks = sequential_renderer._batched_soft_rasterize(x, y, r, theta, sigma=0)
+            rendered_frame = sequential_renderer.render(cached_masks, v, c)
         
         # Store results for this frame
         current_params = {
@@ -269,10 +274,9 @@ if sequential_config.get("enabled", False):
             'r': r.clone(),
             'v': v.clone(),
             'theta': theta.clone(),
-            'c': c.clone()
+            'c': c.clone(),
+            'rendered_frame': rendered_frame.clone()
         }
-        
-        # Store frame parameters for next iteration
         
         frame_results.append({
             **current_params,
@@ -318,7 +322,10 @@ if sequential_config.get("enabled", False):
     for frame_idx, frame_result in enumerate(frame_results):
         print(f"Exporting frame {frame_idx + 1}/{len(frame_results)}...")
         
-        # Set parameters for this frame
+        # Get the already rendered frame
+        rendered_frame = frame_result['rendered_frame']
+        
+        # Extract parameters for individual frame saving
         x_frame = frame_result['x']
         y_frame = frame_result['y']
         r_frame = frame_result['r']
@@ -326,26 +333,22 @@ if sequential_config.get("enabled", False):
         theta_frame = frame_result['theta']
         c_frame = frame_result['c']
         
-        with torch.no_grad():
-            # Generate masks and render for this frame
-            cached_masks = renderer._batched_soft_rasterize(
-                x_frame, y_frame, r_frame, theta_frame,
-                sigma=0
-            )
-            rendered_frame = renderer.render(cached_masks, v_frame, c_frame)
-            
-            # Save individual frame
-            if sequential_config.get("export_individual_frames", True):
-                frame_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}.png')
-                renderer.save_rendered_image(cached_masks, v_frame, c_frame, frame_path)
-            
-            # Store rendered frame for GIF/MP4 export
-            frame_np = rendered_frame.cpu().numpy()
-            frame_np = (frame_np * 255).astype(np.uint8)
-            exported_frames.append(frame_np)
+        # Save individual frame if requested
+        export_config = sequential_config.get("export", {})
+        if export_config.get("export_frames", True):
+            frame_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}.png')
+            with torch.no_grad():
+                cached_masks = sequential_renderer._batched_soft_rasterize(x_frame, y_frame, r_frame, theta_frame, sigma=0)
+                sequential_renderer.save_rendered_image(cached_masks, v_frame, c_frame, frame_path)
+        
+        # Store rendered frame for GIF/MP4 export
+        frame_np = rendered_frame.cpu().numpy()
+        frame_np = (frame_np * 255).astype(np.uint8)
+        exported_frames.append(frame_np)
     
     # Export GIF
-    if sequential_config.get("export_gif", True):
+    export_config = sequential_config.get("export", {})
+    if export_config.get("export_gif", True):
         gif_path = os.path.join(output_dir, f'output_{timestamp}.gif')
         print(f"Creating GIF: {gif_path}")
         
@@ -353,7 +356,7 @@ if sequential_config.get("enabled", False):
         pil_frames = [Image.fromarray(frame) for frame in exported_frames]
         
         # Save as GIF
-        frame_duration = sequential_config.get("frame_duration", 100)  # milliseconds
+        frame_duration = export_config.get("frame_duration", 100)  # milliseconds
         pil_frames[0].save(
             gif_path,
             save_all=True,
@@ -364,12 +367,12 @@ if sequential_config.get("enabled", False):
         print(f"GIF saved: {gif_path}")
     
     # Export MP4
-    if sequential_config.get("export_mp4", True):
+    if export_config.get("export_mp4", True):
         mp4_path = os.path.join(output_dir, f'output_{timestamp}.mp4')
         print(f"Creating MP4: {mp4_path}")
         
         # Use OpenCV to create MP4
-        fps = 1000.0 / sequential_config.get("frame_duration", 100)  # Convert ms to fps
+        fps = 1000.0 / export_config.get("frame_duration", 100)  # Convert ms to fps
         height, width = exported_frames[0].shape[:2]
         
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')

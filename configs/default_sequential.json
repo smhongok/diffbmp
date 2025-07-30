@@ -5,7 +5,7 @@
     "FM_halftone": false,
     "transform": "none",
     "img_path": [
-      "images/gif/popcorn.gif"
+      "images/gif/pororo_monkey_crop_mid5.gif"
     ],
     "bg_threshold": 250,
     "do_equalize": false,
@@ -95,8 +95,13 @@
         "gain_c": 1.0
       },
       "decay_rate": 0.99
-    },
-    "subsequent_frames": {
+    }
+  },
+  "sequential": {
+    "enabled": true,
+    "input_type": "gif",
+    "max_frames": null,
+    "optimization": {
       "num_iterations": 100,
       "learning_rate": {
         "default": 0.1,
@@ -109,16 +114,13 @@
       },
       "decay_rate": 0.98,
       "warmup_steps": 10
+    },
+    "export": {
+      "export_frames": true,
+      "export_gif": true,
+      "export_mp4": true,
+      "frame_duration": 100
     }
-  },
-  "sequential": {
-    "enabled": true,
-    "input_type": "gif",
-    "max_frames": null,
-    "export_individual_frames": true,
-    "export_gif": true,
-    "export_mp4": true,
-    "frame_duration": 100
   },
   "postprocessing": {
     "output_folder": "./outputs/",
