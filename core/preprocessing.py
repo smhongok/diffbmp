@@ -1,5 +1,7 @@
 import numpy as np
 from PIL import Image, ImageOps, ImageFilter
+import cv2
+import os
 
 class Preprocessor:
     def __init__(self, final_width=256, 
@@ -250,6 +252,191 @@ class Preprocessor:
         if self.final_width is None:
             raise ValueError("final_height has not been set.")
         return self.final_width
+    
+    def load_gif_frames(self, gif_path, config):
+        """
+        Load GIF frames and preprocess each frame using the same pipeline as single images.
+        Returns a list of preprocessed frame arrays.
+        """
+        frames = []
+        
+        # Open GIF and extract frames
+        with Image.open(gif_path) as gif:
+            for frame_idx in range(gif.n_frames):
+                gif.seek(frame_idx)
+                frame = gif.copy().convert('RGB')
+                
+                # Apply the same preprocessing pipeline as load_image_8bit_color
+                frame_array = self._preprocess_single_frame(frame, config)
+                frames.append(frame_array)
+        
+        return frames
+    
+    def load_video_frames(self, video_path, config, max_frames=None):
+        """
+        Load video frames and preprocess each frame using the same pipeline as single images.
+        Returns a list of preprocessed frame arrays.
+        """
+        frames = []
+        
+        # Open video with OpenCV
+        cap = cv2.VideoCapture(video_path)
+        frame_count = 0
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+                
+            if max_frames and frame_count >= max_frames:
+                break
+                
+            # Convert BGR to RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_pil = Image.fromarray(frame_rgb)
+            
+            # Apply the same preprocessing pipeline as load_image_8bit_color
+            frame_array = self._preprocess_single_frame(frame_pil, config)
+            frames.append(frame_array)
+            frame_count += 1
+        
+        cap.release()
+        return frames
+    
+    def load_image_sequence(self, sequence_dir, config, extensions=('.png', '.jpg', '.jpeg')):
+        """
+        Load image sequence from directory and preprocess each frame.
+        Returns a list of preprocessed frame arrays.
+        """
+        frames = []
+        
+        # Get all image files in directory
+        image_files = []
+        for ext in extensions:
+            image_files.extend([f for f in os.listdir(sequence_dir) if f.lower().endswith(ext)])
+        
+        # Sort files naturally
+        image_files.sort()
+        
+        for img_file in image_files:
+            img_path = os.path.join(sequence_dir, img_file)
+            frame = Image.open(img_path).convert('RGB')
+            
+            # Apply the same preprocessing pipeline as load_image_8bit_color
+            frame_array = self._preprocess_single_frame(frame, config)
+            frames.append(frame_array)
+        
+        return frames
+    
+    def _preprocess_single_frame(self, frame_pil, config):
+        """
+        Apply the same preprocessing pipeline as load_image_8bit_color to a single frame.
+        This ensures consistent preprocessing across all frames.
+        """
+        img = frame_pil
+        w, h = img.size
+        
+        # Store original dimensions for first frame to ensure consistency
+        if not hasattr(self, 'width') or not hasattr(self, 'height'):
+            self.width = w
+            self.height = h
+
+        if self.trim:
+            # Not yet implemented
+            raise NotImplementedError("trim=True is not yet implemented.")
+
+        # 1) CenterCrop (if too large)
+        if w > self.width or h > self.height:
+            crop_w = min(w, self.width)
+            crop_h = min(h, self.height)
+            left = (w - crop_w) // 2
+            top = (h - crop_h) // 2
+            img = img.crop((left, top, left + crop_w, top + crop_h))
+            w, h = img.size
+
+        # 2) Padding (white=255)
+        pad_w = self.width
+        pad_h = self.height
+        padded_arr = np.full((pad_h, pad_w, 3), fill_value=255, dtype=np.uint8)
+
+        img_arr = np.array(img, dtype=np.uint8)
+        img_h, img_w = img_arr.shape[:2]
+        if img_w > pad_w or img_h > pad_h:
+            raise ValueError("Cropping failed: image is still larger than target.")
+
+        left = (pad_w - img_w) // 2
+        top = (pad_h - img_h) // 2
+        padded_arr[top:top + img_h, left:left + img_w] = img_arr
+
+        # 3) Resize to final_width x final_width (aspect ratio is enforced here)
+        padded_img = Image.fromarray(padded_arr)
+        w, h = padded_img.size
+        # To match vertical ratio only, do:
+        ratio = self.final_width / float(w)
+        new_w = self.final_width
+        new_h = int(h * ratio)
+        
+        # Store final dimensions for consistency
+        if not hasattr(self, 'final_height'):
+            self.final_height = new_h
+            
+        resized_img = padded_img.resize((new_w, new_h), Image.LANCZOS)
+
+        # Apply post-processing (same as load_image_8bit_color)
+        if config["do_equalize"]:
+            # Convert to grayscale for equalization, then back to RGB
+            gray_img = resized_img.convert('L')
+            eq_gray = histogram_equalization_excluding_bg(gray_img, bg_threshold=config["bg_threshold"])
+            resized_img = Image.merge('RGB', [eq_gray, eq_gray, eq_gray])
+
+        if config["do_local_contrast"]:
+            # Convert to grayscale for local contrast, then back to RGB
+            gray_img = resized_img.convert('L')
+            lc_gray = local_contrast_enhancement_excluding_bg(
+                gray_img, radius=config["local_contrast"]["radius"], 
+                amount=config["local_contrast"]["amount"], 
+                bg_threshold=config["bg_threshold"]
+            )
+            resized_img = Image.merge('RGB', [lc_gray, lc_gray, lc_gray])
+
+        if config["do_tone_curve"]:
+            if config["tone_params"] is None:
+                config["tone_params"] = {}
+            # Convert to grayscale for tone curve, then back to RGB
+            gray_img = resized_img.convert('L')
+            tc_gray = partial_tone_curve_excluding_bg(
+                gray_img,
+                bg_threshold=config["bg_threshold"],
+                **config["tone_params"]
+            )
+            resized_img = Image.merge('RGB', [tc_gray, tc_gray, tc_gray])
+
+        # Invert (255 - arr): invert the brightness of original image
+        arr = (np.array(resized_img, dtype=np.uint8))
+
+        # Apply FM_halftone option (Floyd-Steinberg error diffusion dithering)
+        if self.FM_halftone:
+            # Apply to each channel separately
+            for c in range(3):
+                arr[:, :, c] = self._fm_halftone_transform(arr[:, :, c])
+
+        # Apply transform_mode
+        if self.transform_mode == "ellipse":
+            # Apply to each channel separately
+            for c in range(3):
+                arr[:, :, c] = self._ellipse_transform(arr[:, :, c])
+        elif self.transform_mode == "none":
+            pass
+        else:
+            raise ValueError(f"Unknown transform_mode: {self.transform_mode}")
+
+        # Apply padding (handle both 2D and 3D arrays)
+        if arr.ndim == 3:  # RGB image
+            arr = pad_array_color(arr, tuple(config["vertical_paddings"]))
+        else:  # Grayscale image
+            arr = pad_array(arr, tuple(config["vertical_paddings"]))
+
+        return arr
 
 
 def histogram_equalization_excluding_bg(img: Image.Image, bg_threshold=250) -> Image.Image:

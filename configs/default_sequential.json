@@ -1,0 +1,70 @@
+{
+  "preprocessing": {
+    "img_path": "images/gif/pororo_monkey_crop.gif",
+    "final_width": 128,
+    "trim": false,
+    "FM_halftone": false,
+    "transform": "none",
+    "do_equalize": false,
+    "do_local_contrast": false,
+    "do_tone_curve": false,
+    "bg_threshold": 250,
+    "vertical_paddings": [0, 0]
+  },
+  "svg": {
+    "svg_file": "MaruBuri-Regular_O.svg",
+    "svg_hollow": false
+  },
+  "initialization": {
+    "N": 1000,
+    "initializer": "structure_aware",
+    "structure_aware": {
+      "use_edge_detection": true,
+      "edge_threshold": 0.1,
+      "use_color_clustering": true,
+      "n_clusters": 8,
+      "use_density_sampling": true,
+      "density_weight": 0.7,
+      "edge_weight": 0.3
+    }
+  },
+  "optimization": {
+    "use_fp16": false,
+    "alpha_upper_bound": 0.5,
+    "num_iter": 100,
+    "learning_rate": {
+      "lr": 0.01,
+      "lr_decay": 0.95,
+      "lr_decay_step": 10
+    },
+    "first_frame": {
+      "num_iter": 100,
+      "lr": 0.01,
+      "lr_decay": 0.95,
+      "lr_decay_step": 10
+    },
+    "subsequent_frames": {
+      "num_iter": 50,
+      "lr": 0.005,
+      "lr_decay": 0.95,
+      "lr_decay_step": 10
+    }
+  },
+  "sequential": {
+    "enabled": true,
+    "input_type": "gif",
+    "max_frames": null,
+    "export_individual_frames": true,
+    "export_gif": true,
+    "export_mp4": true,
+    "frame_duration": 100
+  },
+  "postprocessing": {
+    "output_folder": "./outputs/",
+    "hires_export": false,
+    "hires_scale_factor": 4.0,
+    "compute_psnr": false,
+    "linewidth": 3.0
+  },
+  "seed": 42
+}
