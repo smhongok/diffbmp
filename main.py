@@ -407,14 +407,34 @@ if not (primitive_loader and primitive_loader.has_raster_primitives()):
                 stroke_width=config["postprocessing"].get("linewidth", 3.0)
             )
             
+            # Use sequential-specific HTML path and export sequence
+            sequential_html_path = "output_webpage/src_sequential/index.html"
+            
+            # Export PDF for the last frame
             exporter.export(last_frame['x'], last_frame['y'], last_frame['r'], 
                           last_frame['theta'], last_frame['v'], last_frame['c'],
                           output_path=pdf_path,
                           svg_hollow=config["svg"].get("svg_hollow", False),
-                          html_extra_path = "output_webpage/src/index.html" if html_extra_path_special is None else html_extra_path_special,
+                          html_extra_path=sequential_html_path,
                           export_pdf=True,
                           html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
             )
+            
+            # Export HTML sequence animation
+            html_sequence_path = os.path.join(output_dir, f'sequence_{timestamp}.html')
+            export_config = sequential_config.get("export", {})
+            sequence_fps = export_config.get("sequence_fps", 24)
+            
+            print(f"\nExporting HTML sequence animation...")
+            exporter.export_sequence(
+                frame_results=frame_results,
+                output_path=html_sequence_path,
+                svg_hollow=config["svg"].get("svg_hollow", False),
+                html_extra_path=sequential_html_path,
+                html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {},
+                fps=sequence_fps
+            )
+            print(f"HTML sequence exported: {html_sequence_path}")
     else:
         # Single image PDF export (original behavior)
         pdf_path = os.path.join(output_dir, f'output_{timestamp}.pdf')
