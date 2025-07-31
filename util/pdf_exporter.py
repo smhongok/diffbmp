@@ -736,35 +736,35 @@ class PDFExporter:
         for k, v in html_extra_meta.items():
             meta_tags.append(f'<meta name="{k}" content="{v}">')
         
-        # Create HTML content
+        # Create HTML content with proper indentation
         html_head = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="numClass" content="{len(self.svg_paths)}">
-{chr(10).join(meta_tags)}
-<title>Sequential Splatting Animation</title>
-<link rel="stylesheet" href="demo_html.css">
-</head>
-<body id="demo_html">
-"""
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="numClass" content="{len(self.svg_paths)}">
+            {chr(10).join('            ' + tag for tag in meta_tags)}
+            <title>Sequential Splatting Animation</title>
+            <link rel="stylesheet" href="demo_html.css">
+        </head>
+        <body id="demo_html">
+        """
         
         # Embed frame sequence data as JavaScript
         frame_sequence_js = f"""
-<script>
-// Frame sequence data for animation
-window.frameSequenceData = {json.dumps(frame_sequence)};
-console.log('Loaded frame sequence:', window.frameSequenceData.length, 'frames');
-</script>
-"""
+            <script>
+            // Frame sequence data for animation
+            window.frameSequenceData = {json.dumps(frame_sequence)};
+            console.log('Loaded frame sequence:', window.frameSequenceData.length, 'frames');
+            </script>
+        """
         
         html_tail = """
-<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/Draggable.min.js"></script>
-<script src="demo_html.js"></script>
-</body>
-</html>
-"""
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/Draggable.min.js"></script>
+            <script src="demo_html.js"></script>
+        </body>
+        </html>
+        """
         
         # Write HTML file
         with open(output_html_path, 'w', encoding='utf-8') as f:
