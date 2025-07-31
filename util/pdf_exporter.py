@@ -602,26 +602,22 @@ class PDFExporter:
 
     def export_sequence(self,
                        frame_results: list,
-                       output_path: str,
+                       output_html_path: str,
                        svg_hollow: bool = False,
-                       html_extra_path: str = "output_webpage/src_sequential/index.html",
-                       html_extra_meta: dict = {},
-                       fps: int = 24):
+                       fps: int = 24,
+                       html_extra_meta: dict = {}):
         """
         Export multiple frames as a sequence for HTML animation.
         
         Args:
             frame_results: List of frame result dictionaries containing x,y,r,theta,v,c tensors
-            output_path: Base output path (will create .html file)
+            output_html_path: Path for HTML output file
             svg_hollow: Whether to use hollow SVG style
-            html_extra_path: Path for HTML export
-            html_extra_meta: Extra metadata for HTML
             fps: Frames per second for animation
         """
         import json
         
         SVG_NS = "http://www.w3.org/2000/svg"
-        output_html_path = output_path.replace(".pdf", ".html")
         
         if not frame_results:
             raise ValueError("No frame results provided")

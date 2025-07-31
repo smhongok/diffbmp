@@ -5,7 +5,7 @@
     "FM_halftone": false,
     "transform": "none",
     "img_path": [
-      "images/gif/pororo_monkey_crop_mid5.gif"
+      "images/gif/pororo_monkey_crop_first2.gif"
     ],
     "bg_threshold": 250,
     "do_equalize": false,
@@ -24,7 +24,8 @@
     "vertical_paddings": [0, 0]
   },
   "svg": {
-    "svg_file": "MaruBuri-Regular_O.svg",
+    "svg_file": "arial.ttf",
+    "text": "S",
     "svg_hollow": false,
     "output_width": 128
   },

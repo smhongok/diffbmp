@@ -408,6 +408,7 @@ if not (primitive_loader and primitive_loader.has_raster_primitives()):
             )
             
             # Use sequential-specific HTML path and export sequence
+            lastframe_html_path = "output_webpage/src/index.html"
             sequential_html_path = "output_webpage/src_sequential/index.html"
             
             # Export PDF for the last frame
@@ -415,26 +416,24 @@ if not (primitive_loader and primitive_loader.has_raster_primitives()):
                           last_frame['theta'], last_frame['v'], last_frame['c'],
                           output_path=pdf_path,
                           svg_hollow=config["svg"].get("svg_hollow", False),
-                          html_extra_path=sequential_html_path,
+                          html_extra_path=lastframe_html_path,
                           export_pdf=True,
                           html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
             )
             
             # Export HTML sequence animation
-            html_sequence_path = os.path.join(output_dir, f'sequence_{timestamp}.html')
             export_config = sequential_config.get("export", {})
             sequence_fps = export_config.get("sequence_fps", 24)
             
             print(f"\nExporting HTML sequence animation...")
             exporter.export_sequence(
                 frame_results=frame_results,
-                output_path=html_sequence_path,
+                output_html_path=sequential_html_path,
                 svg_hollow=config["svg"].get("svg_hollow", False),
-                html_extra_path=sequential_html_path,
-                html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {},
-                fps=sequence_fps
+                fps=sequence_fps,
+                html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
             )
-            print(f"HTML sequence exported: {html_sequence_path}")
+            print(f"HTML sequence exported: {sequential_html_path}")
     else:
         # Single image PDF export (original behavior)
         pdf_path = os.path.join(output_dir, f'output_{timestamp}.pdf')
