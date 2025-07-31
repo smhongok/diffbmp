@@ -75,8 +75,11 @@ preprocessor = Preprocessor(
 
 # Load target image(s) based on mode
 if xy_dynamics_mode:
-    # Load dual images for XY dynamics (already in color format)
-    I_target1, I_target2 = preprocessor.load_dual_images_for_xy_dynamics(config["preprocessing"])
+    # Load dual images for XY dynamics (returns numpy arrays)
+    image1_array, image2_array = preprocessor.load_dual_images_for_xy_dynamics(config["preprocessing"])
+    # Convert to torch tensors
+    I_target1 = torch.tensor(image1_array, device=device).float() / 255.0
+    I_target2 = torch.tensor(image2_array, device=device).float() / 255.0
     # Use first image as primary target for initial optimization
     I_target = I_target1
     print(f"Loaded dual images for XY dynamics: {I_target1.shape}")

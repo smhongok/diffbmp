@@ -5,8 +5,8 @@
         "FM_halftone": false,
         "transform": "none",
         "img_paths": [
-            "images/CelebA/182340.png",
-            "images/CelebA/182341.png"
+            "images/artwork/seurat.jpg",
+            "images/BSDS500/102061.jpg"
         ],
         "bg_threshold": 250,
         "do_equalize": false,
@@ -86,9 +86,9 @@
         "xy_optimization": {
             "num_iterations": 100,
             "learning_rate": {
-                "default": 0.05,
-                "gain_x": 5.0,
-                "gain_y": 5.0
+                "default": 0.1,
+                "gain_x": 10.0,
+                "gain_y": 10.0
             },
             "do_decay": true,
             "decay_rate": 0.98,
