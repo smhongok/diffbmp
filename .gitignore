@@ -15,6 +15,8 @@ assets/primitives/*
 output_webpage/node_modules/
 output_webpage/src/index.html
 output_webpage/src_lyrics/index.html
+output_webpage/src_sequential/index.html
+output_webpage/src_sequential_lyrics/index.html
 !assets/svg/fire.svg
 !assets/svg/fire2.svg
 !assets/primitives/paint_brush.png
@@ -32,6 +34,9 @@ configs/*
 
 images/person/*
 !images/person/pororo.jpg
+
+images/gif/*
+!images/gif/pororo_monkey_crop_first2.gif
 
 wandb
 
