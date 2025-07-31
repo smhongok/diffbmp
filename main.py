@@ -44,10 +44,16 @@ with open(config_path, "r", encoding="utf-8") as f:
 # After import or after loading config
 set_global_seed(config.get("seed", 42))
 
-# Force list attributes to single item
-if type(config["preprocessing"]["img_path"]) is list:
-    config["preprocessing"]["img_path"] = config["preprocessing"]["img_path"][0]
-    print("Use only one file to inference")
+# Check for XY dynamics mode
+xy_dynamics_mode = 'img_paths' in config["preprocessing"] and len(config["preprocessing"].get('img_paths', [])) == 2
+
+if xy_dynamics_mode:
+    print("XY Dynamics mode detected - processing two images for position-based transition")
+else:
+    # Force list attributes to single item for standard mode
+    if type(config["preprocessing"]["img_path"]) is list:
+        config["preprocessing"]["img_path"] = config["preprocessing"]["img_path"][0]
+        print("Use only one file to inference")
 if type(config["preprocessing"]["final_width"]) is list:
     config["preprocessing"]["final_width"] = config["preprocessing"]["final_width"][0]
     print("Use only one final_width to inference")
@@ -67,9 +73,18 @@ preprocessor = Preprocessor(
     transform_mode=pp_conf.get("transform", "none"),
 )
 
-# Load target color image
-I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
-I_target = torch.tensor(I_target, device=device)  # (H, W, 3)
+# Load target image(s) based on mode
+if xy_dynamics_mode:
+    # Load dual images for XY dynamics (already in color format)
+    I_target1, I_target2 = preprocessor.load_dual_images_for_xy_dynamics(config["preprocessing"])
+    # Use first image as primary target for initial optimization
+    I_target = I_target1
+    print(f"Loaded dual images for XY dynamics: {I_target1.shape}")
+else:
+    # Standard single image loading
+    I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
+    I_target = torch.tensor(I_target, device=device)  # (H, W, 3)
+    
 H = preprocessor.final_height
 W = preprocessor.final_width
 
@@ -180,65 +195,134 @@ x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target)
 
 bmp_image_tensor = svg_loader.load_alpha_bitmap()
 
-# Optimize parameters
-x, y, r, v, theta, c = renderer.optimize_parameters(
-    x, y, r, v, theta, c,
-    I_target, 
-    opt_conf=opt_conf
-)
-
-# Save the final rendered image
-output_dir = config["postprocessing"].get("output_folder", "./outputs/")
-os.makedirs(output_dir, exist_ok=True)
-timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-output_path = os.path.join(output_dir, f'output_{timestamp}.png')
-
-# Standard PDF export for SVG-only primitives (if no raster primitives)
-if not (primitive_loader and primitive_loader.has_raster_primitives()):
-    pdf_path = os.path.join(output_dir, f'output_{timestamp}.pdf')
-    exporter = PDFExporter(
-        svg_loader.svg_path, 
-        canvas_size=(W, H),
-        viewbox_size=svg_loader.get_svg_size(),
-        alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
-        stroke_width=config["postprocessing"].get("linewidth", 3.0)
+if xy_dynamics_mode:
+    # XY Dynamics workflow
+    print("=== XY Dynamics Workflow ===")
+    
+    # Step 1: Optimize for first image
+    print("Step 1: Optimizing SVGSplat for first image...")
+    x1, y1, r, v, theta, c = renderer.optimize_parameters(
+        x, y, r, v, theta, c,
+        I_target1, 
+        opt_conf=opt_conf
     )
     
-    exporter.export(x, y, r, theta, v, c,
-                    output_path=pdf_path,
-                    svg_hollow=config["svg"].get("svg_hollow", False),
-                    html_extra_path = "output_webpage/src/index.html" if html_extra_path_special is None else html_extra_path_special,
-                    export_pdf=True,
-                    html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
+    # Step 2: Optimize only x,y for second image
+    print("Step 2: Optimizing x,y parameters for second image...")
+    xy_opt_conf = config.get("xy_dynamics", {}).get("xy_optimization", {
+        "num_iterations": 50,
+        "learning_rate": {"default": 0.05, "gain_x": 5.0, "gain_y": 5.0},
+        "do_decay": True,
+        "decay_rate": 0.98
+    })
+    
+    x2, y2, r, v, theta, c = renderer.optimize_xy_dynamics(
+        x1, y1, r, v, theta, c,
+        I_target2,
+        xy_opt_conf
     )
-with torch.no_grad():
-    # Generate final masks and render
-    cached_masks = renderer._batched_soft_rasterize(
-        x, y, r, theta,
-        sigma=0
+    
+    # Setup output directory for XY dynamics
+    output_dir = config["postprocessing"].get("output_dir", "./outputs/xy_dynamics/")
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    # Step 3: Export SVGSplat1, SVGSplat2, and transition video
+    print("Step 3: Exporting results...")
+    
+    # Save SVGSplat1 (first image result)
+    with torch.no_grad():
+        cached_masks1 = renderer._batched_soft_rasterize(x1, y1, r, theta, sigma=0)
+        output_path1 = os.path.join(output_dir, f'svgsplat1_{timestamp}.png')
+        renderer.save_rendered_image(cached_masks1, v, c, output_path1)
+        print(f"SVGSplat1 saved to: {output_path1}")
+    
+    # Save SVGSplat2 (second image result)
+    with torch.no_grad():
+        cached_masks2 = renderer._batched_soft_rasterize(x2, y2, r, theta, sigma=0)
+        output_path2 = os.path.join(output_dir, f'svgsplat2_{timestamp}.png')
+        renderer.save_rendered_image(cached_masks2, v, c, output_path2)
+        print(f"SVGSplat2 saved to: {output_path2}")
+    
+    # Create transition video
+    transition_frames = config.get("xy_dynamics", {}).get("xy_optimization", {}).get("transition_frames", 60)
+    fps = config["postprocessing"].get("mp4_fps", 30)
+    video_path = os.path.join(output_dir, f'xy_transition_{timestamp}.mp4')
+    
+    renderer.render_xy_transition_mp4(
+        x1, y1, x2, y2, r, v, theta, c,
+        video_path=video_path,
+        transition_frames=transition_frames,
+        fps=fps
     )
-    rendered = renderer.render(cached_masks, v, c)
-    renderer.save_rendered_image(cached_masks, v, c, output_path)
-    # High-resolution export configuration (recommended only when you have raster primitives)
-    hires_enabled = config["postprocessing"].get("hires_export", False)
-    scale_factor = config["postprocessing"].get("hires_scale_factor", 4.0)
-    if hires_enabled:
-        # High-resolution MP4 export using streaming approach
-        warnings.warn("High-resolution export is not recommended for vector primitives. Use it only when you have raster primitives.")
-        hires_mp4_path = os.path.join(output_dir, f'output_{timestamp}_hires.mp4')
-        print(f"Generating high-resolution MP4 ({scale_factor}x scale)...")
-        renderer.render_export_mp4_hires(
-            x, y, r, theta, v, c,
-            video_path=hires_mp4_path,
-            scale_factor=scale_factor,
-            fps=60
-        )
-    else:
-        video_path = os.path.join(output_dir, f'output_{timestamp}.mp4')
-        renderer.render_export_mp4(cached_masks, v, c, video_path=video_path)
+    print(f"XY transition video saved to: {video_path}")
+    
+    print("=== XY Dynamics workflow completed ===")
+    
+else:
+    # Standard workflow
+    # Optimize parameters
+    x, y, r, v, theta, c = renderer.optimize_parameters(
+        x, y, r, v, theta, c,
+        I_target, 
+        opt_conf=opt_conf
+    )
+    
+    # Save the final rendered image
+    output_dir = config["postprocessing"].get("output_folder", "./outputs/")
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_path = os.path.join(output_dir, f'output_{timestamp}.png')
 
-# Compute metrics if requested
-if config['postprocessing'].get('compute_psnr', False):
+# Continue with standard workflow exports only if not in XY dynamics mode
+if not xy_dynamics_mode:
+    # Standard PDF export for SVG-only primitives (if no raster primitives)
+    if not (primitive_loader and primitive_loader.has_raster_primitives()):
+        pdf_path = os.path.join(output_dir, f'output_{timestamp}.pdf')
+        exporter = PDFExporter(
+            svg_loader.svg_path, 
+            canvas_size=(W, H),
+            viewbox_size=svg_loader.get_svg_size(),
+            alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
+            stroke_width=config["postprocessing"].get("linewidth", 3.0)
+        )
+        
+        exporter.export(x, y, r, theta, v, c,
+                        output_path=pdf_path,
+                        svg_hollow=config["svg"].get("svg_hollow", False),
+                        html_extra_path = "output_webpage/src/index.html" if html_extra_path_special is None else html_extra_path_special,
+                        export_pdf=True,
+                        html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
+        )
+    
+    with torch.no_grad():
+        # Generate final masks and render
+        cached_masks = renderer._batched_soft_rasterize(
+            x, y, r, theta,
+            sigma=0
+        )
+        rendered = renderer.render(cached_masks, v, c)
+        renderer.save_rendered_image(cached_masks, v, c, output_path)
+        # High-resolution export configuration (recommended only when you have raster primitives)
+        hires_enabled = config["postprocessing"].get("hires_export", False)
+        scale_factor = config["postprocessing"].get("hires_scale_factor", 4.0)
+        if hires_enabled:
+            # High-resolution MP4 export using streaming approach
+            warnings.warn("High-resolution export is not recommended for vector primitives. Use it only when you have raster primitives.")
+            hires_mp4_path = os.path.join(output_dir, f'output_{timestamp}_hires.mp4')
+            print(f"Generating high-resolution MP4 ({scale_factor}x scale)...")
+            renderer.render_export_mp4_hires(
+                x, y, r, theta, v, c,
+                video_path=hires_mp4_path,
+                scale_factor=scale_factor,
+                fps=60
+            )
+        else:
+            video_path = os.path.join(output_dir, f'output_{timestamp}.mp4')
+            renderer.render_export_mp4(cached_masks, v, c, video_path=video_path)
+
+# Compute metrics if requested (only for standard mode)
+if not xy_dynamics_mode and config['postprocessing'].get('compute_psnr', False):
     try:
         import piq
         # Convert rendered image to tensor format for metrics

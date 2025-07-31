@@ -250,6 +250,45 @@ class Preprocessor:
         if self.final_width is None:
             raise ValueError("final_height has not been set.")
         return self.final_width
+    
+    def load_dual_images_for_xy_dynamics(self, config):
+        """
+        Load two images for XY dynamics mode.
+        
+        Args:
+            config: Configuration dictionary containing 'img_paths' with two image paths
+            
+        Returns:
+            tuple: (image1_tensor, image2_tensor) both as torch tensors
+        """
+        if 'img_paths' not in config or len(config['img_paths']) != 2:
+            raise ValueError("XY dynamics mode requires exactly 2 image paths in 'img_paths'")
+        
+        # Process first image
+        config_img1 = config.copy()
+        config_img1['img_path'] = config['img_paths'][0]
+        image1_array = self.load_image_8bit_color(config_img1)
+        
+        # Process second image
+        config_img2 = config.copy()
+        config_img2['img_path'] = config['img_paths'][1]
+        image2_array = self.load_image_8bit_color(config_img2)
+        
+        # Convert to torch tensors
+        import torch
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        image1_tensor = torch.from_numpy(image1_array).float().to(device) / 255.0
+        image2_tensor = torch.from_numpy(image2_array).float().to(device) / 255.0
+        
+        # Ensure both images have the same dimensions
+        if image1_tensor.shape != image2_tensor.shape:
+            raise ValueError(f"Images must have the same dimensions. Got {image1_tensor.shape} and {image2_tensor.shape}")
+        
+        print(f"Loaded dual images for XY dynamics: {config['img_paths'][0]} and {config['img_paths'][1]}")
+        print(f"Image dimensions: {image1_tensor.shape}")
+        
+        return image1_tensor, image2_tensor
 
 
 def histogram_equalization_excluding_bg(img: Image.Image, bg_threshold=250) -> Image.Image:
