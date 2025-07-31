@@ -35,6 +35,9 @@ configs/*
 images/person/*
 !images/person/pororo.jpg
 
+images/gif/*
+!images/gif/pororo_monkey_crop_first2.gif
+
 wandb
 
 ### Python ###

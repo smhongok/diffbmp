@@ -409,7 +409,12 @@ if not (primitive_loader and primitive_loader.has_raster_primitives()):
             
             # Use sequential-specific HTML path and export sequence
             lastframe_html_path = "output_webpage/src/index.html"
-            sequential_html_path = "output_webpage/src_sequential/index.html"
+            
+            # Choose sequential HTML path based on text file type
+            if 'text_ext' in locals() and (text_ext == ".txt" or text_ext == ".lrc"):
+                sequential_html_path = "output_webpage/src_sequential_lyrics/index.html"
+            else:
+                sequential_html_path = "output_webpage/src_sequential/index.html"
             
             # Export PDF for the last frame
             exporter.export(last_frame['x'], last_frame['y'], last_frame['r'], 
