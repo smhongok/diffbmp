@@ -116,10 +116,12 @@ class MseRenderer(VectorRenderer):
             if use_combined_loss:
                 grayscale_weight = xy_opt_conf.get('grayscale_weight', 0.7)
                 color_weight = xy_opt_conf.get('color_weight', 0.3)
+                use_gradient_loss = xy_opt_conf.get('use_gradient_loss', False)
                 loss = self.compute_combined_loss(rendered, target_image2, x2, y2, r, v, theta, c, 
-                                                grayscale_weight, color_weight)
+                                                grayscale_weight, color_weight, use_gradient_loss)
                 if epoch % 10 == 0:
-                    print(f"Using combined loss (grayscale: {grayscale_weight}, color: {color_weight})")
+                    gradient_info = " (gradient-based)" if use_gradient_loss else " (pixel-based)"
+                    print(f"Using combined loss{gradient_info} (grayscale: {grayscale_weight}, color: {color_weight})")
             else:
                 loss = self.compute_loss(rendered, target_image2, x2, y2, r, v, theta, c)
                 if epoch % 10 == 0:
@@ -209,7 +211,8 @@ class MseRenderer(VectorRenderer):
                               r: torch.Tensor,
                               v: torch.Tensor,
                               theta: torch.Tensor,
-                              c: torch.Tensor) -> torch.Tensor:
+                              c: torch.Tensor,
+                              use_gradient_loss: bool = False) -> torch.Tensor:
         """
         Compute MSE loss between grayscale versions of rendered and target images.
         This focuses on structural similarity rather than color differences.
@@ -218,9 +221,10 @@ class MseRenderer(VectorRenderer):
             rendered: Rendered image tensor (H, W, 3)
             target: Target image tensor (H, W, 3)
             x, y, r, v, theta, c: Current parameter values
+            use_gradient_loss: If True, uses gradient-based loss for edge similarity
             
         Returns:
-            MSE loss value computed on grayscale images
+            MSE loss value computed on grayscale images (or their gradients)
         """
         # Convert RGB to grayscale using standard luminance weights
         # Y = 0.299*R + 0.587*G + 0.114*B
@@ -247,7 +251,15 @@ class MseRenderer(VectorRenderer):
             rendered_gray = rendered_gray.float()
             target_gray = target_gray.float()
         
-        return F.mse_loss(rendered_gray, target_gray)
+        # Compute base grayscale MSE loss
+        grayscale_mse_loss = F.mse_loss(rendered_gray, target_gray)
+        
+        # Add gradient-based loss if requested
+        if use_gradient_loss:
+            gradient_loss = self._compute_gradient_loss(rendered_gray, target_gray)
+            return grayscale_mse_loss + gradient_loss
+        else:
+            return grayscale_mse_loss
     
     def compute_combined_loss(self, 
                              rendered: torch.Tensor, 
@@ -259,7 +271,8 @@ class MseRenderer(VectorRenderer):
                              theta: torch.Tensor,
                              c: torch.Tensor,
                              grayscale_weight: float = 0.7,
-                             color_weight: float = 0.3) -> torch.Tensor:
+                             color_weight: float = 0.3,
+                             use_gradient_loss: bool = False) -> torch.Tensor:
         """
         Compute combined loss using both grayscale and color MSE losses.
         This balances structural similarity (grayscale) with color matching.
@@ -270,12 +283,13 @@ class MseRenderer(VectorRenderer):
             x, y, r, v, theta, c: Current parameter values
             grayscale_weight: Weight for grayscale loss component (default: 0.7)
             color_weight: Weight for color loss component (default: 0.3)
+            use_gradient_loss: If True, uses gradient-based loss for edge similarity
             
         Returns:
             Combined weighted loss value
         """
         # Compute grayscale-based structural loss
-        grayscale_loss = self.compute_grayscale_loss(rendered, target, x, y, r, v, theta, c)
+        grayscale_loss = self.compute_grayscale_loss(rendered, target, x, y, r, v, theta, c, use_gradient_loss)
         
         # Compute color-based loss
         color_loss = self.compute_loss(rendered, target, x, y, r, v, theta, c)
@@ -284,3 +298,44 @@ class MseRenderer(VectorRenderer):
         combined_loss = grayscale_weight * grayscale_loss + color_weight * color_loss
         
         return combined_loss
+    
+    def _compute_gradient_loss(self, rendered_gray: torch.Tensor, target_gray: torch.Tensor) -> torch.Tensor:
+        """
+        Compute gradient-based loss between grayscale images to focus on edge similarity.
+        Uses Sobel operators to compute gradients in x and y directions.
+        
+        Args:
+            rendered_gray: Rendered grayscale image tensor (H, W, 1)
+            target_gray: Target grayscale image tensor (H, W, 1)
+            
+        Returns:
+            Gradient-based MSE loss value
+        """
+        # Remove the channel dimension for gradient computation
+        rendered_2d = rendered_gray.squeeze(-1)  # (H, W)
+        target_2d = target_gray.squeeze(-1)      # (H, W)
+        
+        # Define Sobel kernels for gradient computation
+        sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
+                              dtype=rendered_2d.dtype, device=rendered_2d.device).unsqueeze(0).unsqueeze(0)
+        sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], 
+                              dtype=rendered_2d.dtype, device=rendered_2d.device).unsqueeze(0).unsqueeze(0)
+        
+        # Add batch and channel dimensions for conv2d
+        rendered_batch = rendered_2d.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+        target_batch = target_2d.unsqueeze(0).unsqueeze(0)      # (1, 1, H, W)
+        
+        # Compute gradients using Sobel operators
+        rendered_grad_x = F.conv2d(rendered_batch, sobel_x, padding=1)
+        rendered_grad_y = F.conv2d(rendered_batch, sobel_y, padding=1)
+        target_grad_x = F.conv2d(target_batch, sobel_x, padding=1)
+        target_grad_y = F.conv2d(target_batch, sobel_y, padding=1)
+        
+        # Compute gradient magnitude
+        rendered_grad_mag = torch.sqrt(rendered_grad_x**2 + rendered_grad_y**2 + 1e-8)
+        target_grad_mag = torch.sqrt(target_grad_x**2 + target_grad_y**2 + 1e-8)
+        
+        # Compute MSE loss on gradient magnitudes
+        gradient_loss = F.mse_loss(rendered_grad_mag, target_grad_mag)
+        
+        return gradient_loss

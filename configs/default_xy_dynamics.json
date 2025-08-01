@@ -5,8 +5,8 @@
         "FM_halftone": false,
         "transform": "none",
         "img_paths": [
-            "images/nature/melon.jpg",
-            "images/artwork/The_Great_Wave_of_Kanagawa.jpg"
+            "images/CelebA/182340.png",
+            "images/CelebA/182341.png"
         ],
         "bg_threshold": 250,
         "do_equalize": false,
@@ -94,8 +94,9 @@
             "decay_rate": 0.98,
             "transition_frames": 60,
             "use_combined_loss": true,
-            "grayscale_weight": 1,
-            "color_weight": 0
+            "grayscale_weight": 0.7,
+            "color_weight": 0.3,
+            "use_gradient_loss": true
         }
     },
     "postprocessing": {
