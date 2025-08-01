@@ -117,14 +117,15 @@ class MseRenderer(VectorRenderer):
                 grayscale_weight = xy_opt_conf.get('grayscale_weight', 0.7)
                 color_weight = xy_opt_conf.get('color_weight', 0.3)
                 use_gradient_loss = xy_opt_conf.get('use_gradient_loss', False)
+                gradient_weight = xy_opt_conf.get('gradient_weight', 0.1)
                 loss = self.compute_combined_loss(rendered, target_image2, x2, y2, r, v, theta, c, 
-                                                grayscale_weight, color_weight, use_gradient_loss)
-                if epoch % 10 == 0:
+                                                grayscale_weight, color_weight, use_gradient_loss, gradient_weight)
+                if epoch % 20 == 0:
                     gradient_info = " (gradient-based)" if use_gradient_loss else " (pixel-based)"
-                    print(f"Using combined loss{gradient_info} (grayscale: {grayscale_weight}, color: {color_weight})")
+                    print(f"Using combined loss{gradient_info} (grayscale: {grayscale_weight}, color: {color_weight}, gradient: {gradient_weight})")
             else:
                 loss = self.compute_loss(rendered, target_image2, x2, y2, r, v, theta, c)
-                if epoch % 10 == 0:
+                if epoch % 20 == 0:
                     print("Using standard color loss")
             
             # Backward pass
@@ -136,7 +137,7 @@ class MseRenderer(VectorRenderer):
                 scheduler.step()
             
             # Log progress
-            if epoch % 10 == 0 or epoch == num_iterations - 1:
+            if epoch % 20 == 0 or epoch == num_iterations - 1:
                 print(f"Epoch {epoch}: Loss = {loss.item():.6f}")
         
         print("XY dynamics optimization completed.")
@@ -204,40 +205,19 @@ class MseRenderer(VectorRenderer):
         print(f"XY transition video saved to: {video_path}")
     
     def compute_grayscale_loss(self, 
-                              rendered: torch.Tensor, 
-                              target: torch.Tensor, 
-                              x: torch.Tensor,
-                              y: torch.Tensor,
-                              r: torch.Tensor,
-                              v: torch.Tensor,
-                              theta: torch.Tensor,
-                              c: torch.Tensor,
-                              use_gradient_loss: bool = False) -> torch.Tensor:
+                          rendered_gray: torch.Tensor, 
+                          target_gray: torch.Tensor) -> torch.Tensor:
         """
-        Compute MSE loss between grayscale versions of rendered and target images.
+        Compute MSE loss between grayscale images.
         This focuses on structural similarity rather than color differences.
         
         Args:
-            rendered: Rendered image tensor (H, W, 3)
-            target: Target image tensor (H, W, 3)
-            x, y, r, v, theta, c: Current parameter values
-            use_gradient_loss: If True, uses gradient-based loss for edge similarity
+            rendered_gray: Rendered grayscale image tensor (H, W, 1)
+            target_gray: Target grayscale image tensor (H, W, 1)
             
         Returns:
-            MSE loss value computed on grayscale images (or their gradients)
+            MSE loss value computed on grayscale images
         """
-        # Convert RGB to grayscale using standard luminance weights
-        # Y = 0.299*R + 0.587*G + 0.114*B
-        rgb_to_gray_weights = torch.tensor([0.299, 0.587, 0.114], 
-                                         device=rendered.device, 
-                                         dtype=rendered.dtype)
-        
-        # Convert rendered image to grayscale
-        rendered_gray = torch.sum(rendered * rgb_to_gray_weights, dim=-1, keepdim=True)
-        
-        # Convert target image to grayscale
-        target_gray = torch.sum(target * rgb_to_gray_weights, dim=-1, keepdim=True)
-        
         # Ensure tensors are in consistent precision
         if self.use_fp16:
             # If target is in FP32, convert rendered to FP32
@@ -251,15 +231,10 @@ class MseRenderer(VectorRenderer):
             rendered_gray = rendered_gray.float()
             target_gray = target_gray.float()
         
-        # Compute base grayscale MSE loss
+        # Compute grayscale MSE loss
         grayscale_mse_loss = F.mse_loss(rendered_gray, target_gray)
         
-        # Add gradient-based loss if requested
-        if use_gradient_loss:
-            gradient_loss = self._compute_gradient_loss(rendered_gray, target_gray)
-            return grayscale_mse_loss + gradient_loss
-        else:
-            return grayscale_mse_loss
+        return grayscale_mse_loss
     
     def compute_combined_loss(self, 
                              rendered: torch.Tensor, 
@@ -272,7 +247,8 @@ class MseRenderer(VectorRenderer):
                              c: torch.Tensor,
                              grayscale_weight: float = 0.7,
                              color_weight: float = 0.3,
-                             use_gradient_loss: bool = False) -> torch.Tensor:
+                             use_gradient_loss: bool = False,
+                             gradient_weight: float = 0.1) -> torch.Tensor:
         """
         Compute combined loss using both grayscale and color MSE losses.
         This balances structural similarity (grayscale) with color matching.
@@ -283,19 +259,37 @@ class MseRenderer(VectorRenderer):
             x, y, r, v, theta, c: Current parameter values
             grayscale_weight: Weight for grayscale loss component (default: 0.7)
             color_weight: Weight for color loss component (default: 0.3)
-            use_gradient_loss: If True, uses gradient-based loss for edge similarity
+            use_gradient_loss: If True, adds gradient-based loss for edge similarity
+            gradient_weight: Weight for gradient loss component (default: 0.1)
             
         Returns:
             Combined weighted loss value
         """
+        # Convert RGB to grayscale using standard luminance weights
+        # Y = 0.299*R + 0.587*G + 0.114*B
+        rgb_to_gray_weights = torch.tensor([0.299, 0.587, 0.114], 
+                                         device=rendered.device, 
+                                         dtype=rendered.dtype)
+        
+        # Convert rendered image to grayscale
+        rendered_gray = torch.sum(rendered * rgb_to_gray_weights, dim=-1, keepdim=True)
+        
+        # Convert target image to grayscale
+        target_gray = torch.sum(target * rgb_to_gray_weights, dim=-1, keepdim=True)
+        
         # Compute grayscale-based structural loss
-        grayscale_loss = self.compute_grayscale_loss(rendered, target, x, y, r, v, theta, c, use_gradient_loss)
+        grayscale_loss = self.compute_grayscale_loss(rendered_gray, target_gray)
         
         # Compute color-based loss
         color_loss = self.compute_loss(rendered, target, x, y, r, v, theta, c)
         
-        # Combine losses with specified weights
+        # Start with weighted grayscale and color losses
         combined_loss = grayscale_weight * grayscale_loss + color_weight * color_loss
+        
+        # Add gradient-based loss with its own weight if requested
+        if use_gradient_loss:
+            gradient_loss = self._compute_gradient_loss(rendered_gray, target_gray)
+            combined_loss = combined_loss + gradient_weight * gradient_loss
         
         return combined_loss
     

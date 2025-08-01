@@ -5,8 +5,8 @@
         "FM_halftone": false,
         "transform": "none",
         "img_paths": [
-            "images/CelebA/182340.png",
-            "images/CelebA/182341.png"
+            "images/nature/Matterhorn.jpg",
+            "images/nature/melon.jpg"
         ],
         "bg_threshold": 250,
         "do_equalize": false,
@@ -86,7 +86,7 @@
         "xy_optimization": {
             "num_iterations": 100,
             "learning_rate": {
-                "default": 0.1,
+                "default": 0.7,
                 "gain_x": 10.0,
                 "gain_y": 10.0
             },
@@ -94,9 +94,10 @@
             "decay_rate": 0.98,
             "transition_frames": 60,
             "use_combined_loss": true,
-            "grayscale_weight": 0.7,
-            "color_weight": 0.3,
-            "use_gradient_loss": true
+            "grayscale_weight": 1,
+            "color_weight": 0,
+            "use_gradient_loss": true,
+            "gradient_weight": 1
         }
     },
     "postprocessing": {
@@ -104,6 +105,6 @@
         "save_intermediate": true,
         "export_mp4": true,
         "mp4_fps": 30,
-        "output_dir": "outputs/xy_dynamics/grayscale_loss"
+        "output_dir": "outputs/xy_dynamics/color_diff"
     }
 }
