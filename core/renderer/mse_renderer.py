@@ -118,11 +118,19 @@ class MseRenderer(VectorRenderer):
                 color_weight = xy_opt_conf.get('color_weight', 0.3)
                 use_gradient_loss = xy_opt_conf.get('use_gradient_loss', False)
                 gradient_weight = xy_opt_conf.get('gradient_weight', 0.1)
+                use_cosine_similarity = xy_opt_conf.get('use_cosine_similarity', False)
+                use_canny_loss = xy_opt_conf.get('use_canny_loss', False)
+                canny_weight = xy_opt_conf.get('canny_weight', 0.1)
+                canny_low_threshold = xy_opt_conf.get('canny_low_threshold', 0.1)
+                canny_high_threshold = xy_opt_conf.get('canny_high_threshold', 0.2)
                 loss = self.compute_combined_loss(rendered, target_image2, x2, y2, r, v, theta, c, 
-                                                grayscale_weight, color_weight, use_gradient_loss, gradient_weight)
+                                                grayscale_weight, color_weight, use_gradient_loss, gradient_weight, use_cosine_similarity,
+                                                use_canny_loss, canny_weight, canny_low_threshold, canny_high_threshold)
                 if epoch % 20 == 0:
-                    gradient_info = " (gradient-based)" if use_gradient_loss else " (pixel-based)"
-                    print(f"Using combined loss{gradient_info} (grayscale: {grayscale_weight}, color: {color_weight}, gradient: {gradient_weight})")
+                    gradient_info = " (cosine similarity)" if use_cosine_similarity else " (absolute value)"
+                    loss_type = "gradient-based" if use_gradient_loss else "pixel-based"
+                    canny_info = f", canny: {canny_weight}" if use_canny_loss else ""
+                    print(f"Using combined loss {loss_type}{gradient_info if use_gradient_loss else ''} (grayscale: {grayscale_weight}, color: {color_weight}, gradient: {gradient_weight}{canny_info})")
             else:
                 loss = self.compute_loss(rendered, target_image2, x2, y2, r, v, theta, c)
                 if epoch % 20 == 0:
@@ -237,18 +245,23 @@ class MseRenderer(VectorRenderer):
         return grayscale_mse_loss
     
     def compute_combined_loss(self, 
-                             rendered: torch.Tensor, 
-                             target: torch.Tensor, 
-                             x: torch.Tensor,
-                             y: torch.Tensor,
-                             r: torch.Tensor,
-                             v: torch.Tensor,
-                             theta: torch.Tensor,
-                             c: torch.Tensor,
-                             grayscale_weight: float = 0.7,
-                             color_weight: float = 0.3,
-                             use_gradient_loss: bool = False,
-                             gradient_weight: float = 0.1) -> torch.Tensor:
+                     rendered: torch.Tensor, 
+                     target: torch.Tensor, 
+                     x: torch.Tensor,
+                     y: torch.Tensor,
+                     r: torch.Tensor,
+                     v: torch.Tensor,
+                     theta: torch.Tensor,
+                     c: torch.Tensor,
+                     grayscale_weight: float = 0.7,
+                     color_weight: float = 0.3,
+                     use_gradient_loss: bool = False,
+                     gradient_weight: float = 0.1,
+                     use_cosine_similarity: bool = False,
+                     use_canny_loss: bool = False,
+                     canny_weight: float = 0.1,
+                     canny_low_threshold: float = 0.1,
+                     canny_high_threshold: float = 0.2) -> torch.Tensor:
         """
         Compute combined loss using both grayscale and color MSE losses.
         This balances structural similarity (grayscale) with color matching.
@@ -261,6 +274,11 @@ class MseRenderer(VectorRenderer):
             color_weight: Weight for color loss component (default: 0.3)
             use_gradient_loss: If True, adds gradient-based loss for edge similarity
             gradient_weight: Weight for gradient loss component (default: 0.1)
+            use_cosine_similarity: If True, uses cosine similarity for gradient loss
+            use_canny_loss: If True, adds Canny edge-based loss for edge similarity
+            canny_weight: Weight for Canny edge loss component (default: 0.1)
+            canny_low_threshold: Low threshold for Canny edge detection (default: 0.1)
+            canny_high_threshold: High threshold for Canny edge detection (default: 0.2)
             
         Returns:
             Combined weighted loss value
@@ -288,12 +306,17 @@ class MseRenderer(VectorRenderer):
         
         # Add gradient-based loss with its own weight if requested
         if use_gradient_loss:
-            gradient_loss = self._compute_gradient_loss(rendered_gray, target_gray)
+            gradient_loss = self._compute_gradient_loss(rendered_gray, target_gray, use_cosine_similarity)
             combined_loss = combined_loss + gradient_weight * gradient_loss
         
+        # Add Canny edge-based loss with its own weight if requested
+        if use_canny_loss:
+            canny_loss = self._compute_canny_loss(rendered_gray, target_gray, canny_low_threshold, canny_high_threshold)
+            combined_loss = combined_loss + canny_weight * canny_loss
+        
         return combined_loss
-    
-    def _compute_gradient_loss(self, rendered_gray: torch.Tensor, target_gray: torch.Tensor) -> torch.Tensor:
+
+    def _compute_gradient_loss(self, rendered_gray: torch.Tensor, target_gray: torch.Tensor, use_cosine_similarity: bool = False) -> torch.Tensor:
         """
         Compute gradient-based loss between grayscale images to focus on edge similarity.
         Uses Sobel operators to compute gradients in x and y directions.
@@ -301,9 +324,11 @@ class MseRenderer(VectorRenderer):
         Args:
             rendered_gray: Rendered grayscale image tensor (H, W, 1)
             target_gray: Target grayscale image tensor (H, W, 1)
+            use_cosine_similarity: If True, uses cosine similarity loss on gradient vectors.
+                                 If False, uses MSE loss on gradient magnitudes (absolute values).
             
         Returns:
-            Gradient-based MSE loss value
+            Gradient-based loss value
         """
         # Remove the channel dimension for gradient computation
         rendered_2d = rendered_gray.squeeze(-1)  # (H, W)
@@ -325,11 +350,157 @@ class MseRenderer(VectorRenderer):
         target_grad_x = F.conv2d(target_batch, sobel_x, padding=1)
         target_grad_y = F.conv2d(target_batch, sobel_y, padding=1)
         
-        # Compute gradient magnitude
+        if use_cosine_similarity:
+            # Use cosine similarity loss on gradient vectors (preserves sign information)
+            # Flatten gradients to compute per-pixel cosine similarity
+            rendered_grad_flat = torch.stack([rendered_grad_x.flatten(), rendered_grad_y.flatten()], dim=0)  # (2, H*W)
+            target_grad_flat = torch.stack([target_grad_x.flatten(), target_grad_y.flatten()], dim=0)  # (2, H*W)
+            
+            # Compute cosine similarity for each pixel's gradient vector
+            # cosine_sim = (a · b) / (||a|| * ||b||)
+            dot_product = torch.sum(rendered_grad_flat * target_grad_flat, dim=0)  # (H*W,)
+            rendered_norm = torch.norm(rendered_grad_flat, dim=0) + 1e-8  # (H*W,)
+            target_norm = torch.norm(target_grad_flat, dim=0) + 1e-8  # (H*W,)
+            
+            cosine_sim = dot_product / (rendered_norm * target_norm)  # (H*W,)
+            
+            # Convert cosine similarity to loss (1 - cosine_sim), then take mean
+            # Cosine similarity ranges from -1 to 1, so (1 - cosine_sim) ranges from 0 to 2
+            gradient_loss = torch.mean(1.0 - cosine_sim)
+        else:
+            # Use MSE loss on gradient magnitudes (absolute values)
+            rendered_grad_mag = torch.sqrt(rendered_grad_x**2 + rendered_grad_y**2 + 1e-8)
+            target_grad_mag = torch.sqrt(target_grad_x**2 + target_grad_y**2 + 1e-8)
+            gradient_loss = F.mse_loss(rendered_grad_mag, target_grad_mag)
+    
+        return gradient_loss
+
+    def _compute_canny_loss(self, rendered_gray: torch.Tensor, target_gray: torch.Tensor, 
+                           low_threshold: float = 0.1, high_threshold: float = 0.2) -> torch.Tensor:
+        """
+        Compute Canny edge-based loss between grayscale images to focus on edge similarity.
+        Uses Canny edge detection to extract edge maps and compares them using MSE loss.
+        
+        Args:
+            rendered_gray: Rendered grayscale image tensor (H, W, 1)
+            target_gray: Target grayscale image tensor (H, W, 1)
+            low_threshold: Low threshold for Canny edge detection (default: 0.1)
+            high_threshold: High threshold for Canny edge detection (default: 0.2)
+            
+        Returns:
+            Canny edge-based loss value
+        """
+        # Remove the channel dimension for edge detection
+        rendered_2d = rendered_gray.squeeze(-1)  # (H, W)
+        target_2d = target_gray.squeeze(-1)      # (H, W)
+        
+        # Add batch and channel dimensions for processing
+        rendered_batch = rendered_2d.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+        target_batch = target_2d.unsqueeze(0).unsqueeze(0)      # (1, 1, H, W)
+        
+        # Step 1: Apply Gaussian smoothing (5x5 kernel with sigma=1.0)
+        gaussian_kernel = self._get_gaussian_kernel(5, 1.0, rendered_2d.device, rendered_2d.dtype)
+        rendered_smooth = F.conv2d(rendered_batch, gaussian_kernel, padding=2)
+        target_smooth = F.conv2d(target_batch, gaussian_kernel, padding=2)
+        
+        # Step 2: Compute gradients using Sobel operators
+        sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
+                              dtype=rendered_2d.dtype, device=rendered_2d.device).unsqueeze(0).unsqueeze(0)
+        sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], 
+                              dtype=rendered_2d.dtype, device=rendered_2d.device).unsqueeze(0).unsqueeze(0)
+        
+        # Compute gradients
+        rendered_grad_x = F.conv2d(rendered_smooth, sobel_x, padding=1)
+        rendered_grad_y = F.conv2d(rendered_smooth, sobel_y, padding=1)
+        target_grad_x = F.conv2d(target_smooth, sobel_x, padding=1)
+        target_grad_y = F.conv2d(target_smooth, sobel_y, padding=1)
+        
+        # Step 3: Compute gradient magnitude and direction
         rendered_grad_mag = torch.sqrt(rendered_grad_x**2 + rendered_grad_y**2 + 1e-8)
         target_grad_mag = torch.sqrt(target_grad_x**2 + target_grad_y**2 + 1e-8)
         
-        # Compute MSE loss on gradient magnitudes
-        gradient_loss = F.mse_loss(rendered_grad_mag, target_grad_mag)
+        # Step 4: Non-maximum suppression (simplified version)
+        rendered_edges = self._non_maximum_suppression(rendered_grad_mag, rendered_grad_x, rendered_grad_y)
+        target_edges = self._non_maximum_suppression(target_grad_mag, target_grad_x, target_grad_y)
         
-        return gradient_loss
+        # Step 5: Double thresholding
+        rendered_canny = self._double_threshold(rendered_edges, low_threshold, high_threshold)
+        target_canny = self._double_threshold(target_edges, low_threshold, high_threshold)
+        
+        # Compute MSE loss between Canny edge maps
+        canny_loss = F.mse_loss(rendered_canny, target_canny)
+        
+        return canny_loss
+    
+    def _get_gaussian_kernel(self, kernel_size: int, sigma: float, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        """
+        Generate a 2D Gaussian kernel for smoothing.
+        """
+        # Create coordinate grids
+        coords = torch.arange(kernel_size, dtype=dtype, device=device) - kernel_size // 2
+        x, y = torch.meshgrid(coords, coords, indexing='ij')
+        
+        # Compute Gaussian values
+        gaussian = torch.exp(-(x**2 + y**2) / (2 * sigma**2))
+        gaussian = gaussian / gaussian.sum()  # Normalize
+        
+        return gaussian.unsqueeze(0).unsqueeze(0)  # Add batch and channel dimensions
+    
+    def _non_maximum_suppression(self, grad_mag: torch.Tensor, grad_x: torch.Tensor, grad_y: torch.Tensor) -> torch.Tensor:
+        """
+        Apply non-maximum suppression to thin edges.
+        Simplified version that checks 8-connected neighbors.
+        """
+        # Compute gradient direction (in degrees)
+        grad_direction = torch.atan2(grad_y, grad_x) * 180 / torch.pi
+        grad_direction = torch.abs(grad_direction)  # Take absolute value
+        
+        # Initialize output
+        suppressed = torch.zeros_like(grad_mag)
+        
+        # Get image dimensions (remove batch and channel dimensions)
+        _, _, h, w = grad_mag.shape
+        grad_mag_2d = grad_mag.squeeze(0).squeeze(0)
+        grad_direction_2d = grad_direction.squeeze(0).squeeze(0)
+        
+        # Apply non-maximum suppression
+        for i in range(1, h - 1):
+            for j in range(1, w - 1):
+                direction = grad_direction_2d[i, j]
+                
+                # Determine which neighbors to compare based on gradient direction
+                if (0 <= direction < 22.5) or (157.5 <= direction <= 180):
+                    # Horizontal direction
+                    neighbors = [grad_mag_2d[i, j-1], grad_mag_2d[i, j+1]]
+                elif 22.5 <= direction < 67.5:
+                    # Diagonal direction (top-right to bottom-left)
+                    neighbors = [grad_mag_2d[i-1, j+1], grad_mag_2d[i+1, j-1]]
+                elif 67.5 <= direction < 112.5:
+                    # Vertical direction
+                    neighbors = [grad_mag_2d[i-1, j], grad_mag_2d[i+1, j]]
+                else:  # 112.5 <= direction < 157.5
+                    # Diagonal direction (top-left to bottom-right)
+                    neighbors = [grad_mag_2d[i-1, j-1], grad_mag_2d[i+1, j+1]]
+                
+                # Keep pixel if it's a local maximum
+                if grad_mag_2d[i, j] >= max(neighbors):
+                    suppressed[0, 0, i, j] = grad_mag_2d[i, j]
+        
+        return suppressed
+    
+    def _double_threshold(self, edges: torch.Tensor, low_threshold: float, high_threshold: float) -> torch.Tensor:
+        """
+        Apply double thresholding to classify edges as strong, weak, or non-edges.
+        """
+        # Normalize edge magnitudes to [0, 1] range
+        edges_norm = edges / (edges.max() + 1e-8)
+        
+        # Apply thresholds
+        strong_edges = (edges_norm >= high_threshold).float()
+        weak_edges = ((edges_norm >= low_threshold) & (edges_norm < high_threshold)).float()
+        
+        # For simplicity, we'll include both strong and weak edges
+        # In a full Canny implementation, we'd do edge tracking by hysteresis
+        final_edges = strong_edges + 0.5 * weak_edges
+        
+        return final_edges
