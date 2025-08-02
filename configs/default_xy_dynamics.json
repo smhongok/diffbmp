@@ -32,7 +32,7 @@
     },
     "initialization": {
         "initializer": "structure_aware",
-        "N": [2000],
+        "N": [1000],
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
@@ -110,6 +110,6 @@
         "save_intermediate": true,
         "export_mp4": true,
         "mp4_fps": 30,
-        "output_dir": "outputs/xy_dynamics/color_diff"
+        "output_dir": "outputs/xy_dynamics/gray+canny_compare"
     }
 }

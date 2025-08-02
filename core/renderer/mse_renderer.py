@@ -378,17 +378,17 @@ class MseRenderer(VectorRenderer):
     def _compute_canny_loss(self, rendered_gray: torch.Tensor, target_gray: torch.Tensor, 
                            low_threshold: float = 0.1, high_threshold: float = 0.2) -> torch.Tensor:
         """
-        Compute Canny edge-based loss between grayscale images to focus on edge similarity.
-        Uses Canny edge detection to extract edge maps and compares them using MSE loss.
+        Compute simplified Canny-inspired edge loss between grayscale images.
+        Uses differentiable operations to maintain gradient flow during optimization.
         
         Args:
             rendered_gray: Rendered grayscale image tensor (H, W, 1)
             target_gray: Target grayscale image tensor (H, W, 1)
-            low_threshold: Low threshold for Canny edge detection (default: 0.1)
-            high_threshold: High threshold for Canny edge detection (default: 0.2)
+            low_threshold: Low threshold for edge detection (default: 0.1)
+            high_threshold: High threshold for edge detection (default: 0.2)
             
         Returns:
-            Canny edge-based loss value
+            Canny-inspired edge loss value
         """
         # Remove the channel dimension for edge detection
         rendered_2d = rendered_gray.squeeze(-1)  # (H, W)
@@ -398,10 +398,10 @@ class MseRenderer(VectorRenderer):
         rendered_batch = rendered_2d.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
         target_batch = target_2d.unsqueeze(0).unsqueeze(0)      # (1, 1, H, W)
         
-        # Step 1: Apply Gaussian smoothing (5x5 kernel with sigma=1.0)
-        gaussian_kernel = self._get_gaussian_kernel(5, 1.0, rendered_2d.device, rendered_2d.dtype)
-        rendered_smooth = F.conv2d(rendered_batch, gaussian_kernel, padding=2)
-        target_smooth = F.conv2d(target_batch, gaussian_kernel, padding=2)
+        # Step 1: Apply Gaussian smoothing (3x3 kernel for efficiency)
+        gaussian_kernel = self._get_gaussian_kernel(3, 0.8, rendered_2d.device, rendered_2d.dtype)
+        rendered_smooth = F.conv2d(rendered_batch, gaussian_kernel, padding=1)
+        target_smooth = F.conv2d(target_batch, gaussian_kernel, padding=1)
         
         # Step 2: Compute gradients using Sobel operators
         sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
@@ -415,20 +415,23 @@ class MseRenderer(VectorRenderer):
         target_grad_x = F.conv2d(target_smooth, sobel_x, padding=1)
         target_grad_y = F.conv2d(target_smooth, sobel_y, padding=1)
         
-        # Step 3: Compute gradient magnitude and direction
+        # Step 3: Compute gradient magnitude
         rendered_grad_mag = torch.sqrt(rendered_grad_x**2 + rendered_grad_y**2 + 1e-8)
         target_grad_mag = torch.sqrt(target_grad_x**2 + target_grad_y**2 + 1e-8)
         
-        # Step 4: Non-maximum suppression (simplified version)
-        rendered_edges = self._non_maximum_suppression(rendered_grad_mag, rendered_grad_x, rendered_grad_y)
-        target_edges = self._non_maximum_suppression(target_grad_mag, target_grad_x, target_grad_y)
+        # Step 4: Differentiable edge detection using soft thresholding
+        # Normalize gradient magnitudes to [0, 1] range
+        rendered_norm = rendered_grad_mag / (rendered_grad_mag.max() + 1e-8)
+        target_norm = target_grad_mag / (target_grad_mag.max() + 1e-8)
         
-        # Step 5: Double thresholding
-        rendered_canny = self._double_threshold(rendered_edges, low_threshold, high_threshold)
-        target_canny = self._double_threshold(target_edges, low_threshold, high_threshold)
+        # Apply soft thresholding using sigmoid function for differentiability
+        # This replaces the hard thresholding in traditional Canny
+        steepness = 10.0  # Controls the steepness of the sigmoid
+        rendered_edges = torch.sigmoid(steepness * (rendered_norm - high_threshold))
+        target_edges = torch.sigmoid(steepness * (target_norm - high_threshold))
         
-        # Compute MSE loss between Canny edge maps
-        canny_loss = F.mse_loss(rendered_canny, target_canny)
+        # Compute MSE loss between edge maps
+        canny_loss = F.mse_loss(rendered_edges, target_edges)
         
         return canny_loss
     
@@ -445,62 +448,3 @@ class MseRenderer(VectorRenderer):
         gaussian = gaussian / gaussian.sum()  # Normalize
         
         return gaussian.unsqueeze(0).unsqueeze(0)  # Add batch and channel dimensions
-    
-    def _non_maximum_suppression(self, grad_mag: torch.Tensor, grad_x: torch.Tensor, grad_y: torch.Tensor) -> torch.Tensor:
-        """
-        Apply non-maximum suppression to thin edges.
-        Simplified version that checks 8-connected neighbors.
-        """
-        # Compute gradient direction (in degrees)
-        grad_direction = torch.atan2(grad_y, grad_x) * 180 / torch.pi
-        grad_direction = torch.abs(grad_direction)  # Take absolute value
-        
-        # Initialize output
-        suppressed = torch.zeros_like(grad_mag)
-        
-        # Get image dimensions (remove batch and channel dimensions)
-        _, _, h, w = grad_mag.shape
-        grad_mag_2d = grad_mag.squeeze(0).squeeze(0)
-        grad_direction_2d = grad_direction.squeeze(0).squeeze(0)
-        
-        # Apply non-maximum suppression
-        for i in range(1, h - 1):
-            for j in range(1, w - 1):
-                direction = grad_direction_2d[i, j]
-                
-                # Determine which neighbors to compare based on gradient direction
-                if (0 <= direction < 22.5) or (157.5 <= direction <= 180):
-                    # Horizontal direction
-                    neighbors = [grad_mag_2d[i, j-1], grad_mag_2d[i, j+1]]
-                elif 22.5 <= direction < 67.5:
-                    # Diagonal direction (top-right to bottom-left)
-                    neighbors = [grad_mag_2d[i-1, j+1], grad_mag_2d[i+1, j-1]]
-                elif 67.5 <= direction < 112.5:
-                    # Vertical direction
-                    neighbors = [grad_mag_2d[i-1, j], grad_mag_2d[i+1, j]]
-                else:  # 112.5 <= direction < 157.5
-                    # Diagonal direction (top-left to bottom-right)
-                    neighbors = [grad_mag_2d[i-1, j-1], grad_mag_2d[i+1, j+1]]
-                
-                # Keep pixel if it's a local maximum
-                if grad_mag_2d[i, j] >= max(neighbors):
-                    suppressed[0, 0, i, j] = grad_mag_2d[i, j]
-        
-        return suppressed
-    
-    def _double_threshold(self, edges: torch.Tensor, low_threshold: float, high_threshold: float) -> torch.Tensor:
-        """
-        Apply double thresholding to classify edges as strong, weak, or non-edges.
-        """
-        # Normalize edge magnitudes to [0, 1] range
-        edges_norm = edges / (edges.max() + 1e-8)
-        
-        # Apply thresholds
-        strong_edges = (edges_norm >= high_threshold).float()
-        weak_edges = ((edges_norm >= low_threshold) & (edges_norm < high_threshold)).float()
-        
-        # For simplicity, we'll include both strong and weak edges
-        # In a full Canny implementation, we'd do edge tracking by hysteresis
-        final_edges = strong_edges + 0.5 * weak_edges
-        
-        return final_edges
