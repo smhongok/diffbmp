@@ -5,7 +5,7 @@
         "FM_halftone": false,
         "transform": "none",
         "img_path": [
-            "images/person/pororo.jpg"
+            "images/person/pororo_no_background.png"
         ],
         "bg_threshold": 250,
         "do_equalize": false,
@@ -21,14 +21,15 @@
             "out_low": 30,
             "out_high": 230
         },
-        "vertical_paddings": [0, 0]
+        "vertical_paddings": [0, 0],
+        "exist_bg" : false
     },
     "svg": {
-        "svg_file": "arial.ttf",
-        "text": "S",
+        "svg_file": "hand.jpeg",
+        "convert_to_svg": false,
         "svg_hollow": false,
         "output_width": 128
-    },
+    },  
     "initialization": {
         "initializer": "structure_aware",
         "N": [2000],
@@ -60,6 +61,11 @@
             "gain_v": 1.5,
             "gain_theta": 1.0,
             "gain_c": 1.0
+        },
+        "loss_weights": {
+            "recon_loss_weight": 1.0,
+            "binary_alpha_loss_weight": 10.0,
+            "distance_alpha_loss_weight": 10.0
         },
         "do_decay": true,
         "decay_rate": 0.99,

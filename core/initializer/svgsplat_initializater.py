@@ -15,8 +15,8 @@ from typing import Dict, Any
 class StructureAwareInitializer(BaseInitializer):
     def __init__(self, init_opt:Dict[str, Any]):
         super().__init__(init_opt)
-        
-    def initialize(self, I_target, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
+
+    def initialize(self, I_target, target_binary_mask = None, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
         """
         Specialization for SVG input to match the API expected in main_svg.py
         """
@@ -74,8 +74,12 @@ class StructureAwareInitializer(BaseInitializer):
             init_pts = np.array([kp.pt for kp in sorted_kp[:num_kp]])  # (x, y)
         
         # Apply our structure-aware techniques
-        densified_pts, point_levels = self.find_best_densification(edges, N)
-        adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y)
+        densified_pts, point_levels = self.find_best_densification(edges, N, target_binary_mask)
+        adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y, target_binary_mask)
+        
+        # Visualize densified_pts, point_levels, and adjusted_pts
+        self.visualize_initialization_points(I_np, densified_pts, point_levels, adjusted_pts)
+        
         print("len(densified_pts): ", len(densified_pts), ", len(adjusted_pts): ", len(adjusted_pts))
 
         # Print distribution of levels
@@ -94,7 +98,7 @@ class StructureAwareInitializer(BaseInitializer):
         c_init += np.random.normal(0.0, 0.02, c_init.shape)
         c_init = np.clip(c_init, 0.0, 1.0)              # Safely clip values
         
-        # -------------------- Radius initialization based on levels -------------------- #
+        # -------------------- Radius initialization based on levels and edge distance -------------------- #
         num_points = adjusted_pts.shape[0]
         
         # Calculate max level for normalization
@@ -102,15 +106,35 @@ class StructureAwareInitializer(BaseInitializer):
         
         # Determine radius based on level - coarser level (smaller value) gets larger radius
         # The formula: r = max_radius * (1 - level/max_level) + min_radius
-        max_radius = min(H, W) / 4
+        max_radius = min(H, W) / 8
         min_radius = self.radii_min
+        
+        # Calculate distance transform from Canny edges
+        inverted_edges = cv2.bitwise_not(edges)
+        distance_map = cv2.distanceTransform(inverted_edges, cv2.DIST_L2, 5)
+        
+        # Sample distance at each adjusted point location
+        idx_x = np.clip(np.round(adjusted_pts[:, 0]).astype(int), 0, W - 1)
+        idx_y = np.clip(np.round(adjusted_pts[:, 1]).astype(int), 0, H - 1)
+        point_distances = distance_map[idx_y, idx_x]
+        
+        # Normalize distances (0 = on edge, 1 = farthest from edge)
+        max_distance = np.max(distance_map) if np.max(distance_map) > 0 else 1.0
+        normalized_distances = point_distances / max_distance
         
         # Calculate radius for each point - invert the level so lower levels get larger radii
         normalized_levels = 1.0 - (point_levels / max_level)
-        r_np = min_radius + normalized_levels * (max_radius - min_radius)
+        level_based_radius = min_radius + normalized_levels * (max_radius - min_radius)
+        
+        # Combine level-based radius with edge distance (farther from edge = larger radius)
+        distance_factor = self.distance_factor  # Weight for distance influence (0.0 = only levels, 1.0 = only distance)
+        distance_based_radius = min_radius + normalized_distances * (max_radius - min_radius)
+        
+        # Weighted combination of level-based and distance-based radius
+        r_np = (1.0 - distance_factor) * level_based_radius + distance_factor * distance_based_radius
         
         # Add some noise for variety while preserving the coarse-to-fine relationship
-        noise_scale = 0.15  # Scale of noise relative to radius range
+        noise_scale = 0.1  # Scale of noise relative to radius range
         noise = np.random.normal(0, noise_scale * (max_radius - min_radius), num_points)
         r_np = np.clip(r_np + noise, min_radius, max_radius)
         
@@ -145,3 +169,72 @@ class StructureAwareInitializer(BaseInitializer):
         print(f"[initialize]total_cost_time: {formatted_time}")
         
         return x, y, r, v, theta, c
+    
+    def visualize_initialization_points(self, I_np, densified_pts, point_levels, adjusted_pts):
+        """
+        Visualize densified_pts, point_levels, and adjusted_pts
+        """
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+        
+        # Original image
+        axes[0].imshow(I_np, cmap='gray')
+        axes[0].set_title('Original Image')
+        axes[0].axis('off')
+        
+        # Densified points with level coloring
+        axes[1].imshow(I_np, cmap='gray', alpha=0.7)
+        if len(densified_pts) > 0:
+            # Color by level
+            unique_levels = np.unique(point_levels)
+            colors = plt.cm.viridis(np.linspace(0, 1, len(unique_levels)))
+            
+            for i, level in enumerate(unique_levels):
+                mask = point_levels == level
+                pts_at_level = densified_pts[mask]
+                if len(pts_at_level) > 0:
+                    axes[1].scatter(pts_at_level[:, 0], pts_at_level[:, 1], 
+                                  c=[colors[i]], s=30, alpha=0.8, 
+                                  label=f'Level {level}')
+            
+            axes[1].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        axes[1].set_title(f'Densified Points by Level\n({len(densified_pts)} points)')
+        axes[1].axis('off')
+        
+        # Adjusted points
+        axes[2].imshow(I_np, cmap='gray', alpha=0.7)
+        if len(adjusted_pts) > 0:
+            # Color by level for adjusted points too
+            unique_levels = np.unique(point_levels)
+            colors = plt.cm.plasma(np.linspace(0, 1, len(unique_levels)))
+            
+            for i, level in enumerate(unique_levels):
+                mask = point_levels == level
+                pts_at_level = adjusted_pts[mask]
+                if len(pts_at_level) > 0:
+                    axes[2].scatter(pts_at_level[:, 0], pts_at_level[:, 1], 
+                                  c=[colors[i]], s=30, alpha=0.8,
+                                  label=f'Level {level}')
+            
+            # Draw arrows showing the adjustment
+            if len(densified_pts) == len(adjusted_pts):
+                for i in range(0, len(densified_pts), max(1, len(densified_pts)//50)):  # Show every nth arrow to avoid clutter
+                    dx = adjusted_pts[i, 0] - densified_pts[i, 0]
+                    dy = adjusted_pts[i, 1] - densified_pts[i, 1]
+                    if abs(dx) > 1 or abs(dy) > 1:  # Only show significant adjustments
+                        axes[2].arrow(densified_pts[i, 0], densified_pts[i, 1], dx, dy,
+                                    head_width=3, head_length=2, fc='red', ec='red', alpha=0.3)
+            
+            axes[2].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        axes[2].set_title(f'Structure-Aware Adjusted Points\n({len(adjusted_pts)} points)')
+        axes[2].axis('off')
+        
+        plt.tight_layout()
+        
+        # Save the visualization
+        os.makedirs('visualization_output', exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        plt.savefig(f'visualization_output/initialization_points_{timestamp}.png', 
+                   dpi=150, bbox_inches='tight')
+        plt.show()
+        
+        print(f"Visualization saved to: visualization_output/initialization_points_{timestamp}.png")

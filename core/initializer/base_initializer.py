@@ -21,9 +21,10 @@ class BaseInitializer(ABC):
         self.v_init_slope = init_opt.get("v_init_slope", 10.0)
         self.keypoint_extracting = init_opt.get("keypoint_extracting", False)
         self.debug_mode = init_opt.get("debug_mode", False)
+        self.distance_factor = init_opt.get("distance_factor", 0.0)
         
     @abstractmethod
-    def initialize(self, I_target, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
+    def initialize(self, I_target, target_binary_mask = None, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
         pass
     
     def _rand_leaf(self, shape, low, high, device):
@@ -92,13 +93,35 @@ class BaseInitializer(ABC):
         
         return canvas
         
-    def curvature_aware_densification(self, edge_map, points, N, min_dist, curvature_threshold=0.2):
+    def curvature_aware_densification(self, edge_map, points, N, min_dist, curvature_threshold=0.2, target_binary_mask = None):
         N_add = N - len(points)
         h, w = edge_map.shape
         edge_norm = edge_map.astype(np.float32) / 255.0
 
         # 1. Mask only low-curvature regions (below threshold)
         mask = edge_norm < curvature_threshold
+
+        # 1.1. Apply target binary mask if provided
+        # This allows for additional constraints on where points can be added
+        # : points are only added in regions where both low curvature and not in background 
+        if target_binary_mask is not None:
+            # Convert to numpy array if it's a torch.Tensor
+            if hasattr(target_binary_mask, 'detach'):  # torch.Tensor
+                binary_mask_np = target_binary_mask.detach().cpu().numpy()
+            else:
+                binary_mask_np = target_binary_mask
+            
+            # Ensure mask is in correct format (0 or 1 values)
+            if binary_mask_np.dtype == np.bool_:
+                binary_mask_np = binary_mask_np.astype(np.float32)
+            elif binary_mask_np.dtype != np.float32:
+                binary_mask_np = binary_mask_np.astype(np.float32)
+            
+            mask = mask * binary_mask_np
+        else:
+            # If no target mask is provided, keep the original mask
+            mask = mask * 1.0 
+            
         num_total = edge_norm.size
         num_valid = np.count_nonzero(mask)
         print(f"Low-edge pixels: {num_valid} / {num_total} ({100 * num_valid / num_total:.2f}%)")
@@ -136,18 +159,46 @@ class BaseInitializer(ABC):
 
         return np.vstack([points, np.array(new_points)]) if new_points else points
 
-    def structure_aware_adjustment(self, points, grad_x, grad_y):
+    def structure_aware_adjustment(self, points, grad_x, grad_y, target_binary_mask=None):
         h, w = grad_x.shape
+        
+        # Convert target_binary_mask to numpy array if it's a torch.Tensor
+        mask_np = None
+        if target_binary_mask is not None:
+            if hasattr(target_binary_mask, 'detach'):  # torch.Tensor
+                mask_np = target_binary_mask.detach().cpu().numpy()
+            else:
+                mask_np = target_binary_mask
+            
+            # Ensure mask is in correct format (0 or 1 values)
+            if mask_np.dtype == np.bool_:
+                mask_np = mask_np.astype(np.float32)
+            elif mask_np.dtype != np.float32:
+                mask_np = mask_np.astype(np.float32)
+        
         adjusted = []
         for (x, y) in points:
             ix, iy = int(np.clip(x, 0, w - 1)), int(np.clip(y, 0, h - 1))
             dx, dy = grad_x[iy, ix], grad_y[iy, ix]
             new_x = np.clip(x + self.alpha * dx, 0, w - 1)
             new_y = np.clip(y + self.alpha * dy, 0, h - 1)
-            adjusted.append([new_x, new_y])
+            
+            # Check if new position would be in background region (mask=1)
+            if mask_np is not None:
+                new_ix, new_iy = int(np.clip(new_x, 0, w - 1)), int(np.clip(new_y, 0, h - 1))
+                if mask_np[new_iy, new_ix] == 1:  # Background region, bad case
+                    # Keep original position
+                    adjusted.append([x, y])
+                else: # Good case
+                    # Use adjusted position
+                    adjusted.append([new_x, new_y])
+            else:
+                # No mask constraint, use adjusted position
+                adjusted.append([new_x, new_y])
+                
         return np.array(adjusted)
     
-    def coarse_to_fine_densification(self, edge_map, N, levels, refine_min_dist=False):        
+    def coarse_to_fine_densification(self, edge_map, N, levels, refine_min_dist=False, target_binary_mask = None): 
         def densify_at_levels(edge_map, N, levels, initial_points, initial_levels, base_min_dist):
             points = initial_points.copy()
             point_levels = initial_levels.copy() if initial_levels is not None else np.array([])
@@ -155,10 +206,26 @@ class BaseInitializer(ABC):
             for level in range(0, levels + 1):
                 scale = 2 ** -(levels - level)
                 small_edge = cv2.resize(edge_map, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                
+                # Handle target_binary_mask type conversion for OpenCV
+                small_target_binary_mask = None
+                if target_binary_mask is not None:
+                    # Convert to numpy array if it's a torch.Tensor
+                    if hasattr(target_binary_mask, 'detach'):  # torch.Tensor
+                        mask_np = 1-target_binary_mask.detach().cpu().numpy()
+                    else:
+                        mask_np = 1-target_binary_mask
+                    
+                    # Ensure it's the right data type for cv2.resize
+                    if mask_np.dtype != np.uint8:
+                        mask_np = mask_np.astype(np.uint8)
+                    
+                    small_target_binary_mask = cv2.resize(mask_np, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+                
                 small_points = points * scale
 
                 scaled_min_dist = base_min_dist * scale
-                densified = self.curvature_aware_densification(small_edge, small_points, N, scaled_min_dist)
+                densified = self.curvature_aware_densification(small_edge, small_points, N, scaled_min_dist, target_binary_mask = small_target_binary_mask)
 
                 # Add only newly added points (after scaling back)
                 num_new_points = len(densified) - len(small_points)
@@ -210,7 +277,7 @@ class BaseInitializer(ABC):
 
         return points, point_levels
     
-    def find_best_densification(self, edge_map, N):
+    def find_best_densification(self, edge_map, N, target_binary_mask = None):
         best_points = None
         best_levels = None
         best_level = 8
@@ -222,7 +289,7 @@ class BaseInitializer(ABC):
             try:
                 for min_dist in [1.9, 1.5, 1.0, 0.5]:
                     self.min_distance = min_dist
-                    points, point_levels = self.coarse_to_fine_densification(edge_map, N, best_level)
+                    points, point_levels = self.coarse_to_fine_densification(edge_map, N, best_level, target_binary_mask = target_binary_mask)
                     if len(points) > max_len:
                         print("len(points): ", len(points), ", N: ", N, ", level: ", best_level, ", min_dist: ", min_dist)
                         max_len = len(points)
@@ -243,7 +310,7 @@ class BaseInitializer(ABC):
         if len(points) < N:
             print("Couldn't generate enough points with given constraints. Try again with min_distance 1.0")
             self.min_distance = best_min_distance
-            best_points, best_levels = self.coarse_to_fine_densification(edge_map, N, best_level, refine_min_dist=True)
+            best_points, best_levels = self.coarse_to_fine_densification(edge_map, N, best_level, refine_min_dist=True, target_binary_mask = target_binary_mask)
 
         print(f"Using level={best_level}, min_distance={best_min_distance:.2f}")
         return best_points, best_levels

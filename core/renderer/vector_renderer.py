@@ -228,8 +228,8 @@ class VectorRenderer:
         """
         kwargs = self._get_checkpoint_kwargs()
         return torch.utils.checkpoint.checkpoint(func, *tensors, **kwargs)
-            
-    def render(
+    
+    def render_with_white_bg(
             self,
             cached_masks: torch.Tensor,
             v: torch.Tensor,
@@ -292,6 +292,72 @@ class VectorRenderer:
             # Free temporary tensors if in FP16 mode
             if self.use_fp16:
                 del comp_m, comp_a, ones
+            
+            return final
+ 
+
+    def render(
+            self,
+            cached_masks: torch.Tensor,
+            v: torch.Tensor,
+            c: torch.Tensor,
+            return_alpha: bool = False
+        ):
+        """
+        Render the final image (optionally alpha).
+
+        Args:
+            cached_masks : (N, H, W)   – pre-computed soft masks
+            v            : (N,)        – visibility logits
+            c            : (N, 3)      – RGB logits
+            return_alpha : If True  → (rgb, alpha) returned
+                        If False → rgb only returned
+
+        Returns
+        -------
+        - rgb  : (H, W, 3)  (always)
+        - alpha: (H, W, 1)  (optional, when return_alpha=True)
+        """
+        context = autocast('cuda') if self.use_fp16 else nullcontext()
+        
+        with context:    
+            target_dtype = torch.float16 if self.use_fp16 else torch.float32
+            cached_masks = cached_masks
+            v = v
+            c = c
+            N = v.shape[0]
+
+            # 1. per-primitive alpha & color
+            v_alpha = self.alpha_upper_bound * torch.sigmoid(v).view(N, 1, 1)
+            a = v_alpha * cached_masks                     # (N, H, W)
+            c_eff = torch.sigmoid(c).view(N, 1, 1, 3)      # (N, 1, 1, 3)
+            
+            # Create color tensor with minimal memory overhead
+            m = a.unsqueeze(-1) * c_eff                    # (N, H, W, 3)
+
+            # 2. Porter–Duff reduction (tree)
+            if self.use_checkpointing:
+                comp_m, comp_a = self._safe_checkpoint(
+                    lambda mm, aa: self._transmit_over(mm, aa),
+                    m, a
+                )
+            else:
+                comp_m, comp_a = self._transmit_over(m, a)    
+            
+            # Free large tensors as soon as possible if in FP16 mode
+            if self.use_fp16:
+                del m, a, v_alpha, c_eff
+            
+            if return_alpha:
+                # (H, W) → (H, W, 1) to match for broadcasting
+                return comp_m, comp_a.unsqueeze(-1)
+
+            # 3. We don't composite with white background
+            final = comp_m
+            
+            # Free temporary tensors if in FP16 mode
+            if self.use_fp16:
+                del comp_m, comp_a
             
             return final
     
@@ -439,7 +505,8 @@ class VectorRenderer:
     
     def initialize_parameters(self,
                             initializer: Any,
-                            target_image: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+                            target_image: torch.Tensor,
+                            target_binary_mask=None) -> Tuple[torch.Tensor, ...]:
         """
         Initialize parameters using the provided initializer.
         
@@ -450,8 +517,13 @@ class VectorRenderer:
         Returns:
             Tuple of initialized parameters (x, y, r, v, theta, c)
         """
+        # We have to modify this method for better performance with none background images,
+        # since we don't have to splat primitives on the background(which is transparent) at initialization.        
+        if target_image.shape[2] == 4:
+            target_image = target_image[:, :, :3]  # Ignore alpha channel
+
         # Initialize from target image
-        x, y, r, v, theta, c = initializer.initialize(target_image)
+        x, y, r, v, theta, c = initializer.initialize(target_image, target_binary_mask = target_binary_mask)
         
         # Convert to leaf tensors for optimization
         x = x.detach().clone().requires_grad_(True)
@@ -471,7 +543,10 @@ class VectorRenderer:
                       theta: torch.Tensor,
                       c: torch.Tensor,
                       target_image: torch.Tensor,
-                      opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
+                      opt_conf: Dict[str, Any],
+                      target_binary_mask: Optional[torch.Tensor] = None,
+                      target_dist_mask: Optional[torch.Tensor] = None
+                      ) -> Tuple[torch.Tensor, ...]:
         """Optimize rendering parameters to match target image."""
         N = x.shape[0]
         self.sample_size = max(1, int(0.2 * N))  # 20% of primitives
@@ -480,8 +555,8 @@ class VectorRenderer:
 
         # Use whole optimization (batch optimization removed as it's never used)
         return self._optimize_parameters_whole(
-            x, y, r, v, theta, c, target_image, opt_conf
-        )   
+            x, y, r, v, theta, c, target_image, opt_conf, target_binary_mask, target_dist_mask
+        )
 
     def _optimize_parameters_whole(self,
                           x: torch.Tensor,
@@ -491,7 +566,10 @@ class VectorRenderer:
                           theta: torch.Tensor,
                           c: torch.Tensor,
                           target_image: torch.Tensor,
-                          opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
+                          opt_conf: Dict[str, Any],
+                          target_binary_mask: Optional[torch.Tensor] = None,
+                          target_dist_mask: Optional[torch.Tensor] = None,
+                          ) -> Tuple[torch.Tensor, ...]:
         """
         Optimize the rendering parameters to match the target image.
         
@@ -503,6 +581,7 @@ class VectorRenderer:
         Returns:
             Tuple of optimized parameters (x, y, r, v, theta, c)
         """
+
         # Get optimization parameters from config
         num_iterations = opt_conf.get("num_iterations", 100)
         lr_conf = opt_conf["learning_rate"]
@@ -632,6 +711,8 @@ class VectorRenderer:
             # Render image - use different approaches based on precision mode
             if self.use_fp16:
                 with autocast('cuda'):
+                    cached_masks_ref = None
+
                     if opt_conf.get("multi_level", False):
                         rendered = self.render(self.S, v, c)
                     else:
@@ -670,8 +751,34 @@ class VectorRenderer:
                         self.memory_report("After rendering")
                     
                     # Compute loss
-                    loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
-                    
+                    recon_loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
+
+                    if target_image.shape[2] == 4 and target_binary_mask is not None:
+                        loss_w_conf = opt_conf.get("loss_weights", {})
+                        recon_loss_weight = loss_w_conf.get("recon_loss_weight", 1.0)
+                        binary_alpha_loss_weight = loss_w_conf.get("binary_alpha_loss_weight", 0.0) 
+                        distance_alpha_loss_weight = loss_w_conf.get("distance_alpha_loss_weight", 0.0)
+
+                        # r for non-gradient computation
+                        r_nongrad = r.clone().detach()
+
+                        # Don't apply gaussian blur
+                        alpaha_cached_masks = self._batched_soft_rasterize(
+                            x, y, r, theta,
+                            sigma=0.0
+                        )
+
+                        target_mask_expanded = target_binary_mask.unsqueeze(0)  # (1, H, W)
+                        alpha_penalties_binary = (target_mask_expanded * alpaha_cached_masks) / r_nongrad.unsqueeze(-1).unsqueeze(-1)  # (N, H, W)
+                        alpha_loss_binary = alpha_penalties_binary.sum(dim=0).mean()  # Sum over primitives, then mean over pixels
+
+                        alpha_penalties_dist = (target_dist_mask.unsqueeze(0) * alpaha_cached_masks) / r_nongrad.unsqueeze(-1).unsqueeze(-1)
+                        alpha_loss_dist = alpha_penalties_dist.sum(dim=0).mean()  # Sum over primitives, then mean over pixels
+
+                        loss = recon_loss_weight*recon_loss + binary_alpha_loss_weight*alpha_loss_binary + distance_alpha_loss_weight*alpha_loss_dist
+                    else:
+                        loss = recon_loss_weight*recon_loss
+
                     # Add sparsification loss if needed
                     if do_sparsify and epoch >= iters_warmup and epoch < iters_warmup + sparsify_duration:
                         # Don't detach for gradient computation
@@ -757,6 +864,7 @@ class VectorRenderer:
                 
             # Record loss value for next epoch logging
             loss_value = loss.item()
+            # alpha_loss_value = alpha_loss.item()
             
             # Log gradient statistics to wandb
             if opt_conf.get("log_gradients", False):
@@ -887,6 +995,7 @@ class VectorRenderer:
             
             if epoch % 20 == 0:
                 print(f"Epoch {epoch}, Loss: {loss_value:.4f}")
+                # print(f"Epoch {epoch}, Alpha Loss: {alpha_loss_value:.4f}")
 
         # Final memory report
         if opt_conf.get("debug_memory", False):
@@ -917,7 +1026,7 @@ class VectorRenderer:
             c: Color parameters
             output_path: Path to save the rendered image
         """
-        final_render = self.render(cached_masks, v, c)
+        final_render = self.render_with_white_bg(cached_masks, v, c)
         final_render_np = final_render.detach().cpu().numpy()
         final_render_np = (final_render_np * 255).astype(np.uint8)
         
