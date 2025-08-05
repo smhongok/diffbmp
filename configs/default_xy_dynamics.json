@@ -101,7 +101,17 @@
                 "enabled": true,
                 "fps": 10,
                 "save_every_n_epochs": 1
-            }
+            },
+            "use_combined_loss": true,
+            "grayscale_weight": 1,
+            "color_weight": 0,
+            "use_gradient_loss": false,
+            "gradient_weight": 0,
+            "use_cosine_similarity": true,
+            "use_canny_loss": true,
+            "canny_weight": 1,
+            "canny_low_threshold": 0.1,
+            "canny_high_threshold": 0.2
         }
     },
     "postprocessing": {
@@ -109,6 +119,6 @@
         "save_intermediate": true,
         "export_mp4": true,
         "mp4_fps": 30,
-        "output_dir": "outputs/xy_dynamics"
+        "output_dir": "outputs/xy_dynamics/gray+canny_compare"
     }
 }

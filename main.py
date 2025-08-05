@@ -260,6 +260,9 @@ if xy_dynamics_mode:
         output_path2 = os.path.join(output_dir, f'svgsplat2_{timestamp}.png')
         renderer.save_rendered_image(cached_masks2, v2, c2, output_path2)
         print(f"SVGSplat2 saved to: {output_path2}")
+        
+        # Store cached_masks2 for potential reuse in metrics calculation
+        cached_masks2_for_metrics = cached_masks2
     
     # Create transition video
     transition_frames = config.get("xy_dynamics", {}).get("xy_optimization", {}).get("transition_frames", 60)
@@ -350,15 +353,33 @@ if not xy_dynamics_mode:
             video_path = os.path.join(output_dir, f'output_{timestamp}.mp4')
             renderer.render_export_mp4(cached_masks, v, c, video_path=video_path)
 
-# Compute metrics if requested (only for standard mode)
-if not xy_dynamics_mode and config['postprocessing'].get('compute_psnr', False):
+# Compute metrics if requested
+if config['postprocessing'].get('compute_psnr', False):
     try:
         import piq
-        # Convert rendered image to tensor format for metrics
-        rendered_t = rendered.permute(2, 0, 1).unsqueeze(0)
-        target_t = I_target.permute(2, 0, 1).unsqueeze(0)
         
-        # Compute metrics
+        if xy_dynamics_mode:
+            # XY Dynamics mode: compute metrics for SVGSplat2 vs target image2
+            # Reuse cached_masks2 from earlier calculation
+            with torch.no_grad():
+                rendered2 = renderer.render(cached_masks2_for_metrics, v, c)
+            
+            # Convert rendered image to tensor format for metrics
+            rendered_t = rendered2.permute(2, 0, 1).unsqueeze(0)
+            target_t = I_target2.permute(2, 0, 1).unsqueeze(0)
+            
+            print(f"\n=== SVGSplat2 vs Target Image2 Metrics ===")
+            splat_count = len(x2)
+        else:
+            # Standard mode: compute metrics for rendered vs target
+            # Convert rendered image to tensor format for metrics
+            rendered_t = rendered.permute(2, 0, 1).unsqueeze(0)
+            target_t = I_target.permute(2, 0, 1).unsqueeze(0)
+            
+            print(f"\n=== Rendered vs Target Metrics ===")
+            splat_count = len(x)
+        
+        # Compute metrics (same for both modes)
         psnr_val = piq.psnr(rendered_t, target_t, data_range=1.0)
         ssim_val = piq.ssim(rendered_t, target_t, data_range=1.0)
         vif_val = piq.vif_p(rendered_t, target_t, data_range=1.0)
@@ -368,7 +389,7 @@ if not xy_dynamics_mode and config['postprocessing'].get('compute_psnr', False):
         print(f"SSIM: {ssim_val.item():.4f}")
         print(f"VIF: {vif_val.item():.4f}")
         print(f"LPIPS: {lpips_val.item():.4f}")
-        print(f"Number of splats: {len(x)}")
+        print(f"Number of splats: {splat_count}")
     except ImportError as e:
         print(f"Required library missing: {e}. Cannot compute metrics.")
 
