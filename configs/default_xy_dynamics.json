@@ -90,9 +90,9 @@
                 "gain_x": 5.0,
                 "gain_y": 5.0,
                 "gain_r": 2.0,
-                "gain_v": 1.0,
+                "gain_v": 1.2,
                 "gain_theta": 1.0,
-                "gain_c": 0.5
+                "gain_c": 0.7
             },
             "do_decay": true,
             "decay_rate": 0.98,
@@ -103,13 +103,13 @@
                 "save_every_n_epochs": 1
             },
             "use_combined_loss": true,
-            "grayscale_weight": 1,
-            "color_weight": 0,
+            "grayscale_weight": 0.7,
+            "color_weight": 0.5,
             "use_gradient_loss": false,
             "gradient_weight": 0,
             "use_cosine_similarity": true,
             "use_canny_loss": true,
-            "canny_weight": 1,
+            "canny_weight": 0.3,
             "canny_low_threshold": 0.1,
             "canny_high_threshold": 0.2
         }
@@ -119,6 +119,6 @@
         "save_intermediate": true,
         "export_mp4": true,
         "mp4_fps": 30,
-        "output_dir": "outputs/xy_dynamics/gray+canny_compare"
+        "output_dir": "outputs/xy_dynamics/color+gray+canny/0.7_0.5_0.3"
     }
 }

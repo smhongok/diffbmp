@@ -122,10 +122,6 @@ class MseRenderer(VectorRenderer):
             rendered = self.render(cached_masks, v2, c2)
             
             # Compute loss against second target image
-
-            loss = self.compute_loss(rendered, target_image2, x2, y2, r2, v2, theta2, c2)
-
-            # Use combined loss if enabled in configuration
             use_combined_loss = xy_opt_conf.get('use_combined_loss', False)
             if use_combined_loss:
                 grayscale_weight = xy_opt_conf.get('grayscale_weight', 0.7)
@@ -137,7 +133,7 @@ class MseRenderer(VectorRenderer):
                 canny_weight = xy_opt_conf.get('canny_weight', 0.1)
                 canny_low_threshold = xy_opt_conf.get('canny_low_threshold', 0.1)
                 canny_high_threshold = xy_opt_conf.get('canny_high_threshold', 0.2)
-                loss = self.compute_combined_loss(rendered, target_image2, x2, y2, r, v, theta, c, 
+                loss = self.compute_combined_loss(rendered, target_image2, x2, y2, r2, v2, theta2, c2, 
                                                 grayscale_weight, color_weight, use_gradient_loss, gradient_weight, use_cosine_similarity,
                                                 use_canny_loss, canny_weight, canny_low_threshold, canny_high_threshold)
                 if epoch % 20 == 0:
@@ -251,6 +247,88 @@ class MseRenderer(VectorRenderer):
         
         out.release()
         print(f"XY transition video saved to: {video_path}")
+    
+    def render_optimization_process_mp4(self,
+                                      optimization_states: list,
+                                      video_path: str,
+                                      fps: int = 10):
+        """
+        Create MP4 video showing the optimization process evolution.
+        Each frame shows the primitive state at a different optimization epoch.
+        
+        Args:
+            optimization_states: List of optimization states (epoch, x, y, r, v, theta, c)
+            video_path: Path to save the MP4 video
+            fps: Frames per second for the video
+        """
+        import cv2
+        import numpy as np
+        
+        if not optimization_states:
+            print("No optimization states to render")
+            return
+            
+        print(f"Creating optimization process video with {len(optimization_states)} frames...")
+        
+        # Get canvas dimensions from the first frame
+        first_state = optimization_states[0]
+        epoch, x, y, r, v, theta, c = first_state
+        
+        # Render first frame to get dimensions
+        with torch.no_grad():
+            cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=0.0)
+            rendered = self.render(cached_masks, v, c)
+            frame = rendered.detach().cpu().numpy()
+            
+        height, width = frame.shape[:2]
+        
+        # Initialize video writer
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(video_path, fourcc, fps, (width, height))
+        
+        # Render each optimization state as a frame
+        for i, state in enumerate(optimization_states):
+            epoch, x, y, r, v, theta, c = state
+            
+            with torch.no_grad():
+                # Generate masks and render
+                cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=0.0)
+                rendered = self.render(cached_masks, v, c)
+                
+                # Convert to numpy and prepare for video
+                frame = rendered.detach().cpu().numpy()
+                frame = (frame * 255).astype(np.uint8)
+                
+                # Add epoch number overlay
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.7
+                color = (255, 255, 255)  # White text
+                thickness = 2
+                text = f"Epoch: {epoch}"
+                
+                # Get text size and position
+                (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+                text_x = 10
+                text_y = text_height + 10
+                
+                # Add black background for text
+                cv2.rectangle(frame, (text_x - 5, text_y - text_height - 5), 
+                            (text_x + text_width + 5, text_y + baseline + 5), (0, 0, 0), -1)
+                
+                # Add text
+                cv2.putText(frame, text, (text_x, text_y), font, font_scale, color, thickness)
+                
+                # Convert RGB to BGR for OpenCV
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                
+                # Write frame
+                out.write(frame_bgr)
+                
+            if (i + 1) % 10 == 0 or i == len(optimization_states) - 1:
+                print(f"Processed {i + 1}/{len(optimization_states)} frames")
+        
+        out.release()
+        print(f"Optimization process video saved to: {video_path}")
     
     def compute_grayscale_loss(self, 
                           rendered_gray: torch.Tensor, 

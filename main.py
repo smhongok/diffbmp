@@ -213,8 +213,16 @@ if xy_dynamics_mode:
     # Step 2: Optimize only x,y for second image
     print("Step 2: Optimizing x,y parameters for second image...")
     xy_opt_conf = config.get("xy_dynamics", {}).get("xy_optimization", {
-        "num_iterations": 50,
-        "learning_rate": {"default": 0.05, "gain_x": 5.0, "gain_y": 5.0},
+        "num_iterations": 100,
+        "learning_rate": {
+            "default": 0.1, 
+            "gain_x": 5.0, 
+            "gain_y": 5.0,
+            "gain_r": 2.0,
+            "gain_v": 1.0,
+            "gain_theta": 1.0,
+            "gain_c": 0.5
+        },
         "do_decay": True,
         "decay_rate": 0.98
     })
