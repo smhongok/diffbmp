@@ -219,11 +219,25 @@ if xy_dynamics_mode:
         "decay_rate": 0.98
     })
     
-    x2, y2, r, v, theta, c = renderer.optimize_xy_dynamics(
-        x1, y1, r, v, theta, c,
-        I_target2,
-        xy_opt_conf
-    )
+    # Check if optimization process MP4 is enabled
+    opt_process_mp4_conf = xy_opt_conf.get('optimization_process_mp4', {})
+    capture_states = opt_process_mp4_conf.get('enabled', False)
+    
+    if capture_states:
+        # Capture optimization states for MP4 generation
+        (x2, y2, r2, v2, theta2, c2), optimization_states = renderer.optimize_xy_dynamics(
+            x1, y1, r, v, theta, c,
+            I_target2,
+            xy_opt_conf,
+            capture_optimization_states=True
+        )
+    else:
+        # Standard optimization without state capture
+        x2, y2, r2, v2, theta2, c2 = renderer.optimize_xy_dynamics(
+            x1, y1, r, v, theta, c,
+            I_target2,
+            xy_opt_conf
+        )
     
     # Setup output directory for XY dynamics
     output_dir = config["postprocessing"].get("output_dir", "./outputs/xy_dynamics/")
@@ -242,9 +256,9 @@ if xy_dynamics_mode:
     
     # Save SVGSplat2 (second image result)
     with torch.no_grad():
-        cached_masks2 = renderer._batched_soft_rasterize(x2, y2, r, theta, sigma=0)
+        cached_masks2 = renderer._batched_soft_rasterize(x2, y2, r2, theta2, sigma=0)
         output_path2 = os.path.join(output_dir, f'svgsplat2_{timestamp}.png')
-        renderer.save_rendered_image(cached_masks2, v, c, output_path2)
+        renderer.save_rendered_image(cached_masks2, v2, c2, output_path2)
         print(f"SVGSplat2 saved to: {output_path2}")
     
     # Create transition video
@@ -253,12 +267,24 @@ if xy_dynamics_mode:
     video_path = os.path.join(output_dir, f'xy_transition_{timestamp}.mp4')
     
     renderer.render_xy_transition_mp4(
-        x1, y1, x2, y2, r, v, theta, c,
+        x1, y1, x2, y2, r, v, theta, c, r2, v2, theta2, c2,
         video_path=video_path,
         transition_frames=transition_frames,
         fps=fps
     )
     print(f"XY transition video saved to: {video_path}")
+    
+    # Generate optimization process MP4 if states were captured
+    if capture_states and optimization_states:
+        opt_fps = opt_process_mp4_conf.get('fps', 10)
+        opt_video_path = os.path.join(output_dir, f'xy_optimization_process_{timestamp}.mp4')
+        
+        renderer.render_optimization_process_mp4(
+            optimization_states,
+            video_path=opt_video_path,
+            fps=opt_fps
+        )
+        print(f"Optimization process video saved to: {opt_video_path}")
     
     print("=== XY Dynamics workflow completed ===")
     

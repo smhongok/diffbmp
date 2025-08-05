@@ -5,8 +5,8 @@
         "FM_halftone": false,
         "transform": "none",
         "img_paths": [
-            "images/artwork/seurat.jpg",
-            "images/BSDS500/102061.jpg"
+            "images/nature/Matterhorn.jpg",
+            "images/nature/melon.jpg"
         ],
         "bg_threshold": 250,
         "do_equalize": false,
@@ -32,7 +32,7 @@
     },
     "initialization": {
         "initializer": "structure_aware",
-        "N": [2000],
+        "N": [1500],
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
@@ -87,12 +87,21 @@
             "num_iterations": 100,
             "learning_rate": {
                 "default": 0.1,
-                "gain_x": 10.0,
-                "gain_y": 10.0
+                "gain_x": 5.0,
+                "gain_y": 5.0,
+                "gain_r": 2.0,
+                "gain_v": 1.0,
+                "gain_theta": 1.0,
+                "gain_c": 0.5
             },
             "do_decay": true,
             "decay_rate": 0.98,
-            "transition_frames": 60
+            "transition_frames": 180,
+            "optimization_process_mp4": {
+                "enabled": true,
+                "fps": 10,
+                "save_every_n_epochs": 1
+            }
         }
     },
     "postprocessing": {
