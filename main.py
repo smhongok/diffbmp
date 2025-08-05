@@ -497,7 +497,8 @@ if not sequential_config.get("enabled", False):
         if not exist_bg:
             alpha_loss = (cached_masks * target_binary_mask.unsqueeze(0)).sum(dim=0).mean()
 
-        rendered = renderer.render_with_white_bg(cached_masks, v, c)
+        white_bg = torch.ones((renderer.H, renderer.W, 3), device=cached_masks.device)
+        rendered = renderer.render(cached_masks, v, c, I_bg=white_bg)
         renderer.save_rendered_image(cached_masks, v, c, output_path)
         # High-resolution export configuration (recommended only when you have raster primitives)
         hires_enabled = config["postprocessing"].get("hires_export", False)
