@@ -554,11 +554,436 @@ class VectorRenderer:
         self.sample_indices = torch.randperm(N, device=self.device)[:self.sample_size]
 
         # Use whole optimization (batch optimization removed as it's never used)
-        return self._optimize_parameters_whole(
+        if target_binary_mask is not None:
+            return self._optimize_parameters_whole_no_bg(
             x, y, r, v, theta, c, target_image, opt_conf, target_binary_mask, target_dist_mask
         )
-
+        else:
+            return self._optimize_parameters_whole(
+                x, y, r, v, theta, c, target_image, opt_conf
+            )
+        
     def _optimize_parameters_whole(self,
+                          x: torch.Tensor,
+                          y: torch.Tensor,
+                          r: torch.Tensor,
+                          v: torch.Tensor,
+                          theta: torch.Tensor,
+                          c: torch.Tensor,
+                          target_image: torch.Tensor,
+                          opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
+        """
+        Optimize the rendering parameters to match the target image.
+        
+        Args:
+            x, y, r, v, theta, c: Initial parameters
+            target_image: Target image to match
+            opt_conf: Optimization configuration
+            
+        Returns:
+            Tuple of optimized parameters (x, y, r, v, theta, c)
+        """
+        # Get optimization parameters from config
+        num_iterations = opt_conf.get("num_iterations", 100)
+        lr_conf = opt_conf["learning_rate"]
+        lr = lr_conf.get("default", 0.1)
+        
+        # Initial memory report
+        if opt_conf.get("debug_memory", False):
+            self.memory_report("Before optimization")
+        
+        # Mixed-precision scaler (only used if use_fp16 is True)
+        scaler = GradScaler('cuda') if self.use_fp16 else None
+        
+        # Pre-calculate configurations
+        blur_sigma = opt_conf.get("blur_sigma", 1.0)
+        streaming_render = opt_conf.get("streaming_render", False) and self.use_fp16  # Only use streaming render in FP16 mode
+        raster_chunk_size = opt_conf.get("raster_chunk_size", 20)
+        
+        # Create output directory for saving images if it doesn't exist
+        save_image_intervals = [1, 5, 10, 20, 50, 100]
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs(self.output_path, exist_ok=True)
+       
+        # Create optimizers - separate xyr from the rest if doing sparsifying
+        sparsify_conf = opt_conf.get("sparsifying", {})
+        do_sparsify = sparsify_conf.get("do_sparsify", False)
+        
+        N = x.shape[0]  # Number of primitives
+
+        # For Gaussian blur transition if enabled
+        do_gaussian_blur = opt_conf.get("do_gaussian_blur", False)
+        do_adapt_gaussian_blur = opt_conf.get("do_adapt_gaussian_blur", False)
+        sigma_start = opt_conf.get("blur_sigma_start", 0.0)
+        sigma_end = opt_conf.get("blur_sigma_end", 0.0)
+        
+        if do_sparsify:
+            # Create separate optimizers for sparsification
+            optimizer_xyr = torch.optim.Adam([
+                {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
+                {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
+                {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
+            ])
+            
+            optimizer_rest = torch.optim.Adam([
+                {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0) * (1000.0/x.numel())},
+                {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)}, # * (1000.0/x.numel())},
+                {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
+            ])
+            
+            # Create scheduler if decay is enabled
+            do_decay = opt_conf.get("do_decay", False)
+            sched_xyr = torch.optim.lr_scheduler.ExponentialLR(
+                optimizer_xyr, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
+                
+            # Initialize sparsification variables
+            z = torch.zeros_like(v, requires_grad=False)
+            lam = torch.zeros_like(v, requires_grad=False)
+            iters_warmup = sparsify_conf.get("sparsify_warmup", num_iterations//3)
+            sparsify_duration = sparsify_conf.get("sparsify_duration", num_iterations//3)
+            sparsify_loss_coeff = sparsify_conf.get("sparsify_loss_coeff", 0.5)
+            sparsifying_period = sparsify_conf.get("sparsifying_period", 20)
+            sparsified_N = int(sparsify_conf.get("sparsified_N", int(0.6 * N)))
+            
+            # --- Dynamic Sparse Training (DST) configuration ---
+            dst_enabled = sparsify_conf.get("dst_enabled", True)
+            dst_period = sparsify_conf.get("dst_period", 10)  # DST update frequency
+            dst_prune_frac = sparsify_conf.get("dst_prune_frac", 0.2)  # Prune ratio
+            
+            # Initialize initial mask (SET style)
+            if dst_enabled:
+                # Calculate active ratio (1 - sparsity)
+                density = sparsified_N / N
+                # Create initial random mask
+                v_mask = torch.zeros_like(v, requires_grad=False)
+                active_indices = torch.randperm(N, device=self.device)[:sparsified_N]
+                v_mask[active_indices] = 1.0
+                
+                # Buffer for storing gradients for each parameter
+                grad_history = {
+                    'x': torch.zeros_like(x),
+                    'y': torch.zeros_like(y),
+                    'r': torch.zeros_like(r),
+                    'v': torch.zeros_like(v),
+                    'theta': torch.zeros_like(theta),
+                    'c': torch.zeros_like(c)
+                }
+                
+                # Apply initial mask
+                print(f"Initialized DST with density {density:.2f} ({sparsified_N}/{N} primitives active)")
+            
+            assert sparsified_N < N, "sparsified_N must be less than N"
+            assert num_iterations > iters_warmup + sparsify_duration, "num_iterations must be greater than warmup + duration"
+                        
+            optimizer = None  # We'll use the separate optimizers instead
+        else:
+            # Standard single optimizer if not doing sparsification
+            param_groups = [
+                {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
+                {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
+                {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
+                {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0) * (1000.0/x.numel())},
+                {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)}, # * (1000.0/x.numel())},
+                {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
+            ]
+            optimizer = torch.optim.Adam(param_groups)
+            optimizer_xyr = None
+            optimizer_rest = None
+        
+        print(f"Starting optimization, {num_iterations} iterations...")
+        for epoch in tqdm(range(num_iterations)):
+            # Reset gradients
+            if do_sparsify:
+                optimizer_xyr.zero_grad()
+                optimizer_rest.zero_grad()
+                
+                # Current sigma for Gaussian blur
+                if do_adapt_gaussian_blur:
+                    sigma = sigma_start - (sigma_start - sigma_end) * (epoch / num_iterations)
+                    print(f"Gaussian blur sigma: {sigma}")
+                elif do_gaussian_blur:
+                    sigma = blur_sigma #sigma_start * (1 - epoch / num_iterations) + sigma_end * (epoch / num_iterations)
+                else:
+                    sigma = 0.0
+            else:
+                optimizer.zero_grad()
+                sigma = blur_sigma
+            
+            # Render image - use different approaches based on precision mode
+            if self.use_fp16:
+                with autocast('cuda'):
+                    if opt_conf.get("multi_level", False):
+                        rendered = self.render_with_white_bg(self.S, v, c)
+                    else:
+                        if streaming_render:
+                            # Use standard rendering instead of inefficient streaming
+                            cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=sigma)
+                            rendered = self.render_with_white_bg(cached_masks, v, c)
+                        else:
+                            # Generate masks (memory efficient)
+                            cached_masks = self._batched_soft_rasterize(
+                                x, y, r, theta,
+                                sigma=sigma
+                            )
+                            
+                            # Memory report after mask generation
+                            if opt_conf.get("debug_memory", False) and epoch == 0:
+                                self.memory_report("After mask generation")
+                            
+                            rendered = self.render_with_white_bg(cached_masks, v, c)
+                            
+                            # Save image at specified epochs
+                            if opt_conf.get("save_epoch", False):
+                                output_path = os.path.join(self.output_path, f"epoch_{epoch+1}_{timestamp}.jpg")
+                                rendered_np = rendered.detach().cpu().numpy()
+                                rendered_np = (rendered_np * 255).astype(np.uint8)
+                                Image.fromarray(rendered_np).save(output_path)
+                                self.saved_frames.append(output_path)
+                                del rendered_np
+                            
+                            # Save reference for cleanup
+                            cached_masks_ref = cached_masks
+                            cached_masks = None
+                    
+                    # Memory report after rendering
+                    if opt_conf.get("debug_memory", False) and epoch == 0:
+                        self.memory_report("After rendering")
+                    
+                    # Compute loss
+                    loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
+                    
+                    # Add sparsification loss if needed
+                    if do_sparsify and epoch >= iters_warmup and epoch < iters_warmup + sparsify_duration:
+                        # Don't detach for gradient computation
+                        _alpha = self.alpha_upper_bound * torch.sigmoid(v)
+                        
+                        # Use adaptive rho parameter
+                        rho = sparsify_loss_coeff * (1.0 - (epoch - iters_warmup) / sparsify_duration)
+                        
+                        # Calculate loss including mask when DST is applied
+                        if dst_enabled:
+                            loss += 0.5 * rho * F.mse_loss(_alpha * v_mask, z - lam)
+                        else:
+                            loss += 0.5 * rho * F.mse_loss(_alpha, z - lam)
+                
+                    # Calculate gradients and update parameters
+                    if do_sparsify:
+                        loss.backward()
+                        optimizer_xyr.step()
+                        optimizer_rest.step()
+                        if do_decay and sched_xyr is not None:
+                            sched_xyr.step()
+                    else:
+                        # Standard update with scaler
+                        scaler.scale(loss).backward()
+                        scaler.step(optimizer)
+                        scaler.update()
+                
+                    # Free memory immediately
+                    del rendered
+                    if self.use_fp16:
+                        torch.cuda.empty_cache()
+                    
+            else:
+                # Non-FP16 mode - standard approach without autocast or scaler
+                if opt_conf.get("multi_level", False):
+                    rendered = self.render_with_white_bg(self.S, v, c)
+                else:
+                    # Generate masks
+                    cached_masks = self._batched_soft_rasterize(
+                        x, y, r, theta,
+                        sigma=sigma
+                    )
+                    
+                    # Render with masks
+                    rendered = self.render_with_white_bg(cached_masks, v, c)
+                    
+                    # Save image at specified epochs
+                    if opt_conf.get("save_epoch", False):
+                        output_path = os.path.join(self.output_path, f"epoch_{epoch+1}_{timestamp}.jpg")
+                        rendered_np = rendered.detach().cpu().numpy()
+                        rendered_np = (rendered_np * 255).astype(np.uint8)
+                        Image.fromarray(rendered_np).save(output_path)
+                        self.saved_frames.append(output_path)
+                        del rendered_np
+                
+                # Compute loss
+                loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
+                
+                # Add sparsification loss if needed
+                if do_sparsify and epoch >= iters_warmup and epoch < iters_warmup + sparsify_duration:
+                    # Don't detach for gradient computation
+                    _alpha = self.alpha_upper_bound * torch.sigmoid(v)
+                    
+                    # Use adaptive rho parameter
+                    rho = sparsify_loss_coeff * (1.0 - (epoch - iters_warmup) / sparsify_duration)
+                    
+                    # Calculate loss including mask when DST is applied
+                    if dst_enabled:
+                        loss += 0.5 * rho * F.mse_loss(_alpha * v_mask, z - lam)
+                    else:
+                        loss += 0.5 * rho * F.mse_loss(_alpha, z - lam)
+                
+                # Calculate gradients and update parameters
+                loss.backward()
+                
+                if do_sparsify:
+                    optimizer_xyr.step()
+                    optimizer_rest.step()
+                    if do_decay and sched_xyr is not None:
+                        sched_xyr.step()
+                else:
+                    optimizer.step()
+                
+            # Record loss value for next epoch logging
+            loss_value = loss.item()
+            
+            # Log gradient statistics to wandb
+            if opt_conf.get("log_gradients", False):
+                self.log_gradient_statistics(x, y, r, v, theta, c, epoch)
+            
+            if self.use_fp16:
+                del loss
+                torch.cuda.empty_cache()
+            
+            # Memory report after cleanup
+            if opt_conf.get("debug_memory", False) and epoch == 0:
+                self.memory_report("After cleanup")
+            
+            # Clamp parameters (memory efficient approach)
+            with torch.no_grad():
+                x.clamp_(0, self.W)
+                y.clamp_(0, self.H)
+                r.clamp_(2, min(self.H, self.W) // 4)
+                # theta.clamp_(0, 2 * np.pi)
+                
+                # Sparsification logic
+                if do_sparsify:
+                    if epoch >= iters_warmup and epoch <= iters_warmup + sparsify_duration:
+                        # DST mask update
+                        if dst_enabled and epoch % dst_period == 0:
+                            with torch.no_grad():
+                                # DST mask update
+                                for param_name in ['v', 'x', 'y', 'r', 'theta', 'c']:
+                                    param = locals()[param_name]
+                                    if param.grad is not None:
+                                        grad_history[param_name] = 0.9 * grad_history[param_name] + 0.1 * param.grad.abs()
+                                
+                                # 3. Hierarchical relationship analysis
+                                # a) Size-based importance (larger ones are "parents" of smaller ones)
+                                r_norm = r / r.max()
+                                
+                                # Final importance calculation: visibility(60%) + size(40%)
+                                alpha_importance = self.alpha_upper_bound * torch.sigmoid(v.detach()) * r_norm
+                                weights = torch.tensor([0.6, 0.4], device=self.device)
+                                factors = torch.stack([alpha_importance, r_norm], dim=0)
+                                alpha_importance = torch.matmul(weights, factors)
+                                
+                                # Remove low-importance parameters from active ones (prune)
+                                k_prune = int(sparsified_N * dst_prune_frac)
+                                active_idxs = (v_mask > 0).nonzero(as_tuple=True)[0]
+                                if len(active_idxs) > 0:
+                                    importance = alpha_importance[active_idxs]
+                                    prune_candidates = active_idxs[torch.topk(importance, k=k_prune, largest=False).indices]
+                                    v_mask[prune_candidates] = 0.0
+                                
+                                # Add considering both importance and gradients from inactive parameters (grow)
+                                inactive_idxs = (v_mask == 0).nonzero(as_tuple=True)[0]
+                                if len(inactive_idxs) > 0:
+                                    # Combined score of gradient magnitude and visual importance
+                                    grow_scores = 0.7 * grad_history['v'][inactive_idxs] + 0.3 * alpha_importance[inactive_idxs]
+                                    grow_candidates = inactive_idxs[torch.topk(grow_scores, k=k_prune, largest=True).indices]
+                                    v_mask[grow_candidates] = 1.0
+                                
+                                print(f"DST update - Active: {v_mask.sum().item()}/{N} primitives")
+                        
+                        # Regular ADMM z, λ update (periodically)
+                        if epoch % sparsifying_period == 0:
+                            # Compute alpha values from current parameters
+                            _alpha = self.alpha_upper_bound * torch.sigmoid(v.detach())
+                           
+                            combined_score = _alpha 
+                            
+                            # Integration with DST: mask-based score calculation
+                            if dst_enabled:
+                                # Consider mask: only active parameters are candidates for selection
+                                masked_score = combined_score * v_mask
+                                keep_idx = torch.topk(masked_score, sparsified_N).indices
+                            else:
+                                # Traditional approach: select from all parameters
+                                keep_idx = torch.topk(combined_score, sparsified_N).indices
+                            
+                            mask = torch.zeros_like(_alpha, dtype=torch.bool)
+                            mask[keep_idx] = True
+                            
+                            # ADMM update
+                            z.zero_()
+                            if dst_enabled:
+                                z[mask] = (_alpha * v_mask)[mask]  # Only update values with applied mask
+                            else:
+                                z[mask] = _alpha[mask]
+                            lam += (_alpha - z)
+                        
+                        if epoch == iters_warmup + sparsify_duration:
+                            # actual sparsification
+                            # 1) helper: existing tensor -> trimmed tensor (maintains requires_grad)
+                            def _prune(t):
+                                t_new = t[keep_idx].clone().detach()
+                                if t.requires_grad:
+                                    t_new.requires_grad_(True)
+                                return t_new
+                            
+                            # 2) Actually prune parameters and auxiliary variables
+                            x, y, r, theta, v, c = map(_prune, (x, y, r, theta, v, c))
+                            z, lam = map(_prune, (z, lam))
+                            
+                            # Also prune DST related variables
+                            if dst_enabled:
+                                v_mask = v_mask[keep_idx].clone()
+                                for key in grad_history:
+                                    if key == 'v':
+                                        grad_history[key] = grad_history[key][keep_idx].clone()
+                            
+                            # 3) Create fresh optimizers after pruning without attempting state transfer
+                            # This avoids tensor size mismatch issues
+                            optimizer_xyr = torch.optim.Adam([
+                                {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
+                                {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
+                                {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
+                            ])
+                            
+                            optimizer_rest = torch.optim.Adam([
+                                {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},
+                                {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
+                                {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
+                            ])
+                            
+                            # Create scheduler if decay is enabled
+                            sched_xyr = torch.optim.lr_scheduler.ExponentialLR(
+                                optimizer_xyr, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
+
+            if not streaming_render and not opt_conf.get("multi_level", False) and 'cached_masks_ref' in locals():
+                del cached_masks_ref
+            
+            if epoch % 20 == 0:
+                print(f"Epoch {epoch}, Loss: {loss_value:.4f}")
+
+        # Final memory report
+        if opt_conf.get("debug_memory", False):
+            self.memory_report("After optimization")
+        
+        # Finish wandb run
+        if opt_conf.get("log_gradients", False):
+            wandb.finish()
+        
+        if opt_conf.get("save_epoch", False):
+            video_path = os.path.join(self.output_path, f"optimization_progress_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+            self.create_video_from_collected_frames(video_path, fps=30)
+            print(f"Optimization progress video saved to: {video_path}")
+            
+        return x, y, r, v, theta, c
+
+    def _optimize_parameters_whole_no_bg(self,
                           x: torch.Tensor,
                           y: torch.Tensor,
                           r: torch.Tensor,
@@ -777,7 +1202,7 @@ class VectorRenderer:
 
                         loss = recon_loss_weight*recon_loss + binary_alpha_loss_weight*alpha_loss_binary + distance_alpha_loss_weight*alpha_loss_dist
                     else:
-                        loss = recon_loss_weight*recon_loss
+                        loss = recon_loss
 
                     # Add sparsification loss if needed
                     if do_sparsify and epoch >= iters_warmup and epoch < iters_warmup + sparsify_duration:

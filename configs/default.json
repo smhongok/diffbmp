@@ -5,7 +5,7 @@
         "FM_halftone": false,
         "transform": "none",
         "img_path": [
-            "images/person/pororo.jpg"
+            "images/artwork/seurat.jpg"
         ],
         "bg_threshold": 250,
         "do_equalize": false,
@@ -82,7 +82,7 @@
         },
         "freq_gamma":1.0,
         "do_dwa": true,
-        "save_epoch": false,
+        "save_epoch": true,
         "log_gradients": false
     },
     "postprocessing": {
