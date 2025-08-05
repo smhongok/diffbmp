@@ -38,6 +38,7 @@ images/person/*
 
 images/gif/*
 !images/gif/pororo_monkey_crop_first2.gif
+!images/gif/cat.gif
 
 wandb
 
