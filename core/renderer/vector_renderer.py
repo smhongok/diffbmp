@@ -228,13 +228,15 @@ class VectorRenderer:
         """
         kwargs = self._get_checkpoint_kwargs()
         return torch.utils.checkpoint.checkpoint(func, *tensors, **kwargs)
-            
+    
     def render(
             self,
             cached_masks: torch.Tensor,
             v: torch.Tensor,
             c: torch.Tensor,
-            return_alpha: bool = False
+            return_alpha: bool = False,
+            I_bg: Optional[torch.Tensor] = None,
+            no_background: bool = False
         ):
         """
         Render the final image (optionally alpha).
@@ -245,6 +247,9 @@ class VectorRenderer:
             c            : (N, 3)      – RGB logits
             return_alpha : If True  → (rgb, alpha) returned
                         If False → rgb only returned
+            I_bg         : Optional background tensor (H, W, 3). If None, a white background will be used
+                          unless no_background=True.
+            no_background: If True, no background compositing is performed (transparent output).
 
         Returns
         -------
@@ -285,13 +290,21 @@ class VectorRenderer:
                 # (H, W) → (H, W, 1) to match for broadcasting
                 return comp_m, comp_a.unsqueeze(-1)
 
-            # 3. Composite with white background
-            ones = torch.ones_like(comp_m)
-            final = comp_m + (1.0 - comp_a).unsqueeze(-1) * ones
+            # 3. Composite with background
+            if no_background:
+                # No background compositing - return transparent result
+                final = comp_m
+            else:
+                # Use provided background or default white background
+                if I_bg is None:
+                    I_bg = torch.ones_like(comp_m)
+                final = comp_m + (1.0 - comp_a).unsqueeze(-1) * I_bg
             
             # Free temporary tensors if in FP16 mode
             if self.use_fp16:
-                del comp_m, comp_a, ones
+                del comp_m, comp_a
+                if I_bg is not None:
+                    del I_bg
             
             return final
     
@@ -439,7 +452,8 @@ class VectorRenderer:
     
     def initialize_parameters(self,
                             initializer: Any,
-                            target_image: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+                            target_image: torch.Tensor,
+                            target_binary_mask=None) -> Tuple[torch.Tensor, ...]:
         """
         Initialize parameters using the provided initializer.
         
@@ -450,8 +464,13 @@ class VectorRenderer:
         Returns:
             Tuple of initialized parameters (x, y, r, v, theta, c)
         """
+        # We have to modify this method for better performance with none background images,
+        # since we don't have to splat primitives on the background(which is transparent) at initialization.        
+        if target_image.shape[2] == 4:
+            target_image = target_image[:, :, :3]  # Ignore alpha channel
+
         # Initialize from target image
-        x, y, r, v, theta, c = initializer.initialize(target_image)
+        x, y, r, v, theta, c = initializer.initialize(target_image, target_binary_mask = target_binary_mask)
         
         # Convert to leaf tensors for optimization
         x = x.detach().clone().requires_grad_(True)
@@ -471,7 +490,10 @@ class VectorRenderer:
                       theta: torch.Tensor,
                       c: torch.Tensor,
                       target_image: torch.Tensor,
-                      opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
+                      opt_conf: Dict[str, Any],
+                      target_binary_mask: Optional[torch.Tensor] = None,
+                      target_dist_mask: Optional[torch.Tensor] = None
+                      ) -> Tuple[torch.Tensor, ...]:
         """Optimize rendering parameters to match target image."""
         N = x.shape[0]
         self.sample_size = max(1, int(0.2 * N))  # 20% of primitives
@@ -480,9 +502,9 @@ class VectorRenderer:
 
         # Use whole optimization (batch optimization removed as it's never used)
         return self._optimize_parameters_whole(
-            x, y, r, v, theta, c, target_image, opt_conf
-        )   
-
+            x, y, r, v, theta, c, target_image, opt_conf, target_binary_mask, target_dist_mask
+        )
+        
     def _optimize_parameters_whole(self,
                           x: torch.Tensor,
                           y: torch.Tensor,
@@ -491,7 +513,9 @@ class VectorRenderer:
                           theta: torch.Tensor,
                           c: torch.Tensor,
                           target_image: torch.Tensor,
-                          opt_conf: Dict[str, Any]) -> Tuple[torch.Tensor, ...]:
+                          opt_conf: Dict[str, Any],
+                          target_binary_mask: Optional[torch.Tensor] = None,
+                          target_dist_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, ...]:
         """
         Optimize the rendering parameters to match the target image.
         
@@ -503,6 +527,8 @@ class VectorRenderer:
         Returns:
             Tuple of optimized parameters (x, y, r, v, theta, c)
         """
+        is_no_bg_mode = target_image.shape[2] == 4 and target_binary_mask is not None
+        
         # Get optimization parameters from config
         num_iterations = opt_conf.get("num_iterations", 100)
         lr_conf = opt_conf["learning_rate"]
@@ -633,12 +659,20 @@ class VectorRenderer:
             if self.use_fp16:
                 with autocast('cuda'):
                     if opt_conf.get("multi_level", False):
-                        rendered = self.render(self.S, v, c)
+                        if is_no_bg_mode:
+                            rendered = self.render(self.S, v, c, no_background=True)
+                        else:
+                            white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float16 if self.use_fp16 else torch.float32)
+                            rendered = self.render(self.S, v, c, I_bg=white_bg)
                     else:
                         if streaming_render:
                             # Use standard rendering instead of inefficient streaming
                             cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=sigma)
-                            rendered = self.render(cached_masks, v, c)
+                            if is_no_bg_mode:
+                                rendered = self.render(cached_masks, v, c, no_background=True)
+                            else:
+                                white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float16 if self.use_fp16 else torch.float32)
+                                rendered = self.render(cached_masks, v, c, I_bg=white_bg)
                         else:
                             # Generate masks (memory efficient)
                             cached_masks = self._batched_soft_rasterize(
@@ -650,7 +684,11 @@ class VectorRenderer:
                             if opt_conf.get("debug_memory", False) and epoch == 0:
                                 self.memory_report("After mask generation")
                             
-                            rendered = self.render(cached_masks, v, c)
+                            if is_no_bg_mode:
+                                rendered = self.render(cached_masks, v, c, no_background=True)
+                            else:
+                                white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float16 if self.use_fp16 else torch.float32)
+                                rendered = self.render(cached_masks, v, c, I_bg=white_bg)
                             
                             # Save image at specified epochs
                             if opt_conf.get("save_epoch", False):
@@ -670,7 +708,37 @@ class VectorRenderer:
                         self.memory_report("After rendering")
                     
                     # Compute loss
-                    loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
+                    if is_no_bg_mode:
+                        # No-background mode: compute reconstruction loss + alpha losses
+                        recon_loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
+                        
+                        loss_w_conf = opt_conf.get("loss_weights", {})
+                        recon_loss_weight = loss_w_conf.get("recon_loss_weight", 1.0)
+                        binary_alpha_loss_weight = loss_w_conf.get("binary_alpha_loss_weight", 0.0) 
+                        distance_alpha_loss_weight = loss_w_conf.get("distance_alpha_loss_weight", 0.0)
+
+                        # r for non-gradient computation
+                        r_nongrad = r.clone().detach()
+
+                        # Don't apply gaussian blur for alpha penalty computation
+                        alpha_cached_masks = self._batched_soft_rasterize(
+                            x, y, r, theta,
+                            sigma=0.0
+                        )
+
+                        target_mask_expanded = target_binary_mask.unsqueeze(0)  # (1, H, W)
+                        alpha_penalties_binary = (target_mask_expanded * alpha_cached_masks) / r_nongrad.unsqueeze(-1).unsqueeze(-1)  # (N, H, W)
+                        alpha_loss_binary = alpha_penalties_binary.sum(dim=0).mean()  # Sum over primitives, then mean over pixels
+
+                        if target_dist_mask is not None:
+                            alpha_penalties_dist = (target_dist_mask.unsqueeze(0) * alpha_cached_masks) / r_nongrad.unsqueeze(-1).unsqueeze(-1)
+                            alpha_loss_dist = alpha_penalties_dist.sum(dim=0).mean()  # Sum over primitives, then mean over pixels
+                            loss = recon_loss_weight*recon_loss + binary_alpha_loss_weight*alpha_loss_binary + distance_alpha_loss_weight*alpha_loss_dist
+                        else:
+                            loss = recon_loss_weight*recon_loss + binary_alpha_loss_weight*alpha_loss_binary
+                    else:
+                        # Standard mode: only reconstruction loss
+                        loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
                     
                     # Add sparsification loss if needed
                     if do_sparsify and epoch >= iters_warmup and epoch < iters_warmup + sparsify_duration:
@@ -707,7 +775,11 @@ class VectorRenderer:
             else:
                 # Non-FP16 mode - standard approach without autocast or scaler
                 if opt_conf.get("multi_level", False):
-                    rendered = self.render(self.S, v, c)
+                    if is_no_bg_mode:
+                        rendered = self.render(self.S, v, c, no_background=True)
+                    else:
+                        white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float32)
+                        rendered = self.render(self.S, v, c, I_bg=white_bg)
                 else:
                     # Generate masks
                     cached_masks = self._batched_soft_rasterize(
@@ -716,7 +788,11 @@ class VectorRenderer:
                     )
                     
                     # Render with masks
-                    rendered = self.render(cached_masks, v, c)
+                    if is_no_bg_mode:
+                        rendered = self.render(cached_masks, v, c, no_background=True)
+                    else:
+                        white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float32)
+                        rendered = self.render(cached_masks, v, c, I_bg=white_bg)
                     
                     # Save image at specified epochs
                     if opt_conf.get("save_epoch", False):
@@ -728,7 +804,37 @@ class VectorRenderer:
                         del rendered_np
                 
                 # Compute loss
-                loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
+                if is_no_bg_mode:
+                    # No-background mode: compute reconstruction loss + alpha losses
+                    recon_loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
+                    
+                    loss_w_conf = opt_conf.get("loss_weights", {})
+                    recon_loss_weight = loss_w_conf.get("recon_loss_weight", 1.0)
+                    binary_alpha_loss_weight = loss_w_conf.get("binary_alpha_loss_weight", 0.0) 
+                    distance_alpha_loss_weight = loss_w_conf.get("distance_alpha_loss_weight", 0.0)
+
+                    # r for non-gradient computation
+                    r_nongrad = r.clone().detach()
+
+                    # Don't apply gaussian blur for alpha penalty computation
+                    alpha_cached_masks = self._batched_soft_rasterize(
+                        x, y, r, theta,
+                        sigma=0.0
+                    )
+
+                    target_mask_expanded = target_binary_mask.unsqueeze(0)  # (1, H, W)
+                    alpha_penalties_binary = (target_mask_expanded * alpha_cached_masks) / r_nongrad.unsqueeze(-1).unsqueeze(-1)  # (N, H, W)
+                    alpha_loss_binary = alpha_penalties_binary.sum(dim=0).mean()  # Sum over primitives, then mean over pixels
+
+                    if target_dist_mask is not None:
+                        alpha_penalties_dist = (target_dist_mask.unsqueeze(0) * alpha_cached_masks) / r_nongrad.unsqueeze(-1).unsqueeze(-1)
+                        alpha_loss_dist = alpha_penalties_dist.sum(dim=0).mean()  # Sum over primitives, then mean over pixels
+                        loss = recon_loss_weight*recon_loss + binary_alpha_loss_weight*alpha_loss_binary + distance_alpha_loss_weight*alpha_loss_dist
+                    else:
+                        loss = recon_loss_weight*recon_loss + binary_alpha_loss_weight*alpha_loss_binary
+                else:
+                    # Standard mode: only reconstruction loss
+                    loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
                 
                 # Add sparsification loss if needed
                 if do_sparsify and epoch >= iters_warmup and epoch < iters_warmup + sparsify_duration:
@@ -917,7 +1023,8 @@ class VectorRenderer:
             c: Color parameters
             output_path: Path to save the rendered image
         """
-        final_render = self.render(cached_masks, v, c)
+        white_bg = torch.ones((self.H, self.W, 3), device=cached_masks.device)
+        final_render = self.render(cached_masks, v, c, I_bg=white_bg)
         final_render_np = final_render.detach().cpu().numpy()
         final_render_np = (final_render_np * 255).astype(np.uint8)
         
@@ -1100,7 +1207,7 @@ class VectorRenderer:
             Rendered image (H, W, 3)
         """
         cached_masks = self._batched_soft_rasterize(x, y, r, theta)
-        return self.render(cached_masks, v, c)
+        return self.render(cached_masks, v, c, no_background=True)
     
     def over(self, I_hat, I_bg):
         """

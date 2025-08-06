@@ -5,7 +5,7 @@
         "FM_halftone": false,
         "transform": "none",
         "img_path": [
-            "images/artwork/seurat.jpg"
+            "images/person/pororo_no_background.png"
         ],
         "bg_threshold": 250,
         "do_equalize": false,
@@ -21,7 +21,8 @@
             "out_low": 30,
             "out_high": 230
         },
-        "vertical_paddings": [0, 0]
+        "vertical_paddings": [0, 0],
+        "exist_bg" : false
     },
     "svg": {
         "svg_file": "arial.ttf",
@@ -44,7 +45,8 @@
         "pruning_enabled": true,
         "level": 2,
         "multi_level": false,
-        "hollow": false
+        "hollow": false,
+        "distance_factor": 0.7
     },
     "optimization": {
         "use_fp16": true,
@@ -54,12 +56,17 @@
         "batch_size": 256,
         "learning_rate": {
             "default": 0.1, 
-            "gain_x": 10.0,
-            "gain_y": 10.0,
-            "gain_r": 10.0,
+            "gain_x": 8.0,
+            "gain_y": 8.0,
+            "gain_r": 8.0,
             "gain_v": 1.5,
             "gain_theta": 1.0,
             "gain_c": 1.0
+        },
+        "loss_weights": {
+            "recon_loss_weight": 1.0,
+            "binary_alpha_loss_weight": 10.0,
+            "distance_alpha_loss_weight": 10.0
         },
         "do_decay": true,
         "decay_rate": 0.99,

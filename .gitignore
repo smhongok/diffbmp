@@ -34,11 +34,15 @@ configs/*
 
 images/person/*
 !images/person/pororo.jpg
+!images/person/pororo_no_background.png
 
 images/gif/*
 !images/gif/pororo_monkey_crop_first2.gif
+!images/gif/cat.gif
 
 wandb
+
+visualization_output
 
 ### Python ###
 # Byte-compiled / optimized / DLL files

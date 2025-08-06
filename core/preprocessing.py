@@ -1,8 +1,8 @@
 import numpy as np
 from PIL import Image, ImageOps, ImageFilter
+from util.target_masks import binary_mask
 import cv2
 import os
-
 class Preprocessor:
     def __init__(self, final_width=256, 
                  trim=False, transform_mode="none", FM_halftone=False,
@@ -196,6 +196,68 @@ class Preprocessor:
         arr = pad_array_color(arr, tuple(config["vertical_paddings"]))
 
         return arr
+
+    def load_image_8bit_color_opacity(self, config):
+        """
+        Load image as 8-bit color and opacity(RGBA), and if large, apply CenterCrop → White Padding → resize to final size.
+        Returns:
+            arr (np.ndarray): Processed image array.
+            binary_image (np.ndarray): Binary mask of the alpha channel.
+        """
+        img = Image.open(config["img_path"]).convert('RGBA')  # 8-bit color with alpha
+        binary_image = (1-(np.array(img)[:, :, 3] > 0).astype(np.uint8)) * 255
+        w, h = img.size
+        self.width = w
+        self.height = h
+
+        if self.trim:
+            # Not yet implemented
+            raise NotImplementedError("trim=True is not yet implemented.")
+
+        # 1) CenterCrop (if too large)
+        if w > self.width or h > self.height:
+            crop_w = min(w, self.width)
+            crop_h = min(h, self.height)
+            left = (w - crop_w) // 2
+            top = (h - crop_h) // 2
+            img = img.crop((left, top, left + crop_w, top + crop_h))
+            w, h = img.size
+
+        # 2) Padding (white=255, alpha=0 for transparent background)
+        pad_w = self.width
+        pad_h = self.height
+        padded_arr = np.full((pad_h, pad_w, 4), fill_value=[255, 255, 255, 0], dtype=np.uint8)  # 4-channel white padding with transparent background
+
+        img_arr = np.array(img, dtype=np.uint8)
+        img_h, img_w, _ = img_arr.shape
+        if img_w > pad_w or img_h > pad_h:
+            raise ValueError("Cropping failed: image is still larger than target.")
+
+        left = (pad_w - img_w) // 2
+        top = (pad_h - img_h) // 2
+        padded_arr[top:top + img_h, left:left + img_w, :] = img_arr
+
+        # 3) Resize to final_width x final_width (aspect ratio is enforced here)
+        padded_img = Image.fromarray(padded_arr, mode='RGBA')
+        w, h = padded_img.size
+        ratio = self.final_width / float(w)
+        new_w = self.final_width
+        new_h = int(h * ratio)
+        self.final_width = new_w
+        self.final_height = new_h
+        resized_img = padded_img.resize((new_w, new_h), Image.LANCZOS)
+
+        binary_image = Image.fromarray(binary_image, mode='L')  # Convert binary image to PIL Image
+        binary_image = binary_image.resize((new_w, new_h), Image.BICUBIC)  # Resize binary image to match resized_img
+
+        arr = np.array(resized_img, dtype=np.uint8)
+
+        binary_image = np.array(binary_image, dtype=np.uint8)
+        binary_image = (binary_image>0) * 255
+        binary_image = binary_image.astype(np.uint8)
+
+        return arr, binary_image
+
 
     def _fm_halftone_transform(self, image):
         """

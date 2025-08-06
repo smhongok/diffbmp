@@ -27,6 +27,7 @@ from core.initializer.random_initializater import RandomInitializer
 from core.preprocessing import Preprocessor
 from util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
 from util.pdf_exporter import PDFExporter
+import util.target_masks as target_masks
 
 
 
@@ -68,8 +69,14 @@ preprocessor = Preprocessor(
     transform_mode=pp_conf.get("transform", "none"),
 )
 
+exist_bg = pp_conf.get("exist_bg", True)
+
 # Check if sequential processing is enabled
 sequential_config = config.get("sequential", {"enabled": False})
+
+if not exist_bg and sequential_config.get("enabled", False):
+    raise NotImplementedError("Sequential processing is not supported for images without background. Please set 'exist_bg' to True in the config.")
+
 if sequential_config.get("enabled", False):
     # Load frames for sequential processing
     input_path = config["preprocessing"]["img_path"]
@@ -94,14 +101,22 @@ if sequential_config.get("enabled", False):
     for frame in frames:
         frame_tensor = torch.tensor(frame.astype(np.float32) / 255.0, device=device)  # (H, W, 3)
         I_targets.append(frame_tensor)
+        print("There are {} frames in the input".format(len(I_targets)))
     
     # Use first frame dimensions
     H = preprocessor.final_height
     W = preprocessor.final_width
 else:
-    # Load single target image (original behavior)
-    I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
-    I_target = torch.tensor(I_target, device=device)  # (H, W, 3)
+    if exist_bg:
+        print("Target image has background")
+        I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
+
+    else:
+        print("Target image has no background, using color and opacity")
+        I_target,target_binary_mask_np = preprocessor.load_image_8bit_color_opacity(config["preprocessing"])
+        I_target = I_target.astype(np.float32) / 255.0
+
+    I_target = torch.tensor(I_target, device=device)  # (H, W, 3) or (H, W, 4) if no background
     H = preprocessor.final_height
     W = preprocessor.final_width
 
@@ -293,7 +308,16 @@ if sequential_config.get("enabled", False):
 else:
     # Single image optimization (original behavior)
     # Initialize parameters
-    x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target)
+
+    # Generate distance masks if requested
+    target_binary_mask = None # 1 at backgorund, 0 at foreground
+    target_dist_mask = None # The distance based mask default : Skeleton - Aware Distance Transform
+
+    if not exist_bg:
+        target_binary_mask = torch.from_numpy(target_binary_mask_np[:,:]>0).to(device) 
+        target_dist_mask = target_masks.SADT_L2(target_binary_mask_np, device)
+
+    x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target, target_binary_mask)
     
     bmp_image_tensor = svg_loader.load_alpha_bitmap()
     
@@ -301,10 +325,15 @@ else:
     x, y, r, v, theta, c = renderer.optimize_parameters(
         x, y, r, v, theta, c,
         I_target, 
-        opt_conf=opt_conf
+        opt_conf=opt_conf,
+        target_binary_mask=target_binary_mask,
+        target_dist_mask=target_dist_mask,
     )
 
-# Save the final rendered image(s)
+if not exist_bg:
+    I_target = I_target[..., :3]  # Remove alpha channel if exists
+
+# Save the final rendered image
 output_dir = config["postprocessing"].get("output_folder", "./outputs/")
 os.makedirs(output_dir, exist_ok=True)
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -465,7 +494,11 @@ if not sequential_config.get("enabled", False):
             x, y, r, theta,
             sigma=0
         )
-        rendered = renderer.render(cached_masks, v, c)
+        if not exist_bg:
+            alpha_loss = (cached_masks * target_binary_mask.unsqueeze(0)).sum(dim=0).mean()
+
+        white_bg = torch.ones((renderer.H, renderer.W, 3), device=cached_masks.device)
+        rendered = renderer.render(cached_masks, v, c, I_bg=white_bg)
         renderer.save_rendered_image(cached_masks, v, c, output_path)
         # High-resolution export configuration (recommended only when you have raster primitives)
         hires_enabled = config["postprocessing"].get("hires_export", False)
@@ -536,14 +569,30 @@ if config['postprocessing'].get('compute_psnr', False):
         else:
             # Single image metrics (original behavior)
             # Convert rendered image to tensor format for metrics
+                
             rendered_t = rendered.permute(2, 0, 1).unsqueeze(0)
             target_t = I_target.permute(2, 0, 1).unsqueeze(0)
             
+            # If no background, apply mask
+            # Evaluate only foreground pixels
+            if not exist_bg:
+                foreground_mask = (target_binary_mask_np ==0)
+                mask_tensor = torch.tensor(foreground_mask, device=device, dtype=torch.float32)
+                mask_tensor = mask_tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+                mask_tensor = mask_tensor.expand(-1, 3, -1, -1)  # (1, 3, H, W)
+
+                rendered_t = rendered_t * mask_tensor
+                target_t = target_t * mask_tensor
+
             # Compute metrics
             psnr_val = piq.psnr(rendered_t, target_t, data_range=1.0)
             ssim_val = piq.ssim(rendered_t, target_t, data_range=1.0)
             vif_val = piq.vif_p(rendered_t, target_t, data_range=1.0)
             lpips_val = piq.LPIPS()(rendered_t, target_t)
+
+            # If no background, compute alpha loss
+            if not exist_bg:
+                print("Alpha loss (X 10^3): {:.4f}".format(alpha_loss.item()*1000.0))
             
             print(f"PSNR: {psnr_val.item():.2f} dB")
             print(f"SSIM: {ssim_val.item():.4f}")
