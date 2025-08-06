@@ -599,3 +599,181 @@ class PDFExporter:
         for ch in children:
             border_g.append(deepcopy(ch))
         root.append(border_g)
+
+    def export_sequence(self,
+                       frame_results: list,
+                       output_html_path: str,
+                       svg_hollow: bool = False,
+                       fps: int = 24,
+                       html_extra_meta: dict = {}):
+        """
+        Export multiple frames as a sequence for HTML animation.
+        
+        Args:
+            frame_results: List of frame result dictionaries containing x,y,r,theta,v,c tensors
+            output_html_path: Path for HTML output file
+            svg_hollow: Whether to use hollow SVG style
+            fps: Frames per second for animation
+        """
+        import json
+        
+        SVG_NS = "http://www.w3.org/2000/svg"
+        
+        if not frame_results:
+            raise ValueError("No frame results provided")
+        
+        print(f"Exporting sequence of {len(frame_results)} frames to HTML...")
+        
+        # Extract frame data and generate transform sequences
+        frame_sequence = []
+        
+        for frame_idx, frame_result in enumerate(frame_results):
+            print(f"Processing frame {frame_idx + 1}/{len(frame_results)}...")
+            
+            # Extract parameters from frame result
+            x_np = frame_result['x'].detach().cpu().numpy()
+            y_np = frame_result['y'].detach().cpu().numpy()
+            r_np = frame_result['r'].detach().cpu().numpy()
+            theta_np = frame_result['theta'].detach().cpu().numpy()
+            v_np = frame_result['v'].detach().cpu().numpy()
+            c_np = torch.sigmoid(frame_result['c']).detach().cpu().numpy()
+            alpha_vals = self.alpha_upper_bound * (1 / (1 + np.exp(-v_np)))
+            
+            N = len(x_np)
+            p = len(self.svg_paths)
+            
+            # Generate transform strings for this frame
+            frame_transforms = []
+            
+            for i in reversed(range(N)):
+                idx = (N-i-1) % p
+                
+                theta_deg = np.degrees(theta_np[i])
+                transform = (
+                    f"translate({x_np[i]-self.canvas_w/2:.3f},{y_np[i]-self.canvas_h/2:.3f}) "
+                    f"rotate({theta_deg:.3f}) "
+                    f"scale({r_np[i]:.3f}) "
+                    f"scale({self.norm_scale:.4f}) "
+                    f"translate({-self.view_w/2},{-self.view_h/2})"
+                )
+                frame_transforms.append(transform)
+            
+            frame_sequence.append(frame_transforms)
+        
+        # Create SVG for the first frame (for initial display)
+        first_frame = frame_results[0]
+        x_np = first_frame['x'].detach().cpu().numpy()
+        y_np = first_frame['y'].detach().cpu().numpy()
+        r_np = first_frame['r'].detach().cpu().numpy()
+        theta_np = first_frame['theta'].detach().cpu().numpy()
+        v_np = first_frame['v'].detach().cpu().numpy()
+        c_np = torch.sigmoid(first_frame['c']).detach().cpu().numpy()
+        alpha_vals = self.alpha_upper_bound * (1 / (1 + np.exp(-v_np)))
+        
+        N = len(x_np)
+        p = len(self.svg_paths)
+        
+        # Create SVG root for HTML
+        root_html = ET.Element(f'{{{SVG_NS}}}svg', {
+            'id': 'svgsplat1',
+            'style': 'overflow: visible;',
+            'width': str(self.canvas_w),
+            'height': str(self.canvas_h),
+            'viewBox': f"{-self.canvas_w/2} {-self.canvas_h/2} {self.canvas_w} {self.canvas_h}"
+        })
+        wrapper_g_html = ET.Element('g', {'id': 'wrapper', 'transform': 'translate(0,0)'})
+        
+        # Add primitives for first frame
+        for i in reversed(range(N)):
+            idx = (N-i-1) % p
+            tree = ET.parse(self.svg_paths[idx])
+            template_root = tree.getroot()
+            self._remove_styles(template_root)
+            children = list(template_root)
+            
+            theta_deg = np.degrees(theta_np[i])
+            transform = (
+                f"translate({x_np[i]-self.canvas_w/2:.3f},{y_np[i]-self.canvas_h/2:.3f}) "
+                f"rotate({theta_deg:.3f}) "
+                f"scale({r_np[i]:.3f}) "
+                f"scale({self.norm_scale:.4f}) "
+                f"translate({-self.view_w/2},{-self.view_h/2})"
+            )
+            g = ET.Element('g', {'transform': transform})
+            
+            r_color, g_color, b_color = c_np[i]
+            r_int = int(np.clip(r_color * 255, 0, 255))
+            g_int = int(np.clip(g_color * 255, 0, 255))
+            b_int = int(np.clip(b_color * 255, 0, 255))
+            
+            if svg_hollow:
+                g.attrib.update({
+                    'stroke': f'rgb({r_int},{g_int},{b_int})',
+                    'stroke-opacity': f"{alpha_vals[i]:.4f}",
+                    'stroke-width': str(self.stroke_width),
+                    'fill': f'rgb({r_int},{g_int},{b_int})',
+                    'fill-opacity': '0'
+                })
+            else:
+                g.attrib.update({
+                    'fill': f'rgb({r_int},{g_int},{b_int})',
+                    'fill-opacity': f"{alpha_vals[i]:.4f}"
+                })
+            
+            for child in children:
+                g.append(deepcopy(child))
+            wrapper_g_html.append(g)
+        
+        root_html.append(wrapper_g_html)
+        
+        # Convert SVG to string
+        svg_content = ET.tostring(root_html, encoding='unicode')
+        
+        # Prepare metadata
+        meta_tags = []
+        meta_tags.append(f'<meta name="frameCount" content="{len(frame_results)}">')
+        meta_tags.append(f'<meta name="fps" content="{fps}">')
+        for k, v in html_extra_meta.items():
+            meta_tags.append(f'<meta name="{k}" content="{v}">')
+        
+        # Create HTML content with proper indentation
+        html_head = f"""<!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="numClass" content="{len(self.svg_paths)}">
+            {chr(10).join('            ' + tag for tag in meta_tags)}
+            <title>Sequential Splatting Animation</title>
+            <link rel="stylesheet" href="demo_html.css">
+        </head>
+        <body id="demo_html">
+        """
+        
+        # Embed frame sequence data as JavaScript
+        frame_sequence_js = f"""
+            <script>
+            // Frame sequence data for animation
+            window.frameSequenceData = {json.dumps(frame_sequence)};
+            console.log('Loaded frame sequence:', window.frameSequenceData.length, 'frames');
+            </script>
+        """
+        
+        html_tail = """
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/Draggable.min.js"></script>
+            <script src="demo_html.js"></script>
+        </body>
+        </html>
+        """
+        
+        # Write HTML file
+        with open(output_html_path, 'w', encoding='utf-8') as f:
+            f.write(html_head)
+            f.write(svg_content)
+            f.write(frame_sequence_js)
+            f.write(html_tail)
+        
+        print(f"Sequential HTML export completed: {output_html_path}")
+        print(f"Frames: {len(frame_results)}, FPS: {fps}")
+        
+        return output_html_path
