@@ -116,6 +116,16 @@
       "decay_rate": 0.98,
       "warmup_steps": 10
     },
+    "adaptive_control": {
+      "enabled": true,
+      "tile_rows": 4,
+      "tile_cols": 4,
+      "scale_threshold": 8.0,
+      "opacity_threshold": 0.7,
+      "opacity_reduction_factor": 0.5,
+      "max_primitives_per_tile": 3,
+      "apply_every_n_iterations": 10
+    },
     "export": {
       "export_frames": true,
       "export_gif": true,

@@ -133,8 +133,19 @@ class SequentialFrameRenderer(MseRenderer):
         
         pbar = tqdm(range(num_iter), desc="Optimizing with warmup scheduling")
         
+        # Get adaptive control configuration
+        adaptive_config = opt_conf.get('adaptive_control', {})
+        apply_every_n = adaptive_config.get('apply_every_n_iterations', 10)
+        
         for i in pbar:
             optimizer.zero_grad()
+            
+            # Apply adaptive control at specified intervals
+            if (adaptive_config.get('enabled', False) and 
+                i > 0 and i % apply_every_n == 0):
+                x, y, r, v, theta, c = self.apply_adaptive_control(
+                    x, y, r, v, theta, c, adaptive_config
+                )
             
             # Generate masks and render
             cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=0)
@@ -154,7 +165,137 @@ class SequentialFrameRenderer(MseRenderer):
             optimizer.step()
             scheduler.step()
             
-            # Update progress bar
-            pbar.set_postfix({'loss': f'{loss.item():.6f}', 'lr': f'{scheduler.get_last_lr()[0]:.6f}'})
+            # Update progress bar with adaptive control info
+            postfix = {'loss': f'{loss.item():.6f}', 'lr': f'{scheduler.get_last_lr()[0]:.6f}'}
+            if adaptive_config.get('enabled', False) and i % apply_every_n == 0:
+                postfix['adaptive'] = 'applied'
+            pbar.set_postfix(postfix)
         
         return x, y, r, v, theta, c
+    
+    def apply_adaptive_control(self, 
+                             x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
+                             v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
+                             adaptive_config: dict = None) -> tuple:
+        """
+        Apply adaptive control to reduce artifacts by lowering opacity of problematic primitives.
+        
+        Args:
+            x, y, r, v, theta, c: Current primitive parameters
+            adaptive_config: Configuration dict for adaptive control
+            
+        Returns:
+            Tuple of adapted parameters (x, y, r, v, theta, c)
+        """
+        if adaptive_config is None or not adaptive_config.get('enabled', False):
+            return x, y, r, v, theta, c
+        
+        # Extract configuration parameters
+        tile_rows = adaptive_config.get('tile_rows', 4)
+        tile_cols = adaptive_config.get('tile_cols', 4)
+        scale_threshold = adaptive_config.get('scale_threshold', 8.0)
+        opacity_threshold = adaptive_config.get('opacity_threshold', 0.7)
+        opacity_reduction_factor = adaptive_config.get('opacity_reduction_factor', 0.5)
+        max_primitives_per_tile = adaptive_config.get('max_primitives_per_tile', 3)
+        
+        # Clone parameters to avoid modifying originals
+        v_adapted = v.clone()
+        
+        # Get canvas dimensions
+        canvas_height, canvas_width = self.canvas_size
+        
+        # Calculate tile dimensions
+        tile_height = canvas_height // tile_rows
+        tile_width = canvas_width // tile_cols
+        
+        # Process each tile
+        for row in range(tile_rows):
+            for col in range(tile_cols):
+                # Define tile boundaries
+                y_min = row * tile_height
+                y_max = (row + 1) * tile_height
+                x_min = col * tile_width
+                x_max = (col + 1) * tile_width
+                
+                # Find primitives in this tile
+                in_tile_mask = ((x >= x_min) & (x < x_max) & 
+                               (y >= y_min) & (y < y_max))
+                
+                if not in_tile_mask.any():
+                    continue
+                
+                # Get indices of primitives in this tile
+                tile_indices = torch.where(in_tile_mask)[0]
+                
+                # Apply criteria to find problematic primitives
+                problematic_indices = self._find_problematic_primitives(
+                    tile_indices, x, y, r, v, theta, c,
+                    scale_threshold, opacity_threshold
+                )
+                
+                # Limit to max primitives per tile
+                if len(problematic_indices) > max_primitives_per_tile:
+                    # Sort by combined score (scale * opacity) and take top ones
+                    scores = r[problematic_indices] * torch.sigmoid(v[problematic_indices])
+                    _, top_indices = torch.topk(scores, max_primitives_per_tile)
+                    problematic_indices = problematic_indices[top_indices]
+                
+                # Apply opacity reduction
+                if len(problematic_indices) > 0:
+                    v_adapted[problematic_indices] *= opacity_reduction_factor
+        
+        return x, y, r, v_adapted, theta, c
+    
+    def _find_problematic_primitives(self, 
+                                   tile_indices: torch.Tensor,
+                                   x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
+                                   v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
+                                   scale_threshold: float, opacity_threshold: float) -> torch.Tensor:
+        """
+        Find primitives that meet the problematic criteria within a tile.
+        
+        Args:
+            tile_indices: Indices of primitives in the current tile
+            x, y, r, v, theta, c: Primitive parameters
+            scale_threshold: Minimum scale to be considered large
+            opacity_threshold: Minimum opacity to be considered opaque
+            
+        Returns:
+            Tensor of indices of problematic primitives
+        """
+        if len(tile_indices) == 0:
+            return torch.tensor([], dtype=torch.long, device=x.device)
+        
+        # Extract parameters for primitives in this tile
+        tile_x = x[tile_indices]
+        tile_y = y[tile_indices]
+        tile_r = r[tile_indices]
+        tile_v = v[tile_indices]
+        
+        # Convert visibility to opacity using sigmoid
+        tile_opacity = torch.sigmoid(tile_v)
+        
+        # Criterion 1: Large scale primitives
+        large_scale_mask = tile_r >= scale_threshold
+        
+        # Criterion 2: High opacity primitives
+        high_opacity_mask = tile_opacity >= opacity_threshold
+        
+        # Criterion 3: Front primitives (those with higher z-order)
+        # We'll use a combination of scale and opacity as a proxy for "frontness"
+        # since larger, more opaque primitives are more likely to occlude others
+        frontness_score = tile_r * tile_opacity
+        frontness_threshold = torch.quantile(frontness_score, 0.7)  # Top 30%
+        front_mask = frontness_score >= frontness_threshold
+        
+        # Combine all criteria (primitives that meet at least 2 out of 3 criteria)
+        criteria_count = large_scale_mask.float() + high_opacity_mask.float() + front_mask.float()
+        problematic_mask = criteria_count >= 2.0
+        
+        # Get the original indices of problematic primitives
+        problematic_tile_indices = torch.where(problematic_mask)[0]
+        
+        if len(problematic_tile_indices) == 0:
+            return torch.tensor([], dtype=torch.long, device=x.device)
+        
+        return tile_indices[problematic_tile_indices]

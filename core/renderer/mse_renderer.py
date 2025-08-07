@@ -75,7 +75,7 @@ class MseRenderer(VectorRenderer):
 
             return F.mse_loss(rendered, target_rgb)
     
-    def optimize_xy_dynamics(self,
+    def optimize_dynamics(self,
                            x1: torch.Tensor,
                            y1: torch.Tensor,
                            r: torch.Tensor,
@@ -206,7 +206,7 @@ class MseRenderer(VectorRenderer):
         else:
             return x2, y2, r2, v2, theta2, c2
     
-    def render_xy_transition_mp4(self,
+    def render_transition_mp4(self,
                            x1: torch.Tensor, y1: torch.Tensor,
                            x2: torch.Tensor, y2: torch.Tensor,
                            r1: torch.Tensor,

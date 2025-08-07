@@ -268,8 +268,14 @@ if sequential_config.get("enabled", False):
             # Subsequent frames: use SequentialFrameRenderer with temporal consistency
             print(f"Subsequent frame: initializing from frame {frame_idx} with SequentialFrameRenderer")
             
-            # Use sequential optimization settings
-            optimization_config = sequential_config.get("optimization", {})
+            # Use sequential optimization settings and include adaptive control
+            optimization_config = sequential_config.get("optimization", {}).copy()  # Copy to avoid modifying original
+            
+            # Add adaptive control configuration to optimization config
+            adaptive_control_config = sequential_config.get("adaptive_control", {})
+            print(f"[DEBUG] Extracted adaptive_control_config from sequential_config: {adaptive_control_config}")
+            optimization_config["adaptive_control"] = adaptive_control_config
+            print(f"[DEBUG] Final optimization_config with adaptive_control: {optimization_config}")
             
             # Choose optimization strategy
             start_time_frame = time.time()
