@@ -46,16 +46,10 @@ with open(config_path, "r", encoding="utf-8") as f:
 # After import or after loading config
 set_global_seed(config.get("seed", 42))
 
-# Check for XY dynamics mode
-xy_dynamics_mode = 'img_paths' in config["preprocessing"] and len(config["preprocessing"].get('img_paths', [])) == 2
-
-if xy_dynamics_mode:
-    print("XY Dynamics mode detected - processing two images for position-based transition")
-else:
-    # Force list attributes to single item for standard mode
-    if type(config["preprocessing"]["img_path"]) is list:
-        config["preprocessing"]["img_path"] = config["preprocessing"]["img_path"][0]
-        print("Use only one file to inference")
+# Force list attributes to single item for standard mode
+if type(config["preprocessing"]["img_path"]) is list:
+    config["preprocessing"]["img_path"] = config["preprocessing"]["img_path"][0]
+    print("Use only one file to inference")
 if type(config["preprocessing"]["final_width"]) is list:
     config["preprocessing"]["final_width"] = config["preprocessing"]["final_width"][0]
     print("Use only one final_width to inference")
