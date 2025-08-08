@@ -74,10 +74,10 @@ class SimpleTileRenderer(VectorRenderer):
         
         return bboxes
         
-    def render(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
-               theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
-               return_alpha: bool = False, I_bg: torch.Tensor = None, 
-               no_background: bool = False, sigma: float = 0.0) -> torch.Tensor:
+    def render_from_params(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
+                           theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
+                           return_alpha: bool = False, I_bg: torch.Tensor = None, 
+                           no_background: bool = False, sigma: float = 0.0) -> torch.Tensor:
         """
         Memory-efficient tile-based rendering.
         
@@ -147,6 +147,173 @@ class SimpleTileRenderer(VectorRenderer):
             return output, alpha
         
         return output
+    
+    def render(self, cached_masks: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
+               return_alpha: bool = False, I_bg: torch.Tensor = None,
+               no_background: bool = False) -> torch.Tensor:
+        """
+        VectorRenderer-compatible render method that uses pre-computed cached_masks.
+        This method provides compatibility with the existing optimization pipeline.
+        
+        Args:
+            cached_masks: (N, H, W) pre-computed soft masks
+            v: (N,) visibility logits
+            c: (N, 3) RGB logits
+            return_alpha: Whether to return alpha channel
+            I_bg: Background image
+            no_background: Whether to use no background
+            
+        Returns:
+            Rendered image tensor
+        """
+        # Use parent class's render method for compatibility
+        return super().render(cached_masks, v, c, return_alpha, I_bg, no_background)
+    
+    def _optimize_parameters_whole(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
+                                  v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
+                                  target_image: torch.Tensor, opt_conf: dict,
+                                  target_binary_mask: torch.Tensor = None,
+                                  target_dist_mask: torch.Tensor = None):
+        """
+        Override optimization to use tile-based rendering instead of cached_masks.
+        This is the core difference from VectorRenderer - we render directly from parameters.
+        """
+        from torch.amp import GradScaler, autocast
+        from tqdm import tqdm
+        import datetime
+        import os
+        
+        is_no_bg_mode = target_image.shape[2] == 4 and target_binary_mask is not None
+        
+        # Get optimization parameters from config
+        num_iterations = opt_conf.get("num_iterations", 100)
+        lr_conf = opt_conf["learning_rate"]
+        lr = lr_conf.get("default", 0.1)
+        
+        # Mixed-precision scaler (only used if use_fp16 is True)
+        scaler = GradScaler('cuda') if self.use_fp16 else None
+        
+        # Pre-calculate configurations
+        blur_sigma = opt_conf.get("blur_sigma", 1.0)
+        
+        # Create output directory for saving images if it doesn't exist
+        save_image_intervals = [1, 5, 10, 20, 50, 100]
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs(self.output_path, exist_ok=True)
+        
+        # Create optimizer
+        optimizer = torch.optim.Adam([
+            {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
+            {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
+            {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
+            {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},
+            {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
+            {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
+        ])
+        
+        # Create scheduler if decay is enabled
+        do_decay = opt_conf.get("do_decay", False)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            optimizer, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
+        
+        # For Gaussian blur transition if enabled
+        do_gaussian_blur = opt_conf.get("do_gaussian_blur", False)
+        do_adapt_gaussian_blur = opt_conf.get("do_adapt_gaussian_blur", False)
+        sigma_start = opt_conf.get("blur_sigma_start", 2.0)
+        sigma_end = opt_conf.get("blur_sigma_end", 0.0)
+        
+        print(f"Starting tile-based optimization, {num_iterations} iterations...")
+        
+        # Optimization loop
+        for iteration in tqdm(range(num_iterations), desc="Optimizing"):
+            optimizer.zero_grad()
+            
+            # Adaptive Gaussian blur
+            if do_adapt_gaussian_blur:
+                progress = iteration / num_iterations
+                current_sigma = sigma_start * (1 - progress) + sigma_end * progress
+            elif do_gaussian_blur:
+                current_sigma = blur_sigma
+            else:
+                current_sigma = 0.0
+            
+            # Use tile-based rendering directly from parameters
+            if self.use_fp16:
+                with autocast('cuda'):
+                    if is_no_bg_mode:
+                        rendered = self.render_from_params(
+                            x, y, r, theta, v, c, sigma=current_sigma, no_background=True
+                        )
+                    else:
+                        white_bg = torch.ones((self.H, self.W, 3), device=self.device)
+                        rendered = self.render_from_params(
+                            x, y, r, theta, v, c, sigma=current_sigma, I_bg=white_bg
+                        )
+                    
+                    # Compute loss
+                    loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
+                
+                # Backward pass with gradient scaling
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                if is_no_bg_mode:
+                    rendered = self.render_from_params(
+                        x, y, r, theta, v, c, sigma=current_sigma, no_background=True
+                    )
+                else:
+                    white_bg = torch.ones((self.H, self.W, 3), device=self.device)
+                    rendered = self.render_from_params(
+                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=white_bg
+                    )
+                
+                # Compute loss
+                loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
+                
+                # Backward pass
+                loss.backward()
+                optimizer.step()
+            
+            # Update learning rate
+            if scheduler is not None:
+                scheduler.step()
+            
+            # Log progress
+            if iteration % 10 == 0 or iteration in save_image_intervals:
+                print(f"Iteration {iteration}: Loss = {loss.item():.6f}")
+                
+                # Save intermediate images
+                if iteration in save_image_intervals:
+                    img_path = os.path.join(self.output_path, f"tile_iter_{iteration:04d}_{timestamp}.png")
+                    self.save_image_tensor(rendered, img_path)
+        
+        print(f"Tile-based optimization completed. Final loss: {loss.item():.6f}")
+        return x, y, r, v, theta, c
+    
+    def save_image_tensor(self, image_tensor: torch.Tensor, path: str):
+        """Save image tensor to file."""
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        # Convert to numpy and ensure correct range [0, 1]
+        img_np = image_tensor.detach().cpu().numpy()
+        img_np = np.clip(img_np, 0, 1).astype(np.float32)
+        
+        # Save using matplotlib
+        plt.figure(figsize=(8, 8))
+        plt.imshow(img_np)
+        plt.axis('off')
+        plt.tight_layout()
+        plt.savefig(path, dpi=150, bbox_inches='tight')
+        plt.close()
+    
+    def compute_loss(self, rendered: torch.Tensor, target: torch.Tensor, 
+                    x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
+                    v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        """Compute MSE loss between rendered and target images."""
+        # Simple MSE loss for now
+        return F.mse_loss(rendered, target)
     
     def _get_tile_primitives(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
                             theta: torch.Tensor, x_start: int, x_end: int, 
@@ -413,7 +580,7 @@ if __name__ == "__main__":
     print(f"  - Hollow rectangle: {hollow_rect_primitive.shape}")
     
     # Create renderer
-    canvas_size = (256, 256)
+    canvas_size = (194, 256)
     tile_size = 32
     renderer = SimpleTileRenderer(
         canvas_size=canvas_size,
@@ -445,7 +612,7 @@ if __name__ == "__main__":
     # Test rendering
     print("\nRendering...")
     try:
-        result = renderer.render(x, y, r, theta, v, c, sigma=1.0)
+        result = renderer.render_from_params(x, y, r, theta, v, c, sigma=1.0)
         print(f"Success! Result shape: {result.shape}")
         print(f"Result range: [{result.min():.3f}, {result.max():.3f}]")
         
