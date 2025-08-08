@@ -660,7 +660,7 @@ class VectorRenderer:
                 with autocast('cuda'):
                     if opt_conf.get("multi_level", False):
                         if is_no_bg_mode:
-                            rendered = self.render(self.S, v, c, no_background=True)
+                            rendered, rendered_alpha = self.render(self.S, v, c, return_alpha=True, no_background=True)
                         else:
                             white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float16 if self.use_fp16 else torch.float32)
                             rendered = self.render(self.S, v, c, I_bg=white_bg)
@@ -669,7 +669,7 @@ class VectorRenderer:
                             # Use standard rendering instead of inefficient streaming
                             cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=sigma)
                             if is_no_bg_mode:
-                                rendered = self.render(cached_masks, v, c, no_background=True)
+                                rendered, rendered_alpha = self.render(cached_masks, v, c, return_alpha=True, no_background=True)
                             else:
                                 white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float16 if self.use_fp16 else torch.float32)
                                 rendered = self.render(cached_masks, v, c, I_bg=white_bg)
@@ -685,19 +685,29 @@ class VectorRenderer:
                                 self.memory_report("After mask generation")
                             
                             if is_no_bg_mode:
-                                rendered = self.render(cached_masks, v, c, no_background=True)
+                                rendered, rendered_alpha = self.render(cached_masks, v, c, return_alpha=True, no_background=True)
                             else:
                                 white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float16 if self.use_fp16 else torch.float32)
                                 rendered = self.render(cached_masks, v, c, I_bg=white_bg)
                             
                             # Save image at specified epochs
                             if opt_conf.get("save_epoch", False):
+                                rendered_save = None
+                                if is_no_bg_mode:
+                                    white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float16 if self.use_fp16 else torch.float32)
+                                    rendered_save = rendered + (1.0 - rendered_alpha.squeeze(-1)).unsqueeze(-1) * white_bg
+                                    rendered_np = rendered_save.detach().cpu().numpy()                            
+                                else:
+                                    rendered_np = rendered.detach().cpu().numpy()
+
                                 output_path = os.path.join(self.output_path, f"epoch_{epoch+1}_{timestamp}.jpg")
-                                rendered_np = rendered.detach().cpu().numpy()
                                 rendered_np = (rendered_np * 255).astype(np.uint8)
                                 Image.fromarray(rendered_np).save(output_path)
                                 self.saved_frames.append(output_path)
                                 del rendered_np
+
+                                if rendered_save is not None:
+                                    del rendered_save
                             
                             # Save reference for cleanup
                             cached_masks_ref = cached_masks
@@ -710,8 +720,8 @@ class VectorRenderer:
                     # Compute loss
                     if is_no_bg_mode:
                         # No-background mode: compute reconstruction loss + alpha losses
-                        recon_loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
-                        
+                        recon_loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c, rendered_alpha)
+
                         loss_w_conf = opt_conf.get("loss_weights", {})
                         recon_loss_weight = loss_w_conf.get("recon_loss_weight", 1.0)
                         binary_alpha_loss_weight = loss_w_conf.get("binary_alpha_loss_weight", 0.0) 
@@ -776,7 +786,7 @@ class VectorRenderer:
                 # Non-FP16 mode - standard approach without autocast or scaler
                 if opt_conf.get("multi_level", False):
                     if is_no_bg_mode:
-                        rendered = self.render(self.S, v, c, no_background=True)
+                        rendered, rendered_alpha = self.render(self.S, v, c, return_alpha=True, no_background=True)
                     else:
                         white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float32)
                         rendered = self.render(self.S, v, c, I_bg=white_bg)
@@ -789,24 +799,34 @@ class VectorRenderer:
                     
                     # Render with masks
                     if is_no_bg_mode:
-                        rendered = self.render(cached_masks, v, c, no_background=True)
+                        rendered, rendered_alpha = self.render(cached_masks, v, c, return_alpha=True, no_background=True)
                     else:
                         white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float32)
                         rendered = self.render(cached_masks, v, c, I_bg=white_bg)
                     
                     # Save image at specified epochs
                     if opt_conf.get("save_epoch", False):
+                        rendered_save = None
+                        if is_no_bg_mode:
+                            white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float32)
+                            rendered_save = rendered + (1.0 - rendered_alpha.squeeze(-1)).unsqueeze(-1) * white_bg
+                            rendered_np = rendered_save.detach().cpu().numpy()                            
+                        else:
+                            rendered_np = rendered.detach().cpu().numpy()
+
                         output_path = os.path.join(self.output_path, f"epoch_{epoch+1}_{timestamp}.jpg")
-                        rendered_np = rendered.detach().cpu().numpy()
                         rendered_np = (rendered_np * 255).astype(np.uint8)
                         Image.fromarray(rendered_np).save(output_path)
                         self.saved_frames.append(output_path)
                         del rendered_np
+
+                        if rendered_save is not None:
+                            del rendered_save
                 
                 # Compute loss
                 if is_no_bg_mode:
                     # No-background mode: compute reconstruction loss + alpha losses
-                    recon_loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c)
+                    recon_loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c, rendered_alpha)
                     
                     loss_w_conf = opt_conf.get("loss_weights", {})
                     recon_loss_weight = loss_w_conf.get("recon_loss_weight", 1.0)

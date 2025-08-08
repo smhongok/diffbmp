@@ -51,7 +51,7 @@
     "optimization": {
         "use_fp16": true,
         "renderer_type": "mse",
-        "num_iterations": 100,
+        "num_iterations": 200,
         "batch_optimization": false,
         "batch_size": 256,
         "learning_rate": {
