@@ -137,39 +137,105 @@ class SequentialFrameRenderer(MseRenderer):
         adaptive_config = opt_conf.get('adaptive_control', {})
         apply_every_n = adaptive_config.get('apply_every_n_iterations', 10)
         
-        for i in pbar:
-            optimizer.zero_grad()
-            
-            # Apply adaptive control at specified intervals
-            if (adaptive_config.get('enabled', False) and 
-                i > 0 and i % apply_every_n == 0):
-                x, y, r, v, theta, c = self.apply_adaptive_control(
-                    x, y, r, v, theta, c, adaptive_config
+        # Debug: Print adaptive control configuration
+        # print(f"[DEBUG] Adaptive control config received: {adaptive_config}")
+        # print(f"[DEBUG] Adaptive control enabled: {adaptive_config.get('enabled', False)}")
+        
+        # Run optimization in phases if adaptive control is enabled
+        if adaptive_config.get('enabled', False):
+            # Run optimization in chunks with adaptive control between them
+            current_iter = 0
+            while current_iter < num_iter:
+                # Determine how many iterations to run in this phase
+                phase_iters = min(apply_every_n, num_iter - current_iter)
+                
+                # Apply adaptive control at the beginning of each phase (except first)
+                if current_iter > 0:
+                    #print(f"[DEBUG] Applying adaptive control at iteration {current_iter}")
+                    # Detach and re-enable gradients to break computational graph
+                    x = x.detach().requires_grad_(True)
+                    y = y.detach().requires_grad_(True)
+                    r = r.detach().requires_grad_(True)
+                    v = v.detach().requires_grad_(True)
+                    theta = theta.detach().requires_grad_(True)
+                    c = c.detach().requires_grad_(True)
+                    
+                    # Apply adaptive control
+                    x, y, r, v, theta, c = self.apply_adaptive_control(x, y, r, v, theta, c, adaptive_config)
+                    
+                    # Recreate optimizer with new parameters
+                    optimizer = torch.optim.Adam([
+                        {'params': [x], 'lr': lr_config['default_lr'] * lr_config['gain_x']},
+                        {'params': [y], 'lr': lr_config['default_lr'] * lr_config['gain_y']},
+                        {'params': [r], 'lr': lr_config['default_lr'] * lr_config['gain_r']},
+                        {'params': [v], 'lr': lr_config['default_lr'] * lr_config['gain_v']},
+                        {'params': [theta], 'lr': lr_config['default_lr'] * lr_config['gain_theta']},
+                        {'params': [c], 'lr': lr_config['default_lr'] * lr_config['gain_c']}
+                    ])
+                    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=lr_config['decay_rate'])
+                    # Advance scheduler to current position
+                    for _ in range(current_iter):
+                        scheduler.step()
+                    
+                    #print(f"[DEBUG] Adaptive control applied successfully")
+                
+                # Run optimization for this phase
+                phase_pbar = tqdm(range(phase_iters), desc=f"Phase {current_iter//apply_every_n + 1}", leave=False)
+                for phase_i in phase_pbar:
+                    optimizer.zero_grad()
+                    
+                    # Generate masks and render
+                    cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=0)
+                    rendered = self.render(cached_masks, v, c)
+                    
+                    # Compute loss with warmup scheduling
+                    loss_config = {
+                        'reconstruction_weight': 1.0,
+                        'warmup_steps': opt_conf.get('warmup_steps', 0)
+                    }
+                    loss = self.compute_loss_with_warmup(
+                        rendered, target, x, y, theta, r, v, c, 
+                        loss_config, current_iter + phase_i, num_iter
+                    )
+                    
+                    loss.backward()
+                    optimizer.step()
+                    scheduler.step()
+                    
+                    # Update progress bar
+                    postfix = {'loss': f'{loss.item():.6f}', 'lr': f'{scheduler.get_last_lr()[0]:.6f}'}
+                    if current_iter > 0 and phase_i == 0:
+                        postfix['adaptive'] = 'applied'
+                    phase_pbar.set_postfix(postfix)
+                    pbar.update(1)
+                
+                current_iter += phase_iters
+        else:
+            # Standard optimization without adaptive control
+            for i in pbar:
+                optimizer.zero_grad()
+                
+                # Generate masks and render
+                cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=0)
+                rendered = self.render(cached_masks, v, c)
+                
+                # Compute loss with warmup scheduling
+                loss_config = {
+                    'reconstruction_weight': 1.0,
+                    'warmup_steps': opt_conf.get('warmup_steps', 0)
+                }
+                loss = self.compute_loss_with_warmup(
+                    rendered, target, x, y, theta, r, v, c, 
+                    loss_config, i, num_iter
                 )
-            
-            # Generate masks and render
-            cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=0)
-            rendered = self.render(cached_masks, v, c)
-            
-            # Compute loss with warmup scheduling
-            loss_config = {
-                'reconstruction_weight': 1.0,
-                'warmup_steps': opt_conf.get('warmup_steps', 0)
-            }
-            loss = self.compute_loss_with_warmup(
-                rendered, target, x, y, theta, r, v, c, 
-                loss_config, i, num_iter
-            )
-            
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            
-            # Update progress bar with adaptive control info
-            postfix = {'loss': f'{loss.item():.6f}', 'lr': f'{scheduler.get_last_lr()[0]:.6f}'}
-            if adaptive_config.get('enabled', False) and i % apply_every_n == 0:
-                postfix['adaptive'] = 'applied'
-            pbar.set_postfix(postfix)
+                
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+                
+                # Update progress bar
+                postfix = {'loss': f'{loss.item():.6f}', 'lr': f'{scheduler.get_last_lr()[0]:.6f}'}
+                pbar.set_postfix(postfix)
         
         return x, y, r, v, theta, c
     
@@ -198,11 +264,16 @@ class SequentialFrameRenderer(MseRenderer):
         opacity_reduction_factor = adaptive_config.get('opacity_reduction_factor', 0.5)
         max_primitives_per_tile = adaptive_config.get('max_primitives_per_tile', 3)
         
-        # Clone parameters to avoid modifying originals
-        v_adapted = v.clone()
+        # Create new leaf tensors to avoid non-leaf tensor issues
+        x_adapted = x.detach().clone().requires_grad_(True)
+        y_adapted = y.detach().clone().requires_grad_(True)
+        r_adapted = r.detach().clone().requires_grad_(True)
+        v_adapted = v.detach().clone().requires_grad_(True)
+        theta_adapted = theta.detach().clone().requires_grad_(True)
+        c_adapted = c.detach().clone().requires_grad_(True)
         
         # Get canvas dimensions
-        canvas_height, canvas_width = self.canvas_size
+        canvas_height, canvas_width = self.H, self.W
         
         # Calculate tile dimensions
         tile_height = canvas_height // tile_rows
@@ -218,8 +289,8 @@ class SequentialFrameRenderer(MseRenderer):
                 x_max = (col + 1) * tile_width
                 
                 # Find primitives in this tile
-                in_tile_mask = ((x >= x_min) & (x < x_max) & 
-                               (y >= y_min) & (y < y_max))
+                in_tile_mask = ((x_adapted >= x_min) & (x_adapted < x_max) & 
+                               (y_adapted >= y_min) & (y_adapted < y_max))
                 
                 if not in_tile_mask.any():
                     continue
@@ -229,22 +300,31 @@ class SequentialFrameRenderer(MseRenderer):
                 
                 # Apply criteria to find problematic primitives
                 problematic_indices = self._find_problematic_primitives(
-                    tile_indices, x, y, r, v, theta, c,
+                    tile_indices, x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
                     scale_threshold, opacity_threshold
                 )
                 
                 # Limit to max primitives per tile
                 if len(problematic_indices) > max_primitives_per_tile:
                     # Sort by combined score (scale * opacity) and take top ones
-                    scores = r[problematic_indices] * torch.sigmoid(v[problematic_indices])
+                    scores = r_adapted[problematic_indices] * torch.sigmoid(v_adapted[problematic_indices])
                     _, top_indices = torch.topk(scores, max_primitives_per_tile)
                     problematic_indices = problematic_indices[top_indices]
                 
                 # Apply opacity reduction
                 if len(problematic_indices) > 0:
-                    v_adapted[problematic_indices] *= opacity_reduction_factor
+                    v_adapted = v_adapted.clone()
+                    v_adapted[problematic_indices] = v_adapted[problematic_indices] * opacity_reduction_factor
         
-        return x, y, r, v_adapted, theta, c
+        # Ensure all returned tensors are leaf tensors for optimizer compatibility
+        x_adapted = x_adapted.detach().requires_grad_(True)
+        y_adapted = y_adapted.detach().requires_grad_(True)
+        r_adapted = r_adapted.detach().requires_grad_(True)
+        v_adapted = v_adapted.detach().requires_grad_(True)
+        theta_adapted = theta_adapted.detach().requires_grad_(True)
+        c_adapted = c_adapted.detach().requires_grad_(True)
+        
+        return x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted
     
     def _find_problematic_primitives(self, 
                                    tile_indices: torch.Tensor,
@@ -272,8 +352,8 @@ class SequentialFrameRenderer(MseRenderer):
         tile_r = r[tile_indices]
         tile_v = v[tile_indices]
         
-        # Convert visibility to opacity using sigmoid
-        tile_opacity = torch.sigmoid(tile_v)
+        # Convert visibility to opacity using sigmoid (matching vector_renderer.py)
+        tile_opacity = self.alpha_upper_bound * torch.sigmoid(tile_v)
         
         # Criterion 1: Large scale primitives
         large_scale_mask = tile_r >= scale_threshold
@@ -282,11 +362,17 @@ class SequentialFrameRenderer(MseRenderer):
         high_opacity_mask = tile_opacity >= opacity_threshold
         
         # Criterion 3: Front primitives (those with higher z-order)
-        # We'll use a combination of scale and opacity as a proxy for "frontness"
-        # since larger, more opaque primitives are more likely to occlude others
-        frontness_score = tile_r * tile_opacity
-        frontness_threshold = torch.quantile(frontness_score, 0.7)  # Top 30%
-        front_mask = frontness_score >= frontness_threshold
+        # In splatting, higher array indices are rendered later, thus appearing in front
+        # We consider primitives in the top 30% of indices within this tile as "front"
+        if len(tile_indices) > 0:
+            tile_indices_sorted = torch.sort(tile_indices)[0]  # Sort tile indices
+            front_threshold_idx = int(len(tile_indices_sorted) * 0.7)  # Top 30%
+            front_indices_threshold = tile_indices_sorted[front_threshold_idx] if front_threshold_idx < len(tile_indices_sorted) else tile_indices_sorted[-1]
+            
+            # Create mask for primitives that are in the front (high z-order) - vectorized
+            front_mask = tile_indices >= front_indices_threshold
+        else:
+            front_mask = torch.tensor([], dtype=torch.bool, device=tile_indices.device)
         
         # Combine all criteria (primitives that meet at least 2 out of 3 criteria)
         criteria_count = large_scale_mask.float() + high_opacity_mask.float() + front_mask.float()

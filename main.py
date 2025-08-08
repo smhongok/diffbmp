@@ -273,9 +273,9 @@ if sequential_config.get("enabled", False):
             
             # Add adaptive control configuration to optimization config
             adaptive_control_config = sequential_config.get("adaptive_control", {})
-            print(f"[DEBUG] Extracted adaptive_control_config from sequential_config: {adaptive_control_config}")
+            # print(f"[DEBUG] Extracted adaptive_control_config from sequential_config: {adaptive_control_config}")
             optimization_config["adaptive_control"] = adaptive_control_config
-            print(f"[DEBUG] Final optimization_config with adaptive_control: {optimization_config}")
+            # print(f"[DEBUG] Final optimization_config with adaptive_control: {optimization_config}")
             
             # Choose optimization strategy
             start_time_frame = time.time()
