@@ -113,7 +113,27 @@ class SimpleTileRenderer(VectorRenderer):
             
         output = torch.zeros((self.H, self.W, 3), device=self.device, dtype=dtype)
         
-        # Process each tile
+        # Choose processing method based on tile count and device
+        total_tiles = self.tiles_h * self.tiles_w
+        use_parallel = total_tiles > 4 and torch.cuda.is_available()  # Parallel for larger tile counts
+        
+        if use_parallel:
+            output = self._process_tiles_parallel(x, y, r, theta, v, c, sigma, I_bg, no_background, global_bmp_sel, output)
+        else:
+            output = self._process_tiles_sequential(x, y, r, theta, v, c, sigma, I_bg, no_background, global_bmp_sel, output)
+                
+        if return_alpha:
+            # For simplicity, return dummy alpha for now
+            alpha = torch.ones((self.H, self.W), device=self.device, dtype=dtype)
+            return output, alpha
+        
+        return output
+    
+    def _process_tiles_sequential(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
+                                 theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
+                                 sigma: float, I_bg: torch.Tensor, no_background: bool,
+                                 global_bmp_sel: torch.Tensor, output: torch.Tensor) -> torch.Tensor:
+        """Sequential tile processing (original method)."""
         for tile_y in range(self.tiles_h):
             for tile_x in range(self.tiles_w):
                 # Calculate tile boundaries
@@ -140,13 +160,91 @@ class SimpleTileRenderer(VectorRenderer):
                 
                 # Place result in output canvas
                 output[y_start:y_end, x_start:x_end] = tile_result
-                
-        if return_alpha:
-            # For simplicity, return dummy alpha for now
-            alpha = torch.ones((self.H, self.W), device=self.device, dtype=dtype)
-            return output, alpha
         
         return output
+    
+    def _process_tiles_parallel(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
+                               theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
+                               sigma: float, I_bg: torch.Tensor, no_background: bool,
+                               global_bmp_sel: torch.Tensor, output: torch.Tensor) -> torch.Tensor:
+        """True vectorized tile processing using PyTorch operations."""
+        
+        # Pre-compute all tile boundaries
+        total_tiles = self.tiles_h * self.tiles_w
+        tile_y_coords = torch.arange(self.tiles_h, device=self.device).repeat_interleave(self.tiles_w)
+        tile_x_coords = torch.arange(self.tiles_w, device=self.device).repeat(self.tiles_h)
+        
+        y_starts = tile_y_coords * self.tile_size
+        y_ends = torch.clamp(y_starts + self.tile_size, max=self.H)
+        x_starts = tile_x_coords * self.tile_size
+        x_ends = torch.clamp(x_starts + self.tile_size, max=self.W)
+        
+        # Vectorized primitive-to-tile assignment
+        primitive_tile_masks = self._vectorized_primitive_assignment(
+            x, y, r, theta, x_starts, x_ends, y_starts, y_ends
+        )
+        
+        # Process tiles with primitives
+        for tile_idx in range(total_tiles):
+            # Get primitives affecting this tile
+            tile_mask = primitive_tile_masks[tile_idx]
+            if not tile_mask.any():
+                continue
+                
+            primitive_indices = torch.nonzero(tile_mask, as_tuple=True)[0].tolist()
+            
+            # Render this tile
+            tile_result = self._render_tile(
+                x, y, r, theta, v, c, primitive_indices,
+                x_starts[tile_idx].item(), x_ends[tile_idx].item(),
+                y_starts[tile_idx].item(), y_ends[tile_idx].item(),
+                sigma, I_bg, no_background, global_bmp_sel=global_bmp_sel
+            )
+            
+            # Place result in output canvas
+            y_start, y_end = y_starts[tile_idx].item(), y_ends[tile_idx].item()
+            x_start, x_end = x_starts[tile_idx].item(), x_ends[tile_idx].item()
+            output[y_start:y_end, x_start:x_end] = tile_result
+        
+        return output
+    
+    def _vectorized_primitive_assignment(self, x: torch.Tensor, y: torch.Tensor, 
+                                       r: torch.Tensor, theta: torch.Tensor,
+                                       x_starts: torch.Tensor, x_ends: torch.Tensor,
+                                       y_starts: torch.Tensor, y_ends: torch.Tensor) -> torch.Tensor:
+        """Vectorized computation of which primitives affect which tiles."""
+        N = len(x)
+        total_tiles = len(x_starts)
+        
+        # Expand dimensions for broadcasting: (N, 1) and (1, total_tiles)
+        x_exp = x.unsqueeze(1)  # (N, 1)
+        y_exp = y.unsqueeze(1)  # (N, 1)
+        r_exp = r.unsqueeze(1)  # (N, 1)
+        
+        x_starts_exp = x_starts.unsqueeze(0)  # (1, total_tiles)
+        x_ends_exp = x_ends.unsqueeze(0)      # (1, total_tiles)
+        y_starts_exp = y_starts.unsqueeze(0)  # (1, total_tiles)
+        y_ends_exp = y_ends.unsqueeze(0)      # (1, total_tiles)
+        
+        # Compute primitive bounding boxes (considering rotation and radius)
+        # For simplicity, use conservative bounding box: center ± (r * sqrt(2))
+        bbox_margin = r_exp * 1.5  # Conservative margin for rotation
+        
+        prim_x_min = x_exp - bbox_margin
+        prim_x_max = x_exp + bbox_margin
+        prim_y_min = y_exp - bbox_margin
+        prim_y_max = y_exp + bbox_margin
+        
+        # Check intersection: primitive bbox overlaps with tile bbox
+        # Intersection condition: not (prim_max < tile_min or prim_min > tile_max)
+        x_intersect = ~((prim_x_max < x_starts_exp) | (prim_x_min > x_ends_exp))
+        y_intersect = ~((prim_y_max < y_starts_exp) | (prim_y_min > y_ends_exp))
+        
+        # Both x and y must intersect
+        intersections = x_intersect & y_intersect  # (N, total_tiles)
+        
+        # Transpose to get (total_tiles, N) - each row is primitives affecting that tile
+        return intersections.t()
     
     def render(self, cached_masks: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
                return_alpha: bool = False, I_bg: torch.Tensor = None,
