@@ -282,6 +282,19 @@ if sequential_config.get("enabled", False):
 
             if combined_loss_config.get("enabled", False):  
                 print(f"Using combined loss with weights - grayscale: {combined_loss_config.get('grayscale_weight', 0.7)}, color: {combined_loss_config.get('color_weight', 0.3)}, canny: {combined_loss_config.get('canny_weight', 0.1) }")
+            else:
+                print("Using standard loss")
+
+            if adaptive_control_config.get("enabled", False):
+                print("Using adaptive control")
+                color_nerf_config = adaptive_control_config.get("color_nerf", {})
+                if color_nerf_config.get("enabled", False):
+                    mode = color_nerf_config.get("mode", "mean")
+                    print(f"Using color nerf (mode: {mode})")
+                else:
+                    print("Not using color nerf")
+            else:
+                print("Not using adaptive control")
 
             # Choose optimization strategy
             start_time_frame = time.time()

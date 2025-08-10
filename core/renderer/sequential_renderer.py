@@ -165,7 +165,7 @@ class SequentialFrameRenderer(MseRenderer):
                 
                 # Apply adaptive control and get new leaf tensors
                 x, y, r, v, theta, c = self.apply_adaptive_control(
-                    x, y, r, v, theta, c, adaptive_config)
+                    x, y, r, v, theta, c, target, adaptive_config)
                 
                 # Update optimizer parameters with new tensors
                 optimizer.param_groups[0]['params'] = [x]
@@ -208,12 +208,14 @@ class SequentialFrameRenderer(MseRenderer):
     def apply_adaptive_control(self, 
                              x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
                              v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
+                             target_image: torch.Tensor,
                              adaptive_config: dict = None) -> tuple:
         """
         Apply adaptive control to reduce artifacts by lowering opacity of problematic primitives.
         
         Args:
             x, y, r, v, theta, c: Current primitive parameters
+            target_image: Target image tensor [H, W, 3] for pixel-based color_nerf
             adaptive_config: Configuration dict for adaptive control
             
         Returns:
@@ -229,6 +231,11 @@ class SequentialFrameRenderer(MseRenderer):
         opacity_threshold = adaptive_config.get('opacity_threshold', 0.7)
         opacity_reduction_factor = adaptive_config.get('opacity_reduction_factor', 0.5)
         max_primitives_per_tile = adaptive_config.get('max_primitives_per_tile', 3)
+        
+        # Extract color_nerf configuration
+        color_nerf_config = adaptive_config.get('color_nerf', {})
+        color_nerf_enabled = color_nerf_config.get('enabled', False)
+        color_nerf_mode = color_nerf_config.get('mode', 'mean')
         
         # Create new leaf tensors - single detach operation
         x_adapted = x.detach().requires_grad_(True)
@@ -281,6 +288,11 @@ class SequentialFrameRenderer(MseRenderer):
                 if len(problematic_indices) > 0:
                     with torch.no_grad():
                         v_adapted[problematic_indices] *= opacity_reduction_factor
+                
+                # Apply color normalization (color_nerf) if enabled
+                if color_nerf_enabled:
+                    self._apply_color_nerf(tile_indices, problematic_indices, c_adapted, 
+                                          x_adapted, y_adapted, target_image, color_nerf_mode)
         
         return x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted
     
@@ -343,3 +355,42 @@ class SequentialFrameRenderer(MseRenderer):
             return torch.tensor([], dtype=torch.long, device=x.device)
         
         return tile_indices[problematic_tile_indices]
+
+    def _apply_color_nerf(self, 
+                         tile_indices: torch.Tensor,
+                         selected_indices: torch.Tensor,
+                         c: torch.Tensor,
+                         x: torch.Tensor,
+                         y: torch.Tensor,
+                         target_image: torch.Tensor,
+                         mode: str = "mean") -> None:
+        """
+        Apply color normalization (color_nerf) to selected primitives within a tile.
+        
+        Args:
+            tile_indices: Indices of all primitives in the current tile
+            selected_indices: Indices of selected problematic primitives to modify
+            c: Color tensor to modify in-place
+            x: X coordinates of primitives
+            y: Y coordinates of primitives
+            target_image: Target image tensor [H, W, 3]
+            mode: "mean" for tile mean color, "pixel" for target image pixel color
+        """
+        if len(tile_indices) == 0 or len(selected_indices) == 0:
+            return
+        
+        with torch.no_grad():
+            if mode == "mean":
+                # Compute mean color of all primitives in the tile
+                tile_colors = c[tile_indices]  # Shape: [num_tile_primitives, 3]
+                mean_color = torch.mean(tile_colors, dim=0, keepdim=True)  # Shape: [1, 3]
+                c[selected_indices] = mean_color.expand(len(selected_indices), -1)
+                
+            elif mode == "pixel":
+                # Get target image pixel colors at primitive positions
+                selected_x = x[selected_indices].long().clamp(0, target_image.shape[1] - 1)
+                selected_y = y[selected_indices].long().clamp(0, target_image.shape[0] - 1)
+                
+                # Sample colors from target image at primitive positions
+                pixel_colors = target_image[selected_y, selected_x]  # Shape: [num_selected, 3]
+                c[selected_indices] = pixel_colors

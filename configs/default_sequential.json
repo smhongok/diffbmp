@@ -5,7 +5,7 @@
     "FM_halftone": false,
     "transform": "none",
     "img_path": [
-      "images/gif/nevergonnagiveyouup.gif"
+      "images/gif/green_jumper.gif"
     ],
     "bg_threshold": 250,
     "do_equalize": false,
@@ -121,13 +121,17 @@
       "tile_rows": 8,
       "tile_cols": 8,
       "scale_threshold": 8.0,
-      "opacity_threshold": 0.3,
-      "opacity_reduction_factor": 0.3,
-      "max_primitives_per_tile": 8,
-      "apply_every_n_iterations": 10
+      "opacity_threshold": 0.5,
+      "opacity_reduction_factor": 0.4,
+      "max_primitives_per_tile": 6,
+      "apply_every_n_iterations": 10,
+      "color_nerf": {
+        "enabled": true,
+        "mode": "pixel"
+      }
     },
     "combined_loss": {
-      "enabled": true,
+      "enabled": false,
       "grayscale_weight": 0.3,
       "color_weight": 0.7,
       "use_gradient_loss": false,
@@ -146,7 +150,7 @@
     }
   },
   "postprocessing": {
-    "output_folder": "./outputs/nevergonnagiveyouup/adaptive_n_combined",
+    "output_folder": "./outputs/green_jumper/adaptive_color_nerf",
     "hires_export": false,
     "hires_scale_factor": 4.0,
     "compute_psnr": false,
