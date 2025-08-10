@@ -277,6 +277,12 @@ if sequential_config.get("enabled", False):
             optimization_config["adaptive_control"] = adaptive_control_config
             # print(f"[DEBUG] Final optimization_config with adaptive_control: {optimization_config}")
             
+            combined_loss_config = sequential_config.get("combined_loss", {})
+            optimization_config["combined_loss"] = combined_loss_config
+
+            if combined_loss_config.get("enabled", False):  
+                print(f"Using combined loss with weights - grayscale: {combined_loss_config.get('grayscale_weight', 0.7)}, color: {combined_loss_config.get('color_weight', 0.3)}, canny: {combined_loss_config.get('canny_weight', 0.1) }")
+
             # Choose optimization strategy
             start_time_frame = time.time()
             x, y, r, v, theta, c = sequential_renderer.optimize_parameters_full_temporal(

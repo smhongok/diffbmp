@@ -5,7 +5,7 @@
     "FM_halftone": false,
     "transform": "none",
     "img_path": [
-      "images/gif/simpson_jumping.gif"
+      "images/gif/nevergonnagiveyouup.gif"
     ],
     "bg_threshold": 250,
     "do_equalize": false,
@@ -120,11 +120,23 @@
       "enabled": true,
       "tile_rows": 8,
       "tile_cols": 8,
-      "scale_threshold": 12.0,
-      "opacity_threshold": 0.6,
+      "scale_threshold": 8.0,
+      "opacity_threshold": 0.3,
       "opacity_reduction_factor": 0.3,
-      "max_primitives_per_tile": 3,
-      "apply_every_n_iterations": 5
+      "max_primitives_per_tile": 8,
+      "apply_every_n_iterations": 10
+    },
+    "combined_loss": {
+      "enabled": true,
+      "grayscale_weight": 0.3,
+      "color_weight": 0.7,
+      "use_gradient_loss": false,
+      "gradient_weight": 0.1,
+      "use_cosine_similarity": false,
+      "use_canny_loss": true,
+      "canny_weight": 0.2,
+      "canny_low_threshold": 0.1,
+      "canny_high_threshold": 0.2
     },
     "export": {
       "export_frames": true,
@@ -134,7 +146,7 @@
     }
   },
   "postprocessing": {
-    "output_folder": "./outputs/",
+    "output_folder": "./outputs/nevergonnagiveyouup/adaptive_n_combined",
     "hires_export": false,
     "hires_scale_factor": 4.0,
     "compute_psnr": false,

@@ -48,8 +48,30 @@ class SequentialFrameRenderer(MseRenderer):
         else:
             warmup_multiplier = 1.0
         
-        # Base reconstruction loss with warmup
-        reconstruction_loss = self.compute_loss(rendered, target, x, y, r, v, theta, c)
+        # Check if combined loss is enabled
+        combined_loss_config = loss_config.get('combined_loss', {})
+        use_combined_loss = combined_loss_config.get('enabled', False)
+        
+        if use_combined_loss:
+            # Use combined loss with grayscale, color, gradient, and canny components
+            reconstruction_loss = self.compute_combined_loss(
+                rendered, target, x, y, r, v, theta, c,
+                grayscale_weight=combined_loss_config.get('grayscale_weight', 0.7),
+                color_weight=combined_loss_config.get('color_weight', 0.3),
+                use_gradient_loss=combined_loss_config.get('use_gradient_loss', False),
+                gradient_weight=combined_loss_config.get('gradient_weight', 0.1),
+                use_cosine_similarity=combined_loss_config.get('use_cosine_similarity', False),
+                use_canny_loss=combined_loss_config.get('use_canny_loss', False),
+                canny_weight=combined_loss_config.get('canny_weight', 0.1),
+                canny_low_threshold=combined_loss_config.get('canny_low_threshold', 0.1),
+                canny_high_threshold=combined_loss_config.get('canny_high_threshold', 0.2)
+            )
+            
+        else:
+            # Use standard loss
+            reconstruction_loss = self.compute_loss(rendered, target, x, y, r, v, theta, c)
+            
+        
         reconstruction_weight = loss_config.get('reconstruction_weight', 1.0)
         total_loss = reconstruction_weight * reconstruction_loss * warmup_multiplier
         
@@ -105,13 +127,13 @@ class SequentialFrameRenderer(MseRenderer):
         if opt_conf is None:
             opt_conf = {"num_iterations": 50, "learning_rate": {"default": 0.005}, "decay_rate": 0.95}
         
-        # Enable gradients for all parameters
-        x.requires_grad_(True)
-        y.requires_grad_(True)
-        r.requires_grad_(True)
-        v.requires_grad_(True)
-        theta.requires_grad_(True)
-        c.requires_grad_(True)
+        # Ensure all parameters are leaf tensors with gradients enabled
+        x = x.detach().requires_grad_(True)
+        y = y.detach().requires_grad_(True)
+        r = r.detach().requires_grad_(True)
+        v = v.detach().requires_grad_(True)
+        theta = theta.detach().requires_grad_(True)
+        c = c.detach().requires_grad_(True)
         
         # Extract learning rate configuration
         lr_config = self._extract_learning_rates(opt_conf)
@@ -130,112 +152,56 @@ class SequentialFrameRenderer(MseRenderer):
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=lr_config['decay_rate'])
         
         num_iter = opt_conf.get("num_iterations", opt_conf.get("num_iter", 50))
-        
-        pbar = tqdm(range(num_iter), desc="Optimizing with warmup scheduling")
-        
-        # Get adaptive control configuration
         adaptive_config = opt_conf.get('adaptive_control', {})
         apply_every_n = adaptive_config.get('apply_every_n_iterations', 10)
         
-        # Debug: Print adaptive control configuration
-        # print(f"[DEBUG] Adaptive control config received: {adaptive_config}")
-        # print(f"[DEBUG] Adaptive control enabled: {adaptive_config.get('enabled', False)}")
+        pbar = tqdm(range(num_iter), desc="Optimizing with warmup scheduling")
         
-        # Run optimization in phases if adaptive control is enabled
-        if adaptive_config.get('enabled', False):
-            # Run optimization in chunks with adaptive control between them
-            current_iter = 0
-            while current_iter < num_iter:
-                # Determine how many iterations to run in this phase
-                phase_iters = min(apply_every_n, num_iter - current_iter)
+        # Main optimization loop
+        for i in pbar:
+            # Apply adaptive control periodically if enabled
+            if (adaptive_config.get('enabled', False) and 
+                i > 0 and i % apply_every_n == 0):
                 
-                # Apply adaptive control at the beginning of each phase (except first)
-                if current_iter > 0:
-                    #print(f"[DEBUG] Applying adaptive control at iteration {current_iter}")
-                    # Detach and re-enable gradients to break computational graph
-                    x = x.detach().requires_grad_(True)
-                    y = y.detach().requires_grad_(True)
-                    r = r.detach().requires_grad_(True)
-                    v = v.detach().requires_grad_(True)
-                    theta = theta.detach().requires_grad_(True)
-                    c = c.detach().requires_grad_(True)
-                    
-                    # Apply adaptive control
-                    x, y, r, v, theta, c = self.apply_adaptive_control(x, y, r, v, theta, c, adaptive_config)
-                    
-                    # Recreate optimizer with new parameters
-                    optimizer = torch.optim.Adam([
-                        {'params': [x], 'lr': lr_config['default_lr'] * lr_config['gain_x']},
-                        {'params': [y], 'lr': lr_config['default_lr'] * lr_config['gain_y']},
-                        {'params': [r], 'lr': lr_config['default_lr'] * lr_config['gain_r']},
-                        {'params': [v], 'lr': lr_config['default_lr'] * lr_config['gain_v']},
-                        {'params': [theta], 'lr': lr_config['default_lr'] * lr_config['gain_theta']},
-                        {'params': [c], 'lr': lr_config['default_lr'] * lr_config['gain_c']}
-                    ])
-                    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=lr_config['decay_rate'])
-                    # Advance scheduler to current position
-                    for _ in range(current_iter):
-                        scheduler.step()
-                    
-                    #print(f"[DEBUG] Adaptive control applied successfully")
+                # Apply adaptive control and get new leaf tensors
+                x, y, r, v, theta, c = self.apply_adaptive_control(
+                    x, y, r, v, theta, c, adaptive_config)
                 
-                # Run optimization for this phase
-                phase_pbar = tqdm(range(phase_iters), desc=f"Phase {current_iter//apply_every_n + 1}", leave=False)
-                for phase_i in phase_pbar:
-                    optimizer.zero_grad()
-                    
-                    # Generate masks and render
-                    cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=0)
-                    rendered = self.render(cached_masks, v, c)
-                    
-                    # Compute loss with warmup scheduling
-                    loss_config = {
-                        'reconstruction_weight': 1.0,
-                        'warmup_steps': opt_conf.get('warmup_steps', 0)
-                    }
-                    loss = self.compute_loss_with_warmup(
-                        rendered, target, x, y, theta, r, v, c, 
-                        loss_config, current_iter + phase_i, num_iter
-                    )
-                    
-                    loss.backward()
-                    optimizer.step()
-                    scheduler.step()
-                    
-                    # Update progress bar
-                    postfix = {'loss': f'{loss.item():.6f}', 'lr': f'{scheduler.get_last_lr()[0]:.6f}'}
-                    if current_iter > 0 and phase_i == 0:
-                        postfix['adaptive'] = 'applied'
-                    phase_pbar.set_postfix(postfix)
-                    pbar.update(1)
-                
-                current_iter += phase_iters
-        else:
-            # Standard optimization without adaptive control
-            for i in pbar:
-                optimizer.zero_grad()
-                
-                # Generate masks and render
-                cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=0)
-                rendered = self.render(cached_masks, v, c)
-                
-                # Compute loss with warmup scheduling
-                loss_config = {
-                    'reconstruction_weight': 1.0,
-                    'warmup_steps': opt_conf.get('warmup_steps', 0)
-                }
-                loss = self.compute_loss_with_warmup(
-                    rendered, target, x, y, theta, r, v, c, 
-                    loss_config, i, num_iter
-                )
-                
-                loss.backward()
-                optimizer.step()
-                scheduler.step()
-                
-                # Update progress bar
-                postfix = {'loss': f'{loss.item():.6f}', 'lr': f'{scheduler.get_last_lr()[0]:.6f}'}
-                pbar.set_postfix(postfix)
+                # Update optimizer parameters with new tensors
+                optimizer.param_groups[0]['params'] = [x]
+                optimizer.param_groups[1]['params'] = [y]
+                optimizer.param_groups[2]['params'] = [r]
+                optimizer.param_groups[3]['params'] = [v]
+                optimizer.param_groups[4]['params'] = [theta]
+                optimizer.param_groups[5]['params'] = [c]
+            
+            optimizer.zero_grad()
+            
+            # Generate masks and render
+            cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=0)
+            rendered = self.render(cached_masks, v, c)
+            
+            # Compute loss with warmup scheduling
+            loss_config = {
+                'reconstruction_weight': 1.0,
+                'warmup_steps': opt_conf.get('warmup_steps', 0),
+                'combined_loss': opt_conf.get('combined_loss', {})
+            }
+            loss = self.compute_loss_with_warmup(
+                rendered, target, x, y, theta, r, v, c, 
+                loss_config, i, num_iter
+            )
+            
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            
+            # Update progress bar
+            postfix = {'loss': f'{loss.item():.6f}', 'lr': f'{scheduler.get_last_lr()[0]:.6f}'}
+            if (adaptive_config.get('enabled', False) and 
+                i > 0 and i % apply_every_n == 0):
+                postfix['adaptive'] = 'applied'
+            pbar.set_postfix(postfix)
         
         return x, y, r, v, theta, c
     
@@ -264,13 +230,13 @@ class SequentialFrameRenderer(MseRenderer):
         opacity_reduction_factor = adaptive_config.get('opacity_reduction_factor', 0.5)
         max_primitives_per_tile = adaptive_config.get('max_primitives_per_tile', 3)
         
-        # Create new leaf tensors to avoid non-leaf tensor issues
-        x_adapted = x.detach().clone().requires_grad_(True)
-        y_adapted = y.detach().clone().requires_grad_(True)
-        r_adapted = r.detach().clone().requires_grad_(True)
-        v_adapted = v.detach().clone().requires_grad_(True)
-        theta_adapted = theta.detach().clone().requires_grad_(True)
-        c_adapted = c.detach().clone().requires_grad_(True)
+        # Create new leaf tensors - single detach operation
+        x_adapted = x.detach().requires_grad_(True)
+        y_adapted = y.detach().requires_grad_(True)
+        r_adapted = r.detach().requires_grad_(True)
+        v_adapted = v.detach().requires_grad_(True)
+        theta_adapted = theta.detach().requires_grad_(True)
+        c_adapted = c.detach().requires_grad_(True)
         
         # Get canvas dimensions
         canvas_height, canvas_width = self.H, self.W
@@ -311,18 +277,10 @@ class SequentialFrameRenderer(MseRenderer):
                     _, top_indices = torch.topk(scores, max_primitives_per_tile)
                     problematic_indices = problematic_indices[top_indices]
                 
-                # Apply opacity reduction
+                # Apply opacity reduction using in-place operation to maintain leaf tensor status
                 if len(problematic_indices) > 0:
-                    v_adapted = v_adapted.clone()
-                    v_adapted[problematic_indices] = v_adapted[problematic_indices] * opacity_reduction_factor
-        
-        # Ensure all returned tensors are leaf tensors for optimizer compatibility
-        x_adapted = x_adapted.detach().requires_grad_(True)
-        y_adapted = y_adapted.detach().requires_grad_(True)
-        r_adapted = r_adapted.detach().requires_grad_(True)
-        v_adapted = v_adapted.detach().requires_grad_(True)
-        theta_adapted = theta_adapted.detach().requires_grad_(True)
-        c_adapted = c_adapted.detach().requires_grad_(True)
+                    with torch.no_grad():
+                        v_adapted[problematic_indices] *= opacity_reduction_factor
         
         return x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted
     
