@@ -528,8 +528,6 @@ class SimpleTileRenderer(VectorRenderer):
         # Try CUDA acceleration if available
         if CUDA_AVAILABLE and len(primitive_indices) > 0:
             try:
-                print(f"[DEBUG] Using CUDA for tile ({x_start}-{x_end}, {y_start}-{y_end}) with {len(primitive_indices)} primitives")
-                
                 # Prepare data for CUDA - ensure all tensors are float32
                 means2D = torch.stack([tile_x, tile_y], dim=1).float()  # (N, 2)
                 radii = tile_r.float()  # (N,)
@@ -555,10 +553,7 @@ class SimpleTileRenderer(VectorRenderer):
                 comp_m = cuda_color
                 comp_a = cuda_alpha
                 
-                print(f"[DEBUG] CUDA tile rendering successful: {comp_m.shape}, {comp_a.shape}")
-                
             except Exception as e:
-                print(f"[DEBUG] CUDA failed, falling back to PyTorch: {e}")
                 # Fallback to PyTorch
                 tile_masks = self._generate_tile_masks(
                     tile_x, tile_y, tile_r, tile_theta, tile_X, tile_Y, sigma,
@@ -579,7 +574,6 @@ class SimpleTileRenderer(VectorRenderer):
                 # Composite using parent's function
                 comp_m, comp_a = self._transmit_over(m, a)
         else:
-            print(f"[DEBUG] Using PyTorch fallback for tile ({x_start}-{x_end}, {y_start}-{y_end})")
             # Generate masks for selected primitives in this tile
             tile_masks = self._generate_tile_masks(
                 tile_x, tile_y, tile_r, tile_theta, tile_X, tile_Y, sigma,
