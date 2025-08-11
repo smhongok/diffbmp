@@ -3,6 +3,22 @@ import torch.nn.functional as F
 from typing import Tuple, List
 from .vector_renderer import VectorRenderer
 
+# Try to import CUDA extension, fallback to PyTorch if not available
+try:
+    import sys
+    import os
+    # Add CUDA extension path to sys.path
+    cuda_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cuda_tile_rasterizer')
+    if cuda_path not in sys.path:
+        sys.path.insert(0, cuda_path)
+    
+    from cuda_tile_rasterizer import rasterize_tiles as cuda_rasterize_tiles
+    CUDA_AVAILABLE = True
+    print("CUDA tile rasterizer loaded successfully!")
+except ImportError as e:
+    CUDA_AVAILABLE = False
+    print(f"CUDA tile rasterizer not available, using PyTorch fallback: {e}")
+
 
 class SimpleTileRenderer(VectorRenderer):
     """
@@ -509,25 +525,80 @@ class SimpleTileRenderer(VectorRenderer):
         tile_X = self.X[:, y_start:y_end, x_start:x_end]  # (1, tile_h, tile_w)
         tile_Y = self.Y[:, y_start:y_end, x_start:x_end]  # (1, tile_h, tile_w)
         
-        # Generate masks for selected primitives in this tile
-        tile_masks = self._generate_tile_masks(
-            tile_x, tile_y, tile_r, tile_theta, tile_X, tile_Y, sigma,
-            global_primitive_indices=primitive_indices,
-            global_bmp_sel=global_bmp_sel
-        )
-        
-        # Convert logits to actual values
-        alpha = torch.sigmoid(tile_v) * self.alpha_upper_bound
-        rgb = torch.sigmoid(tile_c)
-        
-        # Apply alpha to masks
-        a = tile_masks * alpha.view(-1, 1, 1)
-        
-        # Create premultiplied colors
-        m = a.unsqueeze(-1) * rgb.view(-1, 1, 1, 3)
-        
-        # Composite using parent's function
-        comp_m, comp_a = self._transmit_over(m, a)
+        # Try CUDA acceleration if available
+        if CUDA_AVAILABLE and len(primitive_indices) > 0:
+            try:
+                print(f"[DEBUG] Using CUDA for tile ({x_start}-{x_end}, {y_start}-{y_end}) with {len(primitive_indices)} primitives")
+                
+                # Prepare data for CUDA - ensure all tensors are float32
+                means2D = torch.stack([tile_x, tile_y], dim=1).float()  # (N, 2)
+                radii = tile_r.float()  # (N,)
+                rotations = tile_theta.float()  # (N,)
+                opacities = tile_v.float()  # (N,) logits
+                colors = tile_c.float()  # (N, 3) logits
+                
+                # Get primitive templates for selected primitives
+                if global_bmp_sel is not None:
+                    selected_templates = global_bmp_sel[primitive_indices].float()  # (N, H, W)
+                else:
+                    # Use default templates
+                    selected_templates = self.S[primitive_indices].float()  # (N, H, W)
+                
+                # Call CUDA rasterizer
+                cuda_color, cuda_alpha = cuda_rasterize_tiles(
+                    means2D, radii, rotations, opacities, colors,
+                    selected_templates, tile_h, tile_w, 
+                    min(tile_h, tile_w), sigma  # Use smaller dimension as tile_size
+                )
+                
+                # CUDA returns (H, W, 3) and (H, W)
+                comp_m = cuda_color
+                comp_a = cuda_alpha
+                
+                print(f"[DEBUG] CUDA tile rendering successful: {comp_m.shape}, {comp_a.shape}")
+                
+            except Exception as e:
+                print(f"[DEBUG] CUDA failed, falling back to PyTorch: {e}")
+                # Fallback to PyTorch
+                tile_masks = self._generate_tile_masks(
+                    tile_x, tile_y, tile_r, tile_theta, tile_X, tile_Y, sigma,
+                    global_primitive_indices=primitive_indices,
+                    global_bmp_sel=global_bmp_sel
+                )
+                
+                # Convert logits to actual values
+                alpha = torch.sigmoid(tile_v) * self.alpha_upper_bound
+                rgb = torch.sigmoid(tile_c)
+                
+                # Apply alpha to masks
+                a = tile_masks * alpha.view(-1, 1, 1)
+                
+                # Create premultiplied colors
+                m = a.unsqueeze(-1) * rgb.view(-1, 1, 1, 3)
+                
+                # Composite using parent's function
+                comp_m, comp_a = self._transmit_over(m, a)
+        else:
+            print(f"[DEBUG] Using PyTorch fallback for tile ({x_start}-{x_end}, {y_start}-{y_end})")
+            # Generate masks for selected primitives in this tile
+            tile_masks = self._generate_tile_masks(
+                tile_x, tile_y, tile_r, tile_theta, tile_X, tile_Y, sigma,
+                global_primitive_indices=primitive_indices,
+                global_bmp_sel=global_bmp_sel
+            )
+            
+            # Convert logits to actual values
+            alpha = torch.sigmoid(tile_v) * self.alpha_upper_bound
+            rgb = torch.sigmoid(tile_c)
+            
+            # Apply alpha to masks
+            a = tile_masks * alpha.view(-1, 1, 1)
+            
+            # Create premultiplied colors
+            m = a.unsqueeze(-1) * rgb.view(-1, 1, 1, 3)
+            
+            # Composite using parent's function
+            comp_m, comp_a = self._transmit_over(m, a)
         
         # Handle background
         if no_background:
