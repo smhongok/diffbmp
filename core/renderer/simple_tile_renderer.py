@@ -200,7 +200,22 @@ class SimpleTileRenderer(VectorRenderer):
             x, y, r, theta, x_starts, x_ends, y_starts, y_ends
         )
         
-        # Process tiles with primitives
+        # Try true parallel CUDA processing for all tiles at once
+        if CUDA_AVAILABLE:
+            try:
+                # Prepare all data for single CUDA call
+                result = self._cuda_process_all_tiles(
+                    x, y, r, theta, v, c, sigma, I_bg, no_background,
+                    global_bmp_sel, primitive_tile_masks,
+                    x_starts, x_ends, y_starts, y_ends
+                )
+                if result is not None:
+                    return result
+            except Exception as e:
+                # Fallback to sequential processing
+                pass
+        
+        # Fallback: Process tiles with primitives (sequential)
         for tile_idx in range(total_tiles):
             # Get primitives affecting this tile
             tile_mask = primitive_tile_masks[tile_idx]
@@ -223,6 +238,60 @@ class SimpleTileRenderer(VectorRenderer):
             output[y_start:y_end, x_start:x_end] = tile_result
         
         return output
+    
+    def _cuda_process_all_tiles(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
+                               theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
+                               sigma: float, I_bg: torch.Tensor, no_background: bool,
+                               global_bmp_sel: torch.Tensor, primitive_tile_masks: torch.Tensor,
+                               x_starts: torch.Tensor, x_ends: torch.Tensor,
+                               y_starts: torch.Tensor, y_ends: torch.Tensor) -> torch.Tensor:
+        """
+        Process all tiles in parallel using a single CUDA call.
+        This eliminates the Python for-loop and achieves true GPU parallelism.
+        """
+        try:
+            # Prepare data for CUDA - ensure all tensors are float32
+            means2D = torch.stack([x, y], dim=1).float()  # (N, 2)
+            radii = r.float()  # (N,)
+            rotations = theta.float()  # (N,)
+            opacities = v.float()  # (N,) logits
+            colors = c.float()  # (N, 3) logits
+            
+            # Get primitive templates
+            if global_bmp_sel is not None:
+                primitive_templates = global_bmp_sel.float()  # (N, H, W)
+            else:
+                primitive_templates = self.S.float()  # (N, H, W)
+            
+            # Prepare tile information
+            tile_info = torch.stack([
+                x_starts.float(), x_ends.float(),
+                y_starts.float(), y_ends.float()
+            ], dim=1)  # (total_tiles, 4)
+            
+            # Call CUDA rasterizer for all tiles at once
+            cuda_color, cuda_alpha = cuda_rasterize_tiles(
+                means2D, radii, rotations, opacities, colors,
+                primitive_templates, self.H, self.W, 
+                self.tile_size, sigma
+            )
+            
+            # Handle background
+            if no_background:
+                result = cuda_color
+            else:
+                if I_bg is not None:
+                    bg = I_bg
+                else:
+                    bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=cuda_color.dtype)
+                
+                result = cuda_color + (1 - cuda_alpha.unsqueeze(-1)) * bg
+            
+            return result
+            
+        except Exception as e:
+            # Return None to trigger fallback
+            return None
     
     def _vectorized_primitive_assignment(self, x: torch.Tensor, y: torch.Tensor, 
                                        r: torch.Tensor, theta: torch.Tensor,
