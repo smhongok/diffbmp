@@ -8,6 +8,8 @@ import warnings
 import torch
 import torch.nn.functional as F
 import numpy as np
+import matplotlib as mpl
+mpl.use("Agg")  
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from PIL import Image
@@ -17,6 +19,7 @@ import cv2
 from datetime import datetime
 from core.renderer.mse_renderer import MseRenderer
 from core.renderer.sequential_renderer import SequentialFrameRenderer
+from core.renderer.simple_tile_renderer import SimpleTileRenderer
 from util.svg_loader import SVGLoader
 from util.primitive_loader import PrimitiveLoader
 from util.svg_converter import FontParser, ImageToSVG
@@ -191,6 +194,7 @@ except Exception as e:
 renderer_type = opt_conf.get("renderer_type", "mse")
 renderer_class = {
     "mse": MseRenderer,
+    "tile": SimpleTileRenderer,
 }.get(renderer_type.lower())
 
 if renderer_class is None:
@@ -206,11 +210,20 @@ H = preprocessor.final_height
 W = preprocessor.final_width
 
 # Create renderer only when needed - defer instantiation
-renderer = renderer_class((H, W), S=bmp_tensor, 
-                        alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
-                        device=device,
-                        use_fp16=use_fp16,
-                        output_path=config["postprocessing"].get("output_folder", "./outputs/"))
+renderer_kwargs = {
+    "canvas_size": (H, W),
+    "S": bmp_tensor,
+    "alpha_upper_bound": config["optimization"].get("alpha_upper_bound", 0.5),
+    "device": device,
+    "use_fp16": use_fp16,
+    "output_path": config["postprocessing"].get("output_folder", "./outputs/")
+}
+
+# Add tile_size parameter for SimpleTileRenderer
+if renderer_type.lower() == "tile":
+    renderer_kwargs["tile_size"] = opt_conf.get("tile_size", 32)
+
+renderer = renderer_class(**renderer_kwargs)
 print(f"Using {renderer_class.__name__} for optimization")
 
 # Initialize parameters

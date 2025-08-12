@@ -43,6 +43,7 @@ images/gif/*
 wandb
 
 visualization_output
+simple_tile_renderer_test
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
