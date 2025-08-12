@@ -181,11 +181,9 @@ class MseRenderer(VectorRenderer):
                 use_cosine_similarity = xy_opt_conf.get('use_cosine_similarity', False)
                 use_canny_loss = xy_opt_conf.get('use_canny_loss', False)
                 canny_weight = xy_opt_conf.get('canny_weight', 0.1)
-                canny_low_threshold = xy_opt_conf.get('canny_low_threshold', 0.1)
-                canny_high_threshold = xy_opt_conf.get('canny_high_threshold', 0.2)
                 loss = self.compute_combined_loss(rendered, target_image2, x2, y2, r2, v2, theta2, c2, 
                                                 grayscale_weight, color_weight, use_gradient_loss, gradient_weight, use_cosine_similarity,
-                                                use_canny_loss, canny_weight, canny_low_threshold, canny_high_threshold)
+                                                use_canny_loss, canny_weight)
                 if epoch % 20 == 0:
                     gradient_info = " (cosine similarity)" if use_cosine_similarity else " (absolute value)"
                     loss_type = "gradient-based" if use_gradient_loss else "pixel-based"
@@ -427,9 +425,7 @@ class MseRenderer(VectorRenderer):
                      gradient_weight: float = 0.1,
                      use_cosine_similarity: bool = False,
                      use_canny_loss: bool = False,
-                     canny_weight: float = 0.1,
-                     canny_low_threshold: float = 0.1,
-                     canny_high_threshold: float = 0.2) -> torch.Tensor:
+                     canny_weight: float = 0.1) -> torch.Tensor:
         """
         Compute combined loss using both grayscale and color MSE losses.
         This balances structural similarity (grayscale) with color matching.
@@ -445,8 +441,6 @@ class MseRenderer(VectorRenderer):
             use_cosine_similarity: If True, uses cosine similarity for gradient loss
             use_canny_loss: If True, adds Canny edge-based loss for edge similarity
             canny_weight: Weight for Canny edge loss component (default: 0.1)
-            canny_low_threshold: Low threshold for Canny edge detection (default: 0.1)
-            canny_high_threshold: High threshold for Canny edge detection (default: 0.2)
             
         Returns:
             Combined weighted loss value
@@ -479,7 +473,7 @@ class MseRenderer(VectorRenderer):
         
         # Add Canny edge-based loss with its own weight if requested
         if use_canny_loss:
-            canny_loss = self._compute_canny_loss(rendered_gray, target_gray, canny_low_threshold, canny_high_threshold)
+            canny_loss = self._compute_canny_loss(rendered_gray, target_gray)
             combined_loss = combined_loss + canny_weight * canny_loss
         
         return combined_loss
@@ -543,8 +537,7 @@ class MseRenderer(VectorRenderer):
     
         return gradient_loss
 
-    def _compute_canny_loss(self, rendered_gray: torch.Tensor, target_gray: torch.Tensor, 
-                           low_threshold: float = 0.1, high_threshold: float = 0.2) -> torch.Tensor:
+    def _compute_canny_loss(self, rendered_gray: torch.Tensor, target_gray: torch.Tensor) -> torch.Tensor:
         """
         Compute simplified Canny-inspired edge loss between grayscale images.
         Uses differentiable operations to maintain gradient flow during optimization.
@@ -552,8 +545,6 @@ class MseRenderer(VectorRenderer):
         Args:
             rendered_gray: Rendered grayscale image tensor (H, W, 1)
             target_gray: Target grayscale image tensor (H, W, 1)
-            low_threshold: Low threshold for edge detection (default: 0.1)
-            high_threshold: High threshold for edge detection (default: 0.2)
             
         Returns:
             Canny-inspired edge loss value
@@ -594,6 +585,8 @@ class MseRenderer(VectorRenderer):
         
         # Apply soft thresholding using sigmoid function for differentiability
         # This replaces the hard thresholding in traditional Canny
+        # Using fixed thresholds: low=0.1, high=0.2 (commonly used values)
+        high_threshold = 0.2
         steepness = 10.0  # Controls the steepness of the sigmoid
         rendered_edges = torch.sigmoid(steepness * (rendered_norm - high_threshold))
         target_edges = torch.sigmoid(steepness * (target_norm - high_threshold))
@@ -602,6 +595,7 @@ class MseRenderer(VectorRenderer):
         canny_loss = F.mse_loss(rendered_edges, target_edges)
         
         return canny_loss
+
     
     def _get_gaussian_kernel(self, kernel_size: int, sigma: float, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         """

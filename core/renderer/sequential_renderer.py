@@ -62,9 +62,7 @@ class SequentialFrameRenderer(MseRenderer):
                 gradient_weight=combined_loss_config.get('gradient_weight', 0.1),
                 use_cosine_similarity=combined_loss_config.get('use_cosine_similarity', False),
                 use_canny_loss=combined_loss_config.get('use_canny_loss', False),
-                canny_weight=combined_loss_config.get('canny_weight', 0.1),
-                canny_low_threshold=combined_loss_config.get('canny_low_threshold', 0.1),
-                canny_high_threshold=combined_loss_config.get('canny_high_threshold', 0.2)
+                canny_weight=combined_loss_config.get('canny_weight', 0.1)
             )
             
         else:
@@ -128,12 +126,12 @@ class SequentialFrameRenderer(MseRenderer):
             opt_conf = {"num_iterations": 50, "learning_rate": {"default": 0.005}, "decay_rate": 0.95}
         
         # Ensure all parameters are leaf tensors with gradients enabled
-        x = x.detach().requires_grad_(True)
-        y = y.detach().requires_grad_(True)
-        r = r.detach().requires_grad_(True)
-        v = v.detach().requires_grad_(True)
-        theta = theta.detach().requires_grad_(True)
-        c = c.detach().requires_grad_(True)
+        x = x.requires_grad_(True)
+        y = y.requires_grad_(True)
+        r = r.requires_grad_(True)
+        v = v.requires_grad_(True)
+        theta = theta.requires_grad_(True)
+        c = c.requires_grad_(True)
         
         # Extract learning rate configuration
         lr_config = self._extract_learning_rates(opt_conf)

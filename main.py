@@ -269,13 +269,11 @@ if sequential_config.get("enabled", False):
             print(f"Subsequent frame: initializing from frame {frame_idx} with SequentialFrameRenderer")
             
             # Use sequential optimization settings and include adaptive control
-            optimization_config = sequential_config.get("optimization", {}).copy()  # Copy to avoid modifying original
+            optimization_config = sequential_config.get("optimization", {}) 
             
             # Add adaptive control configuration to optimization config
             adaptive_control_config = sequential_config.get("adaptive_control", {})
-            # print(f"[DEBUG] Extracted adaptive_control_config from sequential_config: {adaptive_control_config}")
             optimization_config["adaptive_control"] = adaptive_control_config
-            # print(f"[DEBUG] Final optimization_config with adaptive_control: {optimization_config}")
             
             combined_loss_config = sequential_config.get("combined_loss", {})
             optimization_config["combined_loss"] = combined_loss_config

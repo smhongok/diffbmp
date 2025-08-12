@@ -5,7 +5,7 @@
     "FM_halftone": false,
     "transform": "none",
     "img_path": [
-      "images/gif/green_jumper.gif"
+      "images/gif/simpson_jumping.gif"
     ],
     "bg_threshold": 250,
     "do_equalize": false,
@@ -31,7 +31,7 @@
   },
   "initialization": {
     "initializer": "structure_aware",
-    "N": [2000],
+    "N": [1000],
     "alpha": 0.3,
     "min_distance": 5,
     "peak_threshold": 0.5,
@@ -126,7 +126,7 @@
       "max_primitives_per_tile": 6,
       "apply_every_n_iterations": 10,
       "color_nerf": {
-        "enabled": true,
+        "enabled": false,
         "mode": "pixel"
       }
     },
@@ -138,9 +138,7 @@
       "gradient_weight": 0.1,
       "use_cosine_similarity": false,
       "use_canny_loss": true,
-      "canny_weight": 0.2,
-      "canny_low_threshold": 0.1,
-      "canny_high_threshold": 0.2
+      "canny_weight": 0.2
     },
     "export": {
       "export_frames": true,
@@ -150,7 +148,7 @@
     }
   },
   "postprocessing": {
-    "output_folder": "./outputs/green_jumper/adaptive_color_nerf",
+    "output_folder": "./outputs/simpson_jumping/NODETACH_adaptive_commit1",
     "hires_export": false,
     "hires_scale_factor": 4.0,
     "compute_psnr": false,

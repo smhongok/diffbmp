@@ -217,3 +217,10 @@ poetry.toml
 pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python
+
+
+# Custom ignores
+gif_canny/*
+visualize_canny_edges.py
+visualize_gif_canny_edges.py
+frame_counter.py
