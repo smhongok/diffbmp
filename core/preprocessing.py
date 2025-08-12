@@ -116,25 +116,34 @@ class Preprocessor:
         """
         img = Image.open(config["img_path"]).convert('RGB')  # 8-bit color
         w, h = img.size
-        self.width = w
-        self.height = h
-
+        
+        # Store original image dimensions for reference
+        original_w, original_h = w, h
+        
+        # Use target dimensions for cropping/padding (don't overwrite with actual dimensions)
+        target_w = getattr(self, 'width', w)  # Use existing width or default to image width
+        target_h = getattr(self, 'height', h)  # Use existing height or default to image height
+        
         if self.trim:
             # Not yet implemented
             raise NotImplementedError("trim=True is not yet implemented.")
 
         # 1) CenterCrop (if too large)
-        if w > self.width or h > self.height:
-            crop_w = min(w, self.width)
-            crop_h = min(h, self.height)
+        if w > target_w or h > target_h:
+            crop_w = min(w, target_w)
+            crop_h = min(h, target_h)
             left = (w - crop_w) // 2
             top = (h - crop_h) // 2
             img = img.crop((left, top, left + crop_w, top + crop_h))
             w, h = img.size
 
         # 2) Padding (white=255)
-        pad_w = self.width
-        pad_h = self.height
+        pad_w = target_w
+        pad_h = target_h
+        
+        # Update self.width and self.height to the target dimensions for consistency
+        self.width = target_w
+        self.height = target_h
         padded_arr = np.full((pad_h, pad_w, 3), fill_value=255, dtype=np.uint8)  # 3-channel white padding
 
         img_arr = np.array(img, dtype=np.uint8)
@@ -312,9 +321,114 @@ class Preprocessor:
     
     def get_final_width(self):
         if self.final_width is None:
-            raise ValueError("final_height has not been set.")
+            raise ValueError("final_width has not been set.")
         return self.final_width
     
+
+    def load_dual_images_for_xy_dynamics(self, config):
+        """
+        Load two images for XY dynamics mode, cropping both to minimum dimensions.
+        
+        Args:
+            config: Configuration dictionary containing 'img_paths' with two image paths
+            
+        Returns:
+            tuple: (image1_tensor, image2_tensor) both as torch tensors with identical dimensions
+        """
+        if 'img_paths' not in config or len(config['img_paths']) != 2:
+            raise ValueError("XY dynamics mode requires exactly 2 image paths in 'img_paths'")
+        
+        # Load both images first to determine minimum dimensions
+        img1 = Image.open(config['img_paths'][0]).convert('RGB')
+        img2 = Image.open(config['img_paths'][1]).convert('RGB')
+        
+        w1, h1 = img1.size
+        w2, h2 = img2.size
+        
+        # Find minimum dimensions
+        min_w = min(w1, w2)
+        min_h = min(h1, h2)
+        
+        print(f"Image 1 size: {w1}x{h1}, Image 2 size: {w2}x{h2}")
+        print(f"Cropping both to minimum size: {min_w}x{min_h}")
+        
+        # Process both images with the same minimum dimensions
+        def process_image(img, target_w, target_h):
+            w, h = img.size
+            
+            # Center crop to target dimensions
+            if w > target_w or h > target_h:
+                crop_w = min(w, target_w)
+                crop_h = min(h, target_h)
+                left = (w - crop_w) // 2
+                top = (h - crop_h) // 2
+                img = img.crop((left, top, left + crop_w, top + crop_h))
+                w, h = img.size
+            
+            # White padding if needed
+            if w < target_w or h < target_h:
+                padded_arr = np.full((target_h, target_w, 3), fill_value=255, dtype=np.uint8)
+                img_arr = np.array(img, dtype=np.uint8)
+                img_h, img_w, _ = img_arr.shape
+                
+                left = (target_w - img_w) // 2
+                top = (target_h - img_h) // 2
+                padded_arr[top:top + img_h, left:left + img_w, :] = img_arr
+                img = Image.fromarray(padded_arr)
+            
+            # Resize to final dimensions
+            ratio = self.final_width / float(target_w)
+            new_w = self.final_width
+            new_h = int(target_h * ratio)
+            self.final_height = new_h
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            
+            """
+            # Apply preprocessing options
+            if config["do_equalize"]:
+                img = histogram_equalization_excluding_bg(img, bg_threshold=config["bg_threshold"])
+            
+            if config["do_local_contrast"]:
+                img = local_contrast_enhancement_excluding_bg(
+                    img, radius=config["local_contrast"]["radius"], 
+                    amount=config["local_contrast"]["amount"], 
+                    bg_threshold=config["bg_threshold"]
+                )
+            
+            if config["do_tone_curve"]:
+                if config["tone_params"] is None:
+                    config["tone_params"] = {}
+                img = partial_tone_curve_excluding_bg(
+                    img,
+                    bg_threshold=config["bg_threshold"],
+                    **config["tone_params"]
+                )
+            
+            """
+
+            # Convert to array
+            arr = np.array(img, dtype=np.uint8)
+            
+            # Apply vertical padding
+            arr = pad_array_color(arr, tuple(config["vertical_paddings"]))
+            
+            return arr
+        
+        # Process both images
+        image1_array = process_image(img1, min_w, min_h)
+        image2_array = process_image(img2, min_w, min_h)
+        
+        
+
+        # Verify dimensions match
+        if image1_array.shape != image2_array.shape:
+            raise RuntimeError(f"Dimension mismatch after preprocessing: {image1_array.shape} vs {image2_array.shape}")
+        
+        print(f"Loaded dual images for XY dynamics: {config['img_paths'][0]} and {config['img_paths'][1]}")
+        print(f"Final array dimensions: {image1_array.shape}")
+        
+        return image1_array, image2_array
+
     def load_gif_frames(self, gif_path, config):
         """
         Load GIF frames and preprocess each frame using the same pipeline as single images.

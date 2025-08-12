@@ -5,7 +5,7 @@
     "FM_halftone": false,
     "transform": "none",
     "img_path": [
-      "images/gif/cat.gif"
+      "images/gif/simpson_jumping.gif"
     ],
     "bg_threshold": 250,
     "do_equalize": false,
@@ -25,13 +25,13 @@
   },
   "svg": {
     "svg_file": "arial.ttf",
-    "text": "S",
+    "text": "B",
     "svg_hollow": false,
     "output_width": 128
   },
   "initialization": {
     "initializer": "structure_aware",
-    "N": [2000],
+    "N": [1000],
     "alpha": 0.3,
     "min_distance": 5,
     "peak_threshold": 0.5,
@@ -116,6 +116,30 @@
       "decay_rate": 0.98,
       "warmup_steps": 10
     },
+    "adaptive_control": {
+      "enabled": true,
+      "tile_rows": 8,
+      "tile_cols": 8,
+      "scale_threshold": 8.0,
+      "opacity_threshold": 0.5,
+      "opacity_reduction_factor": 0.4,
+      "max_primitives_per_tile": 6,
+      "apply_every_n_iterations": 10,
+      "color_nerf": {
+        "enabled": false,
+        "mode": "pixel"
+      }
+    },
+    "combined_loss": {
+      "enabled": false,
+      "grayscale_weight": 0.3,
+      "color_weight": 0.7,
+      "use_gradient_loss": false,
+      "gradient_weight": 0.1,
+      "use_cosine_similarity": false,
+      "use_canny_loss": true,
+      "canny_weight": 0.2
+    },
     "export": {
       "export_frames": true,
       "export_gif": true,
@@ -124,7 +148,7 @@
     }
   },
   "postprocessing": {
-    "output_folder": "./outputs/",
+    "output_folder": "./outputs/simpson_jumping/NODETACH_adaptive_commit1",
     "hires_export": false,
     "hires_scale_factor": 4.0,
     "compute_psnr": false,

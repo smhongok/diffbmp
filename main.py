@@ -46,7 +46,7 @@ with open(config_path, "r", encoding="utf-8") as f:
 # After import or after loading config
 set_global_seed(config.get("seed", 42))
 
-# Force list attributes to single item
+# Force list attributes to single item for standard mode
 if type(config["preprocessing"]["img_path"]) is list:
     config["preprocessing"]["img_path"] = config["preprocessing"]["img_path"][0]
     print("Use only one file to inference")
@@ -119,6 +119,7 @@ else:
     I_target = torch.tensor(I_target, device=device)  # (H, W, 3) or (H, W, 4) if no background
     H = preprocessor.final_height
     W = preprocessor.final_width
+
 
 # Handle SVG file loading
 svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
@@ -267,9 +268,32 @@ if sequential_config.get("enabled", False):
             # Subsequent frames: use SequentialFrameRenderer with temporal consistency
             print(f"Subsequent frame: initializing from frame {frame_idx} with SequentialFrameRenderer")
             
-            # Use sequential optimization settings
-            optimization_config = sequential_config.get("optimization", {})
+            # Use sequential optimization settings and include adaptive control
+            optimization_config = sequential_config.get("optimization", {}) 
             
+            # Add adaptive control configuration to optimization config
+            adaptive_control_config = sequential_config.get("adaptive_control", {})
+            optimization_config["adaptive_control"] = adaptive_control_config
+            
+            combined_loss_config = sequential_config.get("combined_loss", {})
+            optimization_config["combined_loss"] = combined_loss_config
+
+            if combined_loss_config.get("enabled", False):  
+                print(f"Using combined loss with weights - grayscale: {combined_loss_config.get('grayscale_weight', 0.7)}, color: {combined_loss_config.get('color_weight', 0.3)}, canny: {combined_loss_config.get('canny_weight', 0.1) }")
+            else:
+                print("Using standard loss")
+
+            if adaptive_control_config.get("enabled", False):
+                print("Using adaptive control")
+                color_nerf_config = adaptive_control_config.get("color_nerf", {})
+                if color_nerf_config.get("enabled", False):
+                    mode = color_nerf_config.get("mode", "mean")
+                    print(f"Using color nerf (mode: {mode})")
+                else:
+                    print("Not using color nerf")
+            else:
+                print("Not using adaptive control")
+
             # Choose optimization strategy
             start_time_frame = time.time()
             x, y, r, v, theta, c = sequential_renderer.optimize_parameters_full_temporal(
