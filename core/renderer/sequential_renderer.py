@@ -126,12 +126,12 @@ class SequentialFrameRenderer(MseRenderer):
             opt_conf = {"num_iterations": 50, "learning_rate": {"default": 0.005}, "decay_rate": 0.95}
         
         # Ensure all parameters are leaf tensors with gradients enabled
-        x = x.requires_grad_(True)
-        y = y.requires_grad_(True)
-        r = r.requires_grad_(True)
-        v = v.requires_grad_(True)
-        theta = theta.requires_grad_(True)
-        c = c.requires_grad_(True)
+        x.requires_grad_(True)
+        y.requires_grad_(True)
+        r.requires_grad_(True)
+        v.requires_grad_(True)
+        theta.requires_grad_(True)
+        c.requires_grad_(True)
         
         # Extract learning rate configuration
         lr_config = self._extract_learning_rates(opt_conf)
