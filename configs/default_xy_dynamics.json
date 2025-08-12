@@ -4,7 +4,7 @@
         "trim": false,
         "FM_halftone": false,
         "transform": "none",
-        "img_paths": [
+        "img_path": [
             "images/nature/Matterhorn.jpg",
             "images/nature/melon.jpg"
         ],

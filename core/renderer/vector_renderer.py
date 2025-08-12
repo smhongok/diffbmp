@@ -62,9 +62,19 @@ class VectorRenderer:
         # Initialize video creation tracking
         self.saved_frames = []
         
-        # Initialize wandb
-        wandb.login(key="08d57452958261449694f652099a45203ab23a2e")
-        wandb.init(entity="svgsplat",project="svgsplat", name=f"experiment_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        # Initialize wandb conditionally
+        wandb_mode = os.environ.get('WANDB_MODE', 'online')
+        if wandb_mode.lower() != 'disabled':
+            try:
+                wandb.login(key="08d57452958261449694f652099a45203ab23a2e")
+                wandb.init(entity="svgsplat",project="svgsplat", name=f"experiment_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
+                self.wandb_enabled = True
+            except Exception as e:
+                print(f"Warning: wandb initialization failed: {e}")
+                self.wandb_enabled = False
+        else:
+            print("wandb disabled via WANDB_MODE environment variable")
+            self.wandb_enabled = False
     
     def enable_checkpointing(self):
         """Enable gradient checkpointing for memory efficiency."""
@@ -1360,8 +1370,9 @@ class VectorRenderer:
                 else:
                     gradients[f'{param_name}_0th_grad'] = 0.0
         
-        # Log to wandb
-        wandb.log(gradients)
+        # Log to wandb if enabled
+        if hasattr(self, 'wandb_enabled') and self.wandb_enabled:
+            wandb.log(gradients)
 
     def clear_cuda_cache(self):
         """

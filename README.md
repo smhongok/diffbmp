@@ -71,3 +71,12 @@ Please do not distribute. This is for the purpose of anonymous review.
 
 Enjoy creating beautiful SVG drawing artwork!
 
+## Testing
+
+To test all default*.json configs:
+
+```bash
+python test_configs.py --gpu 6 --no-wandb
+```
+
+
