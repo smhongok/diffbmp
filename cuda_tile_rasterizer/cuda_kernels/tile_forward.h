@@ -13,12 +13,14 @@ void CudaRasterizeTilesForwardKernel(
     float* out_color,
     float* out_alpha,
     int num_primitives,
+    int num_templates,
     int template_height,
     int template_width,
     int image_height,
     int image_width,
     int tile_size,
     float sigma,
+    float alpha_upper_bound,
     int total_tiles);
 
 #endif // TILE_FORWARD_H

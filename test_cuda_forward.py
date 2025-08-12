@@ -56,7 +56,7 @@ def create_simple_test_data(device='cuda'):
     return x, y, r, theta, v, c, S, H, W
 
 def test_cuda_vs_pytorch():
-    """Compare CUDA and PyTorch tile renderer outputs"""
+    """Compare CUDA SimpleTileRenderer vs PyTorch fallback SimpleTileRenderer"""
     print("🔍 Testing CUDA Forward Kernel Correctness...")
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -66,17 +66,19 @@ def test_cuda_vs_pytorch():
     x, y, r, theta, v, c, S, H, W = create_simple_test_data(device)
     print(f"Test data: {len(x)} primitives, {H}x{W} image")
     
-    # Create renderers
-    tile_renderer = SimpleTileRenderer(canvas_size=(H, W), S=S, tile_size=32, device=device)
-    pytorch_renderer = VectorRenderer(canvas_size=(H, W), S=S, device=device)
+    # Create two SimpleTileRenderer instances
+    cuda_renderer = SimpleTileRenderer(canvas_size=(H, W), S=S, tile_size=32, device=device)
+    pytorch_renderer = SimpleTileRenderer(canvas_size=(H, W), S=S, tile_size=32, device=device)
     
-    print("\n🚀 Rendering with CUDA tile renderer...")
+    print("\n🚀 Rendering with CUDA SimpleTileRenderer...")
     try:
-        # Force CUDA usage by temporarily disabling fallback
-        original_cuda_available = tile_renderer.__class__.__dict__.get('CUDA_AVAILABLE', True)
+        # Force CUDA usage by ensuring CUDA_AVAILABLE is True
+        import core.renderer.simple_tile_renderer as str_module
+        original_cuda_available = str_module.CUDA_AVAILABLE
+        str_module.CUDA_AVAILABLE = True
         
         # Render with CUDA
-        cuda_result = tile_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
+        cuda_result = cuda_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
         print(f"CUDA result shape: {cuda_result.shape}, dtype: {cuda_result.dtype}")
         print(f"CUDA result range: [{cuda_result.min():.4f}, {cuda_result.max():.4f}]")
         
@@ -84,13 +86,18 @@ def test_cuda_vs_pytorch():
         print(f"❌ CUDA rendering failed: {e}")
         return False
     
-    print("\n🐍 Rendering with PyTorch renderer...")
+    print("\n🐍 Rendering with PyTorch fallback SimpleTileRenderer...")
     try:
-        # Render with PyTorch - need to generate cached_masks first
-        cached_masks = pytorch_renderer._batched_soft_rasterize(x, y, r, theta, sigma=0.0)
-        pytorch_result = pytorch_renderer.render(cached_masks, v, c)
+        # Force PyTorch fallback by temporarily disabling CUDA
+        str_module.CUDA_AVAILABLE = False
+        
+        # Render with PyTorch fallback
+        pytorch_result = pytorch_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
         print(f"PyTorch result shape: {pytorch_result.shape}, dtype: {pytorch_result.dtype}")
         print(f"PyTorch result range: [{pytorch_result.min():.4f}, {pytorch_result.max():.4f}]")
+        
+        # Restore original CUDA availability
+        str_module.CUDA_AVAILABLE = original_cuda_available
         
     except Exception as e:
         print(f"❌ PyTorch rendering failed: {e}")

@@ -26,7 +26,7 @@ std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForward(
     torch::Tensor out_color = torch::zeros({image_height, image_width, 3}, options);
     torch::Tensor out_alpha = torch::zeros({image_height, image_width}, options);
     
-    // Launch CUDA kernel
+    // Launch CUDA kernel with alpha_upper_bound=0.5 (match PyTorch default)
     CudaRasterizeTilesForwardKernel(
         means2D.data_ptr<float>(),
         radii.data_ptr<float>(),
@@ -37,12 +37,14 @@ std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForward(
         out_color.data_ptr<float>(),
         out_alpha.data_ptr<float>(),
         num_primitives,
+        primitive_templates.size(0), // num_templates
         primitive_templates.size(1), // template_height
         primitive_templates.size(2), // template_width
         image_height,
         image_width,
         tile_size,
         sigma,
+        0.5f, // alpha_upper_bound (match PyTorch default)
         total_tiles
     );
     
