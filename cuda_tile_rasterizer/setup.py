@@ -18,13 +18,13 @@ setup(
                 'cuda_kernels',
             ],
             extra_compile_args={
-                'cxx': ['-O3'],
+                'cxx': ['-g', '-O0'],  # Debug flags for C++
                 'nvcc': [
-                    '-O3',
-                    '--use_fast_math',
+                    '-g', '-G',  # Debug flags for CUDA
+                    '--device-debug',
+                    '--generate-line-info',
                     '-Xptxas=-v',
-                    '--ptxas-options=-v',
-                    '-lineinfo'
+                    '--ptxas-options=-v'
                 ]
             }
         )
