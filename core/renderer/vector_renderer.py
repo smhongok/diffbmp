@@ -33,7 +33,8 @@ class VectorRenderer:
                  device: str = 'cuda',
                  use_fp16: bool = False,
                  gamma: float = 1.0,
-                 output_path: str = None):
+                 output_path: str = None,
+                 tile_size: int = 32):
         """
         Initialize the vector renderer.
         
@@ -50,6 +51,11 @@ class VectorRenderer:
         self.use_fp16 = use_fp16
         self.gamma = gamma
         self.output_path = output_path
+        
+        # Tile rendering parameters
+        self.tile_size = tile_size
+        self.tiles_h = (self.H + tile_size - 1) // tile_size
+        self.tiles_w = (self.W + tile_size - 1) // tile_size
         # Convert S to appropriate precision during initialization
         if self.use_fp16:
             self.S = S.to(dtype=torch.float16)
@@ -58,6 +64,9 @@ class VectorRenderer:
         
         # Pre-compute pixel coordinates
         self.X, self.Y = self._create_coordinate_grid()
+        
+        # Compute bounding boxes for each primitive in self.S (for tile rendering)
+        self.primitive_bboxes = self._compute_primitive_bboxes()
         
         # Initialize video creation tracking
         self.saved_frames = []
@@ -89,6 +98,438 @@ class VectorRenderer:
                 indexing='xy'
             )
         return X.unsqueeze(0), Y.unsqueeze(0)  # (1, H, W)
+    
+    def _compute_primitive_bboxes(self):
+        """
+        Compute minimal bounding boxes for each primitive in self.S.
+        
+        Returns:
+            List of (min_u, max_u, min_v, max_v) for each primitive in normalized coordinates
+        """
+        bboxes = []
+        
+        if self.S.dim() == 2:  # Single primitive (H, W)
+            primitives = [self.S]
+        elif self.S.dim() == 3:  # Multiple primitives (p, H, W)
+            primitives = [self.S[i] for i in range(self.S.shape[0])]
+        else:
+            raise ValueError(f"Unsupported self.S shape: {self.S.shape}")
+        
+        for primitive in primitives:
+            # Find non-zero regions
+            nonzero_mask = primitive > 1e-6  # Small threshold for numerical stability
+            
+            if not nonzero_mask.any():
+                # Empty primitive
+                bboxes.append((-1, 1, -1, 1))  # Full range as fallback
+                continue
+            
+            # Get coordinates of non-zero pixels
+            H, W = primitive.shape
+            v_coords, u_coords = torch.where(nonzero_mask)
+            
+            # Convert to normalized coordinates [-1, 1]
+            u_norm = (u_coords.float() / (W - 1)) * 2 - 1  # [0, W-1] -> [-1, 1]
+            v_norm = (v_coords.float() / (H - 1)) * 2 - 1  # [0, H-1] -> [-1, 1]
+            
+            # Compute bounding box
+            min_u = u_norm.min().item()
+            max_u = u_norm.max().item()
+            min_v = v_norm.min().item()
+            max_v = v_norm.max().item()
+            
+            bboxes.append((min_u, max_u, min_v, max_v))
+        
+        return bboxes
+    
+    def render_from_params(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
+                           theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
+                           return_alpha: bool = False, I_bg: torch.Tensor = None, 
+                           no_background: bool = False, sigma: float = 0.0) -> torch.Tensor:
+        """
+        Memory-efficient tile-based rendering.
+        
+        Args:
+            x, y: (N,) primitive positions
+            r: (N,) primitive scales
+            theta: (N,) primitive rotations
+            v: (N,) visibility logits  
+            c: (N, 3) RGB logits
+            return_alpha: Whether to return alpha channel
+            I_bg: Background image
+            no_background: Whether to use no background
+            sigma: Gaussian blur std
+            
+        Returns:
+            Rendered image tensor
+        """
+        N = x.shape[0]
+        
+        # Pre-compute global primitive template selection (before tile processing)
+        if self.S.dim() == 3:  # Multiple primitive templates [p, H, W]
+            p = self.S.size(0)
+            global_bmp_sel = torch.arange(N, device=self.device, dtype=torch.long) % p
+            global_bmp_sel = global_bmp_sel.flip(0)  # Same as original VectorRenderer
+        else:
+            global_bmp_sel = None  # Single template case
+        
+        # Initialize output canvas
+        if self.use_fp16:
+            dtype = torch.float16
+        else:
+            dtype = torch.float32
+            
+        output = torch.zeros((self.H, self.W, 3), device=self.device, dtype=dtype)
+        
+        # Choose processing method based on tile count and device
+        total_tiles = self.tiles_h * self.tiles_w
+        use_parallel = total_tiles > 4 and torch.cuda.is_available()  # Parallel for larger tile counts
+        
+        if use_parallel:
+            output = self._process_tiles_parallel(x, y, r, theta, v, c, sigma, I_bg, no_background, global_bmp_sel, output)
+        else:
+            output = self._process_tiles_sequential(x, y, r, theta, v, c, sigma, I_bg, no_background, global_bmp_sel, output)
+                
+        if return_alpha:
+            # For simplicity, return dummy alpha for now
+            alpha = torch.ones((self.H, self.W), device=self.device, dtype=dtype)
+            return output, alpha
+        
+        return output
+    
+    def _process_tiles_sequential(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
+                                 theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
+                                 sigma: float, I_bg: torch.Tensor, no_background: bool,
+                                 global_bmp_sel: torch.Tensor, output: torch.Tensor) -> torch.Tensor:
+        """Sequential tile processing (original method)."""
+        for tile_y in range(self.tiles_h):
+            for tile_x in range(self.tiles_w):
+                # Calculate tile boundaries
+                y_start = tile_y * self.tile_size
+                y_end = min(y_start + self.tile_size, self.H)
+                x_start = tile_x * self.tile_size  
+                x_end = min(x_start + self.tile_size, self.W)
+                
+                # Find primitives that affect this tile
+                tile_primitive_indices = self._get_tile_primitives(
+                    x, y, r, theta, x_start, x_end, y_start, y_end
+                )
+                
+                # Skip if no primitives affect this tile
+                if len(tile_primitive_indices) == 0:
+                    continue
+                
+                # Render this tile with selected primitives only
+                tile_result = self._render_tile(
+                    x, y, r, theta, v, c, tile_primitive_indices,
+                    x_start, x_end, y_start, y_end, sigma, I_bg, no_background,
+                    global_bmp_sel=global_bmp_sel
+                )
+                
+                # Place result in output canvas
+                output[y_start:y_end, x_start:x_end] = tile_result
+        
+        return output
+    
+    def _process_tiles_parallel(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
+                               theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
+                               sigma: float, I_bg: torch.Tensor, no_background: bool,
+                               global_bmp_sel: torch.Tensor, output: torch.Tensor) -> torch.Tensor:
+        """True vectorized tile processing using PyTorch operations."""
+        
+        # Pre-compute all tile boundaries
+        total_tiles = self.tiles_h * self.tiles_w
+        tile_y_coords = torch.arange(self.tiles_h, device=self.device).repeat_interleave(self.tiles_w)
+        tile_x_coords = torch.arange(self.tiles_w, device=self.device).repeat(self.tiles_h)
+        
+        y_starts = tile_y_coords * self.tile_size
+        y_ends = torch.clamp(y_starts + self.tile_size, max=self.H)
+        x_starts = tile_x_coords * self.tile_size
+        x_ends = torch.clamp(x_starts + self.tile_size, max=self.W)
+        
+        # Vectorized primitive-to-tile assignment
+        primitive_tile_masks = self._vectorized_primitive_assignment(
+            x, y, r, theta, x_starts, x_ends, y_starts, y_ends
+        )
+        
+        # Process tiles with primitives
+        for tile_idx in range(total_tiles):
+            # Get primitives affecting this tile
+            tile_mask = primitive_tile_masks[tile_idx]
+            if not tile_mask.any():
+                continue
+                
+            primitive_indices = torch.nonzero(tile_mask, as_tuple=True)[0].tolist()
+            
+            # Render this tile
+            tile_result = self._render_tile(
+                x, y, r, theta, v, c, primitive_indices,
+                x_starts[tile_idx].item(), x_ends[tile_idx].item(),
+                y_starts[tile_idx].item(), y_ends[tile_idx].item(),
+                sigma, I_bg, no_background, global_bmp_sel=global_bmp_sel
+            )
+            
+            # Place result in output canvas
+            y_start, y_end = y_starts[tile_idx].item(), y_ends[tile_idx].item()
+            x_start, x_end = x_starts[tile_idx].item(), x_ends[tile_idx].item()
+            output[y_start:y_end, x_start:x_end] = tile_result
+        
+        return output
+    
+    def _vectorized_primitive_assignment(self, x: torch.Tensor, y: torch.Tensor, 
+                                       r: torch.Tensor, theta: torch.Tensor,
+                                       x_starts: torch.Tensor, x_ends: torch.Tensor,
+                                       y_starts: torch.Tensor, y_ends: torch.Tensor) -> torch.Tensor:
+        """Vectorized computation of which primitives affect which tiles."""
+        N = len(x)
+        total_tiles = len(x_starts)
+        
+        # Expand dimensions for broadcasting: (N, 1) and (1, total_tiles)
+        x_exp = x.unsqueeze(1)  # (N, 1)
+        y_exp = y.unsqueeze(1)  # (N, 1)
+        r_exp = r.unsqueeze(1)  # (N, 1)
+        
+        x_starts_exp = x_starts.unsqueeze(0)  # (1, total_tiles)
+        x_ends_exp = x_ends.unsqueeze(0)      # (1, total_tiles)
+        y_starts_exp = y_starts.unsqueeze(0)  # (1, total_tiles)
+        y_ends_exp = y_ends.unsqueeze(0)      # (1, total_tiles)
+        
+        # Compute primitive bounding boxes (considering rotation and radius)
+        # For simplicity, use conservative bounding box: center ± (r * sqrt(2))
+        bbox_margin = r_exp * 1.5  # Conservative margin for rotation
+        
+        prim_x_min = x_exp - bbox_margin
+        prim_x_max = x_exp + bbox_margin
+        prim_y_min = y_exp - bbox_margin
+        prim_y_max = y_exp + bbox_margin
+        
+        # Check intersection: primitive bbox overlaps with tile bbox
+        # Intersection condition: not (prim_max < tile_min or prim_min > tile_max)
+        x_intersect = ~((prim_x_max < x_starts_exp) | (prim_x_min > x_ends_exp))
+        y_intersect = ~((prim_y_max < y_starts_exp) | (prim_y_min > y_ends_exp))
+        
+        # Both x and y must intersect
+        intersections = x_intersect & y_intersect  # (N, total_tiles)
+        
+        # Transpose to get (total_tiles, N) - each row is primitives affecting that tile
+        return intersections.t()
+    
+    def _get_tile_primitives(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
+                            theta: torch.Tensor, x_start: int, x_end: int, 
+                            y_start: int, y_end: int) -> List[int]:
+        """
+        Find primitives whose transformed bounding boxes intersect with the given tile.
+        
+        Args:
+            x, y: (N,) primitive positions
+            r: (N,) primitive scales
+            theta: (N,) primitive rotations
+            x_start, x_end, y_start, y_end: Tile boundaries
+            
+        Returns:
+            List of primitive indices that affect this tile
+        """
+        N = x.shape[0]
+        p = len(self.primitive_bboxes)
+        intersecting_indices = []
+        
+        for i in range(N):
+            # Get primitive index (cycling through available primitives)
+            prim_idx = i % p
+            min_u, max_u, min_v, max_v = self.primitive_bboxes[prim_idx]
+            
+            # Transform bounding box corners to world coordinates
+            # Apply scale and rotation
+            cos_t = torch.cos(theta[i])
+            sin_t = torch.sin(theta[i])
+            scale = r[i]
+            
+            # Bounding box corners in primitive space
+            corners_u = torch.tensor([min_u, max_u, min_u, max_u], device=self.device)
+            corners_v = torch.tensor([min_v, min_v, max_v, max_v], device=self.device)
+            
+            # Transform to world coordinates
+            world_x = x[i] + scale * (corners_u * cos_t - corners_v * sin_t)
+            world_y = y[i] + scale * (corners_u * sin_t + corners_v * cos_t)
+            
+            # Check if transformed bounding box intersects tile
+            bbox_x_min = world_x.min().item()
+            bbox_x_max = world_x.max().item()
+            bbox_y_min = world_y.min().item()
+            bbox_y_max = world_y.max().item()
+            
+            # Intersection test
+            if (bbox_x_min < x_end and bbox_x_max > x_start and
+                bbox_y_min < y_end and bbox_y_max > y_start):
+                intersecting_indices.append(i)
+        
+        return intersecting_indices
+    
+    def _render_tile(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
+                     theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
+                     primitive_indices: List[int], x_start: int, x_end: int,
+                     y_start: int, y_end: int, sigma: float,
+                     I_bg: torch.Tensor, no_background: bool, 
+                     global_bmp_sel: torch.Tensor = None) -> torch.Tensor:
+        """
+        Render a single tile with only the selected primitives.
+        
+        Args:
+            x, y, r, theta: Full primitive parameters
+            v, c: Full visibility and color parameters
+            primitive_indices: Indices of primitives that affect this tile
+            x_start, x_end, y_start, y_end: Tile boundaries
+            sigma: Gaussian blur std
+            I_bg: Background image
+            no_background: Whether to use no background
+            
+        Returns:
+            Rendered tile (tile_h, tile_w, 3)
+        """
+        tile_h = y_end - y_start
+        tile_w = x_end - x_start
+        
+        if len(primitive_indices) == 0:
+            # Empty tile
+            if self.use_fp16:
+                dtype = torch.float16
+            else:
+                dtype = torch.float32
+            return torch.zeros((tile_h, tile_w, 3), device=self.device, dtype=dtype)
+        
+        # Select only relevant primitives
+        indices = torch.tensor(primitive_indices, device=self.device)
+        tile_x = x[indices]
+        tile_y = y[indices]
+        tile_r = r[indices]
+        tile_theta = theta[indices]
+        tile_v = v[indices]
+        tile_c = c[indices]
+        
+        # Create coordinate grid for this tile
+        tile_X = self.X[:, y_start:y_end, x_start:x_end]  # (1, tile_h, tile_w)
+        tile_Y = self.Y[:, y_start:y_end, x_start:x_end]  # (1, tile_h, tile_w)
+        
+        # Generate masks for selected primitives in this tile
+        tile_masks = self._generate_tile_masks(
+            tile_x, tile_y, tile_r, tile_theta, tile_X, tile_Y, sigma,
+            global_primitive_indices=primitive_indices,
+            global_bmp_sel=global_bmp_sel
+        )
+        
+        # Convert logits to actual values
+        alpha = torch.sigmoid(tile_v) * self.alpha_upper_bound
+        rgb = torch.sigmoid(tile_c)
+        
+        # Apply alpha to masks
+        a = tile_masks * alpha.view(-1, 1, 1)
+        
+        # Create premultiplied colors
+        m = a.unsqueeze(-1) * rgb.view(-1, 1, 1, 3)
+        
+        # Composite using parent's function
+        comp_m, comp_a = self._transmit_over(m, a)
+        
+        # Handle background
+        if no_background:
+            result = comp_m
+        else:
+            if I_bg is not None:
+                bg_tile = I_bg[y_start:y_end, x_start:x_end]
+            else:
+                bg_tile = torch.ones((tile_h, tile_w, 3), device=self.device, 
+                                   dtype=comp_m.dtype)
+            
+            result = comp_m + (1 - comp_a.unsqueeze(-1)) * bg_tile
+        
+        return result
+    
+    def _generate_tile_masks(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
+                            theta: torch.Tensor, tile_X: torch.Tensor, tile_Y: torch.Tensor,
+                            sigma: float, global_primitive_indices: List[int] = None,
+                            global_bmp_sel: torch.Tensor = None) -> torch.Tensor:
+        """
+        Generate masks for primitives within a tile using actual self.S primitives.
+        Based on _batched_soft_rasterize logic but for tile regions only.
+        
+        Args:
+            x, y, r, theta: Selected primitive parameters
+            tile_X, tile_Y: Coordinate grids for this tile (1, tile_h, tile_w)
+            sigma: Gaussian blur std
+            
+        Returns:
+            Tile masks (num_selected, tile_h, tile_w)
+        """
+        from contextlib import nullcontext
+        from torch.amp import autocast
+        from util.utils import gaussian_blur
+        
+        num_primitives = x.shape[0]
+        tile_h, tile_w = tile_X.shape[1], tile_X.shape[2]
+        
+        if num_primitives == 0:
+            if self.use_fp16:
+                dtype = torch.float16
+            else:
+                dtype = torch.float32
+            return torch.zeros((0, tile_h, tile_w), device=self.device, dtype=dtype)
+        
+        context = autocast('cuda') if self.use_fp16 else nullcontext()
+        with context:
+            target_dtype = torch.float16 if self.use_fp16 else torch.float32
+            
+            # Prepare the bitmap(s) - same logic as _batched_soft_rasterize
+            if sigma > 0.0:
+                bmp = self.S.unsqueeze(0)  # -> [1, p, H, W] or [1, H, W]
+                bmp = gaussian_blur(bmp, sigma)
+                bmp_image = bmp.squeeze(0).to(dtype=target_dtype).contiguous()
+            else:
+                bmp_image = self.S.to(dtype=target_dtype)
+            
+            # Expand tile coordinates
+            X_exp = tile_X.expand(num_primitives, tile_h, tile_w)
+            Y_exp = tile_Y.expand(num_primitives, tile_h, tile_w)
+            x_exp = x.view(num_primitives, 1, 1).expand(num_primitives, tile_h, tile_w)
+            y_exp = y.view(num_primitives, 1, 1).expand(num_primitives, tile_h, tile_w)
+            r_exp = r.view(num_primitives, 1, 1).expand(num_primitives, tile_h, tile_w)
+            
+            # Normalize and rotate positions
+            pos = torch.stack([X_exp - x_exp, Y_exp - y_exp], dim=1) / r_exp.unsqueeze(1)
+            cos_t = torch.cos(theta)
+            sin_t = torch.sin(theta)
+            R_inv = torch.zeros(num_primitives, 2, 2, device=self.device)
+            R_inv[:, 0, 0] = cos_t; R_inv[:, 0, 1] = sin_t
+            R_inv[:, 1, 0] = -sin_t; R_inv[:, 1, 1] = cos_t
+            uv = torch.einsum('bij,bjhw->bihw', R_inv, pos)
+            grid = uv.permute(0, 2, 3, 1)  # (num_primitives, tile_h, tile_w, 2)
+            
+            # Build bmp_exp: one bitmap per instance, cycling through p if provided
+            if bmp_image.dim() == 2:
+                # single primitive template [H, W]
+                bmp_exp = bmp_image.unsqueeze(0).unsqueeze(0).expand(num_primitives, 1, -1, -1).contiguous()
+            elif bmp_image.dim() == 3:
+                # sequence of p templates [p, H, W]
+                if global_bmp_sel is not None and global_primitive_indices is not None:
+                    # Use global template selection - map global indices to templates
+                    tile_bmp_indices = [global_bmp_sel[i].item() for i in global_primitive_indices]
+                    tile_bmp_indices = torch.tensor(tile_bmp_indices, device=self.device, dtype=torch.long)
+                    bmp_sel = bmp_image[tile_bmp_indices, :, :]  # [num_primitives, H, W]
+                    bmp_exp = bmp_sel.unsqueeze(1).contiguous()  # [num_primitives, 1, H, W]
+                else:
+                    # Fallback: use local modulo (old behavior)
+                    p = bmp_image.size(0)
+                    idx = torch.arange(num_primitives, device=self.device, dtype=torch.long) % p
+                    idx = idx.flip(0)  # Same as original
+                    bmp_sel = bmp_image[idx, :, :]  # [num_primitives, H, W]
+                    bmp_exp = bmp_sel.unsqueeze(1).contiguous()  # [num_primitives, 1, H, W]
+            else:
+                raise ValueError(f"Unsupported self.S shape: {bmp_image.shape}")
+            
+            # Sample masks via grid_sample
+            sampled = F.grid_sample(bmp_exp, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
+            
+            # Return single-channel masks
+            return sampled.squeeze(1)  # (num_primitives, tile_h, tile_w)
     
     def _batched_soft_rasterize(self,
                                x: torch.Tensor,
@@ -660,35 +1101,28 @@ class VectorRenderer:
                 with autocast('cuda'):
                     if opt_conf.get("multi_level", False):
                         if is_no_bg_mode:
-                            rendered, rendered_alpha = self.render(self.S, v, c, return_alpha=True, no_background=True)
+                            rendered, rendered_alpha = self.render_from_params(x, y, r, theta, v, c, return_alpha=True, no_background=True, sigma=sigma)
                         else:
                             white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float16 if self.use_fp16 else torch.float32)
-                            rendered = self.render(self.S, v, c, I_bg=white_bg)
+                            rendered = self.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=sigma)
                     else:
                         if streaming_render:
-                            # Use standard rendering instead of inefficient streaming
-                            cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=sigma)
+                            # Use tile-based rendering instead of inefficient streaming
                             if is_no_bg_mode:
-                                rendered, rendered_alpha = self.render(cached_masks, v, c, return_alpha=True, no_background=True)
+                                rendered, rendered_alpha = self.render_from_params(x, y, r, theta, v, c, return_alpha=True, no_background=True, sigma=sigma)
                             else:
                                 white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float16 if self.use_fp16 else torch.float32)
-                                rendered = self.render(cached_masks, v, c, I_bg=white_bg)
+                                rendered = self.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=sigma)
                         else:
-                            # Generate masks (memory efficient)
-                            cached_masks = self._batched_soft_rasterize(
-                                x, y, r, theta,
-                                sigma=sigma
-                            )
-                            
-                            # Memory report after mask generation
+                            # Generate rendered image using tile-based rendering (memory efficient)
                             if opt_conf.get("debug_memory", False) and epoch == 0:
-                                self.memory_report("After mask generation")
+                                self.memory_report("Before tile-based rendering")
                             
                             if is_no_bg_mode:
-                                rendered, rendered_alpha = self.render(cached_masks, v, c, return_alpha=True, no_background=True)
+                                rendered, rendered_alpha = self.render_from_params(x, y, r, theta, v, c, return_alpha=True, no_background=True, sigma=sigma)
                             else:
                                 white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float16 if self.use_fp16 else torch.float32)
-                                rendered = self.render(cached_masks, v, c, I_bg=white_bg)
+                                rendered = self.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=sigma)
                             
                             # Save image at specified epochs
                             if opt_conf.get("save_epoch", False):
@@ -786,23 +1220,17 @@ class VectorRenderer:
                 # Non-FP16 mode - standard approach without autocast or scaler
                 if opt_conf.get("multi_level", False):
                     if is_no_bg_mode:
-                        rendered, rendered_alpha = self.render(self.S, v, c, return_alpha=True, no_background=True)
+                        rendered, rendered_alpha = self.render_from_params(x, y, r, theta, v, c, return_alpha=True, no_background=True, sigma=sigma)
                     else:
                         white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float32)
-                        rendered = self.render(self.S, v, c, I_bg=white_bg)
+                        rendered = self.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=sigma)
                 else:
-                    # Generate masks
-                    cached_masks = self._batched_soft_rasterize(
-                        x, y, r, theta,
-                        sigma=sigma
-                    )
-                    
-                    # Render with masks
+                    # Generate rendered image using tile-based rendering
                     if is_no_bg_mode:
-                        rendered, rendered_alpha = self.render(cached_masks, v, c, return_alpha=True, no_background=True)
+                        rendered, rendered_alpha = self.render_from_params(x, y, r, theta, v, c, return_alpha=True, no_background=True, sigma=sigma)
                     else:
                         white_bg = torch.ones((self.H, self.W, 3), device=self.device, dtype=torch.float32)
-                        rendered = self.render(cached_masks, v, c, I_bg=white_bg)
+                        rendered = self.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=sigma)
                     
                     # Save image at specified epochs
                     if opt_conf.get("save_epoch", False):

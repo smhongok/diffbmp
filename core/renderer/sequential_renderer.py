@@ -175,9 +175,8 @@ class SequentialFrameRenderer(MseRenderer):
             
             optimizer.zero_grad()
             
-            # Generate masks and render
-            cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=0)
-            rendered = self.render(cached_masks, v, c)
+            # Generate rendered image using tile-based rendering
+            rendered = self.render_from_params(x, y, r, theta, v, c, sigma=0.0)
             
             # Compute loss with warmup scheduling
             loss_config = {

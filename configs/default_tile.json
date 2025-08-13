@@ -48,7 +48,7 @@
     },
     "optimization": {
         "use_fp16": false,
-        "renderer_type": "tile",
+        "renderer_type": "mse",
         "tile_size": 32,
         "num_iterations": 100,
         "batch_optimization": false,
@@ -93,7 +93,7 @@
         }
     },
     "postprocessing": {
-        "output_folder": "./outputs/",
+        "output_folder": "./outputs/tile_1",
         "save_final_image": true,
         "save_video": false,
         "video_fps": 30,

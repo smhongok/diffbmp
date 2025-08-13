@@ -316,8 +316,7 @@ if sequential_config.get("enabled", False):
         
         # Render final frame for export
         with torch.no_grad():
-            cached_masks = sequential_renderer._batched_soft_rasterize(x, y, r, theta, sigma=0)
-            rendered_frame = sequential_renderer.render(cached_masks, v, c)
+            rendered_frame = sequential_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
         
         # Store results for this frame
         current_params = {
@@ -404,8 +403,12 @@ if sequential_config.get("enabled", False):
         if export_config.get("export_frames", True):
             frame_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}.png')
             with torch.no_grad():
-                cached_masks = sequential_renderer._batched_soft_rasterize(x_frame, y_frame, r_frame, theta_frame, sigma=0)
-                sequential_renderer.save_rendered_image(cached_masks, v_frame, c_frame, frame_path)
+                # Render frame directly using tile-based rendering
+                frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, sigma=0.0)
+                # Save rendered frame directly
+                frame_rendered_np = frame_rendered.detach().cpu().numpy()
+                frame_rendered_np = (frame_rendered_np * 255).astype(np.uint8)
+                Image.fromarray(frame_rendered_np).save(frame_path)
         
         # Store rendered frame for GIF/MP4 export
         frame_np = rendered_frame.cpu().numpy()
@@ -526,17 +529,21 @@ if not (primitive_loader and primitive_loader.has_raster_primitives()):
 if not sequential_config.get("enabled", False):
     # Single image final rendering and export (original behavior)
     with torch.no_grad():
-        # Generate final masks and render
-        cached_masks = renderer._batched_soft_rasterize(
-            x, y, r, theta,
-            sigma=0
-        )
+        cached_masks = renderer._batched_soft_rasterize(x, y, r, theta, sigma=0)
+        
+        # Generate final render using tile-based rendering
+        white_bg = torch.ones((renderer.H, renderer.W, 3), device=renderer.device)
+        rendered = renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0)
+        
+        # For alpha loss calculation, we need to generate masks if background doesn't exist
         if not exist_bg:
+            
             alpha_loss = (cached_masks * target_binary_mask.unsqueeze(0)).sum(dim=0).mean()
-
-        white_bg = torch.ones((renderer.H, renderer.W, 3), device=cached_masks.device)
-        rendered = renderer.render(cached_masks, v, c, I_bg=white_bg)
-        renderer.save_rendered_image(cached_masks, v, c, output_path)
+        
+        # Save rendered image directly from rendered tensor
+        rendered_np = rendered.detach().cpu().numpy()
+        rendered_np = (rendered_np * 255).astype(np.uint8)
+        Image.fromarray(rendered_np).save(output_path)
         # High-resolution export configuration (recommended only when you have raster primitives)
         hires_enabled = config["postprocessing"].get("hires_export", False)
         scale_factor = config["postprocessing"].get("hires_scale_factor", 4.0)
@@ -569,13 +576,12 @@ if config['postprocessing'].get('compute_psnr', False):
             total_lpips = 0
             
             for frame_idx, (frame_result, I_target_frame) in enumerate(zip(frame_results, I_targets)):
-                # Render frame for metrics
+                # Render frame for metrics using tile-based rendering
                 with torch.no_grad():
-                    cached_masks = renderer._batched_soft_rasterize(
+                    rendered_frame = renderer.render_from_params(
                         frame_result['x'], frame_result['y'], frame_result['r'], frame_result['theta'],
-                        sigma=0
+                        frame_result['v'], frame_result['c'], sigma=0.0
                     )
-                    rendered_frame = renderer.render(cached_masks, frame_result['v'], frame_result['c'])
                 
                 # Convert to tensor format for metrics
                 rendered_t = rendered_frame.permute(2, 0, 1).unsqueeze(0)
