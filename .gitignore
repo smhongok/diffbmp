@@ -35,6 +35,8 @@ configs/*
 images/person/*
 !images/person/pororo.jpg
 !images/person/pororo_no_background.png
+!images/person/junghun.png
+!images/person/안중근.jpg
 
 images/gif/*
 !images/gif/pororo_monkey_crop_first2.gif
@@ -44,6 +46,8 @@ wandb
 
 visualization_output
 simple_tile_renderer_test
+
+test_results.json
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
