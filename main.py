@@ -190,16 +190,7 @@ except Exception as e:
     )
     primitive_loader = None
 
-# Initialize renderer based on loss type
-renderer_type = opt_conf.get("renderer_type", "mse")
-renderer_class = {
-    "mse": MseRenderer,
-    "tile": SimpleTileRenderer,
-}.get(renderer_type.lower())
-
-if renderer_class is None:
-    raise ValueError(f"Invalid renderer type: {renderer_type}")
-
+# Initialize MseRenderer with tile-based rendering capabilities
 bmp_tensor = svg_loader.load_alpha_bitmap()
 if use_fp16:
     bmp_tensor = bmp_tensor.to(dtype=torch.float16)
@@ -209,22 +200,17 @@ else:
 H = preprocessor.final_height
 W = preprocessor.final_width
 
-# Create renderer only when needed - defer instantiation
-renderer_kwargs = {
-    "canvas_size": (H, W),
-    "S": bmp_tensor,
-    "alpha_upper_bound": config["optimization"].get("alpha_upper_bound", 0.5),
-    "device": device,
-    "use_fp16": use_fp16,
-    "output_path": config["postprocessing"].get("output_folder", "./outputs/")
-}
-
-# Add tile_size parameter for SimpleTileRenderer
-if renderer_type.lower() == "tile":
-    renderer_kwargs["tile_size"] = opt_conf.get("tile_size", 32)
-
-renderer = renderer_class(**renderer_kwargs)
-print(f"Using {renderer_class.__name__} for optimization")
+# Create MseRenderer with tile-based rendering support
+renderer = MseRenderer(
+    canvas_size=(H, W),
+    S=bmp_tensor,
+    alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
+    device=device,
+    use_fp16=use_fp16,
+    output_path=config["postprocessing"].get("output_folder", "./outputs/"),
+    tile_size=opt_conf.get("tile_size", 32)
+)
+print(f"Using MseRenderer with tile-based rendering (tile_size: {opt_conf.get('tile_size', 32)})")
 
 # Initialize parameters
 print("---Initializing vector graphics with Structure-Aware method---")
@@ -240,14 +226,18 @@ if sequential_config.get("enabled", False):
     # Sequential frame-by-frame optimization
     print("Starting sequential frame-by-frame optimization...")
     
-    # Create sequential renderer for subsequent frames
+    # Create sequential renderer for subsequent frames with tile-based rendering
     sequential_renderer = SequentialFrameRenderer(
-        (H, W), S=bmp_tensor,
+        canvas_size=(H, W), 
+        S=bmp_tensor,
         alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
         device=device,
         use_fp16=use_fp16,
-        gamma=config["optimization"].get("gamma", 1.0)
+        gamma=config["optimization"].get("gamma", 1.0),
+        output_path=config["postprocessing"].get("output_folder", "./outputs/"),
+        tile_size=sequential_config.get("tile_size", 32)
     )
+    print(f"Using SequentialFrameRenderer with tile-based rendering (tile_size: {sequential_config.get('tile_size', 32)})")
     
     # Store optimized parameters for each frame
     frame_results = []
