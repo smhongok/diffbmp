@@ -20,11 +20,9 @@ setup(
             extra_compile_args={
                 'cxx': ['-g', '-O0'],  # Debug flags for C++
                 'nvcc': [
-                    '-g', '-G',  # Debug flags for CUDA
-                    '--device-debug',
+                    '-g',  # Debug flags for CUDA
                     '--generate-line-info',
-                    '-Xptxas=-v',
-                    '--ptxas-options=-v'
+                    '-Xptxas=-v'
                 ]
             }
         )

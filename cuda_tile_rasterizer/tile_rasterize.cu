@@ -1,8 +1,10 @@
-#include <torch/extension.h>
-#include <cuda.h>
 #include <cuda_runtime.h>
+#include <cuda.h>
+#include <torch/extension.h>
 #include "cuda_kernels/tile_forward.h"
 #include "cuda_kernels/tile_backward.h"
+
+#define DEBUG_CUDA_KERNELS 1
 
 std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForward(
     torch::Tensor means2D,
@@ -21,12 +23,23 @@ std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForward(
     const int num_tiles_y = (image_height + tile_size - 1) / tile_size;
     const int total_tiles = num_tiles_x * num_tiles_y;
     
+    // Debug: Print input tensor info
+#if DEBUG_CUDA_KERNELS
+    printf("C++ Wrapper: num_primitives=%d, image_size=%dx%d, tile_size=%d, total_tiles=%d\n",
+           num_primitives, image_width, image_height, tile_size, total_tiles);
+    printf("C++ Wrapper: means2D shape=%s, primitive_templates shape=%s\n",
+           means2D.sizes().vec().data(), primitive_templates.sizes().vec().data());
+#endif
+    
     // Create output tensors
     auto options = torch::TensorOptions().dtype(torch::kFloat32).device(means2D.device());
     torch::Tensor out_color = torch::zeros({image_height, image_width, 3}, options);
     torch::Tensor out_alpha = torch::zeros({image_height, image_width}, options);
     
     // Launch CUDA kernel with alpha_upper_bound=0.5 (match PyTorch default)
+#if DEBUG_CUDA_KERNELS
+    printf("C++ Wrapper: Launching CUDA kernel...\n");
+#endif
     CudaRasterizeTilesForwardKernel(
         means2D.data_ptr<float>(),
         radii.data_ptr<float>(),
@@ -47,6 +60,14 @@ std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForward(
         0.5f, // alpha_upper_bound (match PyTorch default)
         total_tiles
     );
+#if DEBUG_CUDA_KERNELS
+    printf("C++ Wrapper: CUDA kernel completed\n");
+
+    // Debug: Print output tensor info
+    printf("C++ Wrapper: Output color range=[%.4f,%.4f], alpha range=[%.4f,%.4f]\n",
+           out_color.min().item<float>(), out_color.max().item<float>(),
+           out_alpha.min().item<float>(), out_alpha.max().item<float>());
+#endif
     
     return std::make_tuple(out_color, out_alpha);
 }

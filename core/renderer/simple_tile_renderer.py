@@ -8,7 +8,8 @@ try:
     import sys
     import os
     # Add CUDA extension path to sys.path
-    cuda_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cuda_tile_rasterizer')
+    cuda_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cuda_tile_rasterizer',  'cuda_tile_rasterizer')
+    print(f"cuda_tile_rasterizer path: {cuda_path}")
     if cuda_path not in sys.path:
         sys.path.insert(0, cuda_path)
     
@@ -134,8 +135,10 @@ class SimpleTileRenderer(VectorRenderer):
         use_parallel = total_tiles > 4 and torch.cuda.is_available()  # Parallel for larger tile counts
         
         if use_parallel:
+            print("Using parallel processing")
             output = self._process_tiles_parallel(x, y, r, theta, v, c, sigma, I_bg, no_background, global_bmp_sel, output)
         else:
+            print("Using sequential processing")
             output = self._process_tiles_sequential(x, y, r, theta, v, c, sigma, I_bg, no_background, global_bmp_sel, output)
                 
         if return_alpha:
@@ -200,9 +203,20 @@ class SimpleTileRenderer(VectorRenderer):
             x, y, r, theta, x_starts, x_ends, y_starts, y_ends
         )
         
+        # Pre-filter primitives per tile for better performance
+        tile_primitive_indices = []
+        for tile_idx in range(total_tiles):
+            tile_mask = primitive_tile_masks[tile_idx]
+            if tile_mask.any():
+                indices = torch.nonzero(tile_mask, as_tuple=True)[0]
+                tile_primitive_indices.append(indices)
+            else:
+                tile_primitive_indices.append(torch.empty(0, dtype=torch.long, device=self.device))
+        
         # Try true parallel CUDA processing for all tiles at once
         if CUDA_AVAILABLE:
             try:
+                print("  🚀 Attempting CUDA kernel call...")
                 # Prepare all data for single CUDA call
                 result = self._cuda_process_all_tiles(
                     x, y, r, theta, v, c, sigma, I_bg, no_background,
@@ -210,8 +224,12 @@ class SimpleTileRenderer(VectorRenderer):
                     x_starts, x_ends, y_starts, y_ends
                 )
                 if result is not None:
+                    print("  ✅ CUDA kernel call successful!")
                     return result
+                else:
+                    print("  ⚠️ CUDA kernel call returned None, falling back...")
             except Exception as e:
+                print(f"  ❌ CUDA kernel call failed: {e}")
                 # Fallback to sequential processing
                 pass
         
@@ -250,6 +268,7 @@ class SimpleTileRenderer(VectorRenderer):
         This eliminates the Python for-loop and achieves true GPU parallelism.
         """
         try:
+            print("    📦 Preparing data for CUDA kernel...")
             # Prepare data for CUDA - ensure all tensors are float32
             means2D = torch.stack([x, y], dim=1).float()  # (N, 2)
             radii = r.float()  # (N,)
@@ -259,9 +278,29 @@ class SimpleTileRenderer(VectorRenderer):
             
             # Get primitive templates
             if global_bmp_sel is not None:
-                primitive_templates = global_bmp_sel.float()  # (N, H, W)
+                # Use global_bmp_sel to index into self.S to get the correct templates
+                primitive_templates = self.S[global_bmp_sel].float()  # (N, H, W)
             else:
                 primitive_templates = self.S.float()  # (N, H, W)
+
+            # Ensure primitive_templates has the right shape
+            if primitive_templates.dim() == 2:
+                # Single template: (H, W) -> (1, H, W)
+                primitive_templates = primitive_templates.unsqueeze(0)
+            elif primitive_templates.dim() == 3:
+                # Multiple templates: (T, H, W) - already correct
+                pass
+            else:
+                raise ValueError(f"Unexpected primitive_templates shape: {primitive_templates.shape}")
+
+            # Debug: Print template information
+            print(f"    📊 Template info: shape={primitive_templates.shape}, dtype={primitive_templates.dtype}")
+            print(f"    📊 Template range: [{primitive_templates.min():.4f}, {primitive_templates.max():.4f}]")
+            print(f"    📊 Template device: {primitive_templates.device}")
+            print(f"    📊 Template first few values: {primitive_templates[0, 16, 16].item():.4f}, {primitive_templates[1, 16, 16].item():.4f}")
+            print(f"    📊 global_bmp_sel info: {global_bmp_sel.shape if global_bmp_sel is not None else 'None'}")
+            if global_bmp_sel is not None:
+                print(f"    📊 global_bmp_sel range: [{global_bmp_sel.min():.0f}, {global_bmp_sel.max():.0f}]")
             
             # Prepare tile information
             tile_info = torch.stack([
@@ -269,12 +308,37 @@ class SimpleTileRenderer(VectorRenderer):
                 y_starts.float(), y_ends.float()
             ], dim=1)  # (total_tiles, 4)
             
+            print(f"    🎯 Calling CUDA rasterizer with {len(means2D)} primitives, {self.H}x{self.W} image...")
+            print(f"    📊 Input data ranges:")
+            print(f"      means2D: [{means2D.min():.4f}, {means2D.max():.4f}]")
+            print(f"      radii: [{radii.min():.4f}, {radii.max():.4f}]")
+            print(f"      rotations: [{rotations.min():.4f}, {rotations.max():.4f}]")
+            print(f"      opacities: [{opacities.min():.4f}, {opacities.max():.4f}]")
+            print(f"      colors: [{colors.min():.4f}, {colors.max():.4f}]")
+            
             # Call CUDA rasterizer for all tiles at once
+            # Pass pre-filtered primitive indices for better performance
             cuda_color, cuda_alpha = cuda_rasterize_tiles(
                 means2D, radii, rotations, opacities, colors,
                 primitive_templates, self.H, self.W, 
                 self.tile_size, sigma
             )
+            print("    ✅ CUDA rasterizer call completed!")
+            print(f"    📊 Output data ranges:")
+            print(f"      cuda_color: [{cuda_color.min():.4f}, {cuda_color.max():.4f}]")
+            print(f"      cuda_alpha: [{cuda_alpha.min():.4f}, {cuda_alpha.max():.4f}]")
+            
+            # Debug: Check if output is all zeros or all ones
+            if cuda_color.min() == cuda_color.max():
+                print(f"    ⚠️ WARNING: cuda_color is uniform value: {cuda_color.min():.4f}")
+            if cuda_alpha.min() == cuda_alpha.max():
+                print(f"    ⚠️ WARNING: cuda_alpha is uniform value: {cuda_alpha.min():.4f}")
+            
+            # Debug: Print sample pixel values
+            print(f"    📊 Sample pixel values:")
+            for i in range(min(3, cuda_color.shape[0])):
+                for j in range(min(3, cuda_color.shape[1])):
+                    print(f"      Pixel ({i},{j}): color={cuda_color[i,j].tolist()}, alpha={cuda_alpha[i,j]:.4f}")
             
             # Handle background
             if no_background:
@@ -290,6 +354,10 @@ class SimpleTileRenderer(VectorRenderer):
             return result
             
         except Exception as e:
+            print(f"    ❌ CUDA kernel call failed with exception: {e}")
+            import traceback
+            print(f"    📋 Exception traceback:")
+            traceback.print_exc()
             # Return None to trigger fallback
             return None
     
