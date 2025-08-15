@@ -29,8 +29,8 @@ def load_test_config():
 
 def create_simple_test_data(device='cuda'):
     """Create simple test data for comparison"""
-    N = 50  # Small number for easier debugging
-    H, W = 128, 128  # Small image size
+    N = 10000  # Larger number for better CUDA performance
+    H, W = 256, 256  # Larger image size
     
     # Create simple primitive parameters
     x = torch.rand(N, device=device) * W * 0.8 + W * 0.1  # Center in image
@@ -77,10 +77,41 @@ def test_cuda_vs_pytorch():
         original_cuda_available = str_module.CUDA_AVAILABLE
         str_module.CUDA_AVAILABLE = True
         
-        # Render with CUDA
+        # Warm up CUDA
+        print("🔥 Warming up CUDA...")
+        for _ in range(3):
+            _ = cuda_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
+        
+        # Synchronize GPU
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
+        # Time CUDA rendering
+        print("⏱️ Timing CUDA rendering...")
+        
+        # Check if CUDA kernel is actually being called
+        print("🔍 Checking CUDA kernel usage...")
+        
+        # Add debug info to see what's happening
+        import core.renderer.simple_tile_renderer as str_module
+        print(f"  CUDA_AVAILABLE: {str_module.CUDA_AVAILABLE}")
+        print(f"  Device: {device}")
+        print(f"  Data size: {len(x)} primitives, {H}x{W} image")
+        
+        start_time = torch.cuda.Event(enable_timing=True)
+        end_time = torch.cuda.Event(enable_timing=True)
+        
+        start_time.record()
         cuda_result = cuda_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
+        end_time.record()
+        
+        # Wait for GPU to finish
+        torch.cuda.synchronize()
+        cuda_time = start_time.elapsed_time(end_time)  # milliseconds
+        
         print(f"CUDA result shape: {cuda_result.shape}, dtype: {cuda_result.dtype}")
         print(f"CUDA result range: [{cuda_result.min():.4f}, {cuda_result.max():.4f}]")
+        print(f"⏱️ CUDA rendering time: {cuda_time:.2f} ms")
         
     except Exception as e:
         print(f"❌ CUDA rendering failed: {e}")
@@ -91,10 +122,31 @@ def test_cuda_vs_pytorch():
         # Force PyTorch fallback by temporarily disabling CUDA
         str_module.CUDA_AVAILABLE = False
         
-        # Render with PyTorch fallback
+        # Warm up PyTorch
+        print("🔥 Warming up PyTorch...")
+        for _ in range(3):
+            _ = pytorch_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
+        
+        # Synchronize if using CUDA
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
+        # Time PyTorch rendering
+        print("⏱️ Timing PyTorch rendering...")
+        import time
+        
+        start_time = time.time()
         pytorch_result = pytorch_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
+        
+        # Synchronize if using CUDA
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
+        pytorch_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+        
         print(f"PyTorch result shape: {pytorch_result.shape}, dtype: {pytorch_result.dtype}")
         print(f"PyTorch result range: [{pytorch_result.min():.4f}, {pytorch_result.max():.4f}]")
+        print(f"⏱️ PyTorch rendering time: {pytorch_time:.2f} ms")
         
         # Restore original CUDA availability
         str_module.CUDA_AVAILABLE = original_cuda_available
@@ -125,6 +177,23 @@ def test_cuda_vs_pytorch():
     print(f"  MSE: {mse:.8f}")
     print(f"  Max absolute difference: {max_diff:.8f}")
     print(f"  Mean absolute difference: {mean_diff:.8f}")
+    
+    # Performance comparison
+    print(f"\n🚀 Performance comparison:")
+    print(f"  CUDA time: {cuda_time:.2f} ms")
+    print(f"  PyTorch time: {pytorch_time:.2f} ms")
+    if pytorch_time > 0:
+        speedup = pytorch_time / cuda_time
+        print(f"  Speedup: {speedup:.2f}x faster with CUDA")
+        print(f"  Time savings: {pytorch_time - cuda_time:.2f} ms ({((pytorch_time - cuda_time) / pytorch_time * 100):.1f}% faster)")
+        
+        # Additional performance metrics
+        print(f"\n📊 Detailed performance metrics:")
+        total_pixels = H * W * 3
+        cuda_throughput = total_pixels / (cuda_time / 1000)  # pixels per second
+        pytorch_throughput = total_pixels / (pytorch_time / 1000)  # pixels per second
+        print(f"  CUDA throughput: {cuda_throughput/1e6:.1f} M pixels/sec")
+        print(f"  PyTorch throughput: {pytorch_throughput/1e6:.1f} M pixels/sec")
     
     # Determine if results are similar enough
     tolerance = 1e-4  # Reasonable tolerance for floating point
