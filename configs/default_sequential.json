@@ -47,7 +47,7 @@
     "hollow": false
   },
   "optimization": {
-    "use_fp16": false,
+    "use_fp16": true,
     "renderer_type": "mse",
     "num_iterations": 100,
     "batch_optimization": false,

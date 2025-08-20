@@ -577,11 +577,14 @@ if config['postprocessing'].get('compute_psnr', False):
                 rendered_t = rendered_frame.permute(2, 0, 1).unsqueeze(0)
                 target_t = I_target_frame.permute(2, 0, 1).unsqueeze(0)
                 
+                rendered_t_f32 = rendered_t.float()
+                target_t_f32 = target_t.float()
+
                 # Compute metrics for this frame
-                psnr_val = piq.psnr(rendered_t, target_t, data_range=1.0)
-                ssim_val = piq.ssim(rendered_t, target_t, data_range=1.0)
-                vif_val = piq.vif_p(rendered_t, target_t, data_range=1.0)
-                lpips_val = piq.LPIPS()(rendered_t, target_t)
+                psnr_val = piq.psnr(rendered_t_f32, target_t_f32, data_range=1.0)
+                ssim_val = piq.ssim(rendered_t_f32, target_t_f32, data_range=1.0)
+                vif_val = piq.vif_p(rendered_t_f32, target_t_f32, data_range=1.0)
+                lpips_val = piq.LPIPS()(rendered_t_f32, target_t_f32)
                 
                 print(f"Frame {frame_idx + 1}: PSNR: {psnr_val.item():.2f} dB, SSIM: {ssim_val.item():.4f}, VIF: {vif_val.item():.4f}, LPIPS: {lpips_val.item():.4f}")
                 
@@ -618,10 +621,13 @@ if config['postprocessing'].get('compute_psnr', False):
                 target_t = target_t * mask_tensor
 
             # Compute metrics
-            psnr_val = piq.psnr(rendered_t, target_t, data_range=1.0)
-            ssim_val = piq.ssim(rendered_t, target_t, data_range=1.0)
-            vif_val = piq.vif_p(rendered_t, target_t, data_range=1.0)
-            lpips_val = piq.LPIPS()(rendered_t, target_t)
+            rendered_t_f32 = rendered_t.float()
+            target_t_f32 = target_t.float()
+
+            psnr_val = piq.psnr(rendered_t_f32, target_t_f32, data_range=1.0)
+            ssim_val = piq.ssim(rendered_t_f32, target_t_f32, data_range=1.0)
+            vif_val = piq.vif_p(rendered_t_f32, target_t_f32, data_range=1.0)
+            lpips_val = piq.LPIPS()(rendered_t_f32, target_t_f32)
 
             # If no background, compute alpha loss
             if not exist_bg:
