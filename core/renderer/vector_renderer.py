@@ -1044,6 +1044,11 @@ class VectorRenderer:
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
+
+                # Clamp r to prevent NaN in grid_sample (r must be positive)
+                with torch.no_grad():
+                    r.clamp_(min=2.0, max=64.0)  # min=2, max=64
+               
             else:
                 if is_no_bg_mode:
                     rendered = self.render_from_params(
@@ -1061,6 +1066,10 @@ class VectorRenderer:
                 # Backward pass
                 loss.backward()
                 optimizer.step()
+
+                # Clamp r to prevent NaN in grid_sample (r must be positive)
+                with torch.no_grad():
+                    r.clamp_(min=2.0, max=64.0)  # min=2, max=64
             
             # Update learning rate
             if scheduler is not None:
