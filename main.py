@@ -19,7 +19,6 @@ import cv2
 from datetime import datetime
 from core.renderer.mse_renderer import MseRenderer
 from core.renderer.sequential_renderer import SequentialFrameRenderer
-from core.renderer.simple_tile_renderer import SimpleTileRenderer
 from util.svg_loader import SVGLoader
 from util.primitive_loader import PrimitiveLoader
 from util.svg_converter import FontParser, ImageToSVG

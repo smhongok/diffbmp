@@ -208,36 +208,47 @@ class VectorRenderer:
         return output
     
     def _process_tiles_sequential(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
-                                 theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
-                                 sigma: float, I_bg: torch.Tensor, no_background: bool,
-                                 global_bmp_sel: torch.Tensor, output: torch.Tensor) -> torch.Tensor:
-        """Sequential tile processing (original method)."""
-        for tile_y in range(self.tiles_h):
-            for tile_x in range(self.tiles_w):
-                # Calculate tile boundaries
-                y_start = tile_y * self.tile_size
-                y_end = min(y_start + self.tile_size, self.H)
-                x_start = tile_x * self.tile_size  
-                x_end = min(x_start + self.tile_size, self.W)
+                             theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
+                             sigma: float, I_bg: torch.Tensor, no_background: bool,
+                             global_bmp_sel: torch.Tensor, output: torch.Tensor) -> torch.Tensor:
+        """Sequential tile processing using unified primitive assignment."""
+        
+        # Pre-compute all tile boundaries
+        total_tiles = self.tiles_h * self.tiles_w
+        tile_y_coords = torch.arange(self.tiles_h, device=self.device).repeat_interleave(self.tiles_w)
+        tile_x_coords = torch.arange(self.tiles_w, device=self.device).repeat(self.tiles_h)
+        
+        y_starts = tile_y_coords * self.tile_size
+        y_ends = torch.clamp(y_starts + self.tile_size, max=self.H)
+        x_starts = tile_x_coords * self.tile_size
+        x_ends = torch.clamp(x_starts + self.tile_size, max=self.W)
+        
+        # Unified vectorized primitive-to-tile assignment with accurate bounding boxes
+        primitive_tile_masks = self._unified_primitive_assignment(
+            x, y, r, theta, x_starts, x_ends, y_starts, y_ends
+        )
+        
+        # Process tiles sequentially
+        for tile_idx in range(total_tiles):
+            # Get primitives affecting this tile
+            tile_mask = primitive_tile_masks[tile_idx]
+            if not tile_mask.any():
+                continue
                 
-                # Find primitives that affect this tile
-                tile_primitive_indices = self._get_tile_primitives(
-                    x, y, r, theta, x_start, x_end, y_start, y_end
-                )
-                
-                # Skip if no primitives affect this tile
-                if len(tile_primitive_indices) == 0:
-                    continue
-                
-                # Render this tile with selected primitives only
-                tile_result = self._render_tile(
-                    x, y, r, theta, v, c, tile_primitive_indices,
-                    x_start, x_end, y_start, y_end, sigma, I_bg, no_background,
-                    global_bmp_sel=global_bmp_sel
-                )
-                
-                # Place result in output canvas
-                output[y_start:y_end, x_start:x_end] = tile_result
+            tile_primitive_indices = torch.nonzero(tile_mask, as_tuple=True)[0].tolist()
+            
+            # Render this tile with selected primitives only
+            tile_result = self._render_tile(
+                x, y, r, theta, v, c, tile_primitive_indices,
+                x_starts[tile_idx].item(), x_ends[tile_idx].item(),
+                y_starts[tile_idx].item(), y_ends[tile_idx].item(),
+                sigma, I_bg, no_background, global_bmp_sel=global_bmp_sel
+            )
+            
+            # Place result in output canvas
+            y_start, y_end = y_starts[tile_idx].item(), y_ends[tile_idx].item()
+            x_start, x_end = x_starts[tile_idx].item(), x_ends[tile_idx].item()
+            output[y_start:y_end, x_start:x_end] = tile_result
         
         return output
     
@@ -257,8 +268,8 @@ class VectorRenderer:
         x_starts = tile_x_coords * self.tile_size
         x_ends = torch.clamp(x_starts + self.tile_size, max=self.W)
         
-        # Vectorized primitive-to-tile assignment
-        primitive_tile_masks = self._vectorized_primitive_assignment(
+        # Unified vectorized primitive-to-tile assignment with accurate bounding boxes
+        primitive_tile_masks = self._unified_primitive_assignment(
             x, y, r, theta, x_starts, x_ends, y_starts, y_ends
         )
         
@@ -286,37 +297,81 @@ class VectorRenderer:
         
         return output
     
-    def _vectorized_primitive_assignment(self, x: torch.Tensor, y: torch.Tensor, 
-                                       r: torch.Tensor, theta: torch.Tensor,
-                                       x_starts: torch.Tensor, x_ends: torch.Tensor,
-                                       y_starts: torch.Tensor, y_ends: torch.Tensor) -> torch.Tensor:
-        """Vectorized computation of which primitives affect which tiles."""
+
+
+    def _unified_primitive_assignment(self, x: torch.Tensor, y: torch.Tensor, 
+                                    r: torch.Tensor, theta: torch.Tensor,
+                                    x_starts: torch.Tensor, x_ends: torch.Tensor,
+                                    y_starts: torch.Tensor, y_ends: torch.Tensor) -> torch.Tensor:
+        """
+        Unified vectorized computation of which primitives affect which tiles.
+        Combines the speed of vectorized operations with the accuracy of precise bounding boxes.
+        
+        Args:
+            x, y: (N,) primitive positions
+            r: (N,) primitive scales  
+            theta: (N,) primitive rotations
+            x_starts, x_ends, y_starts, y_ends: (total_tiles,) tile boundaries
+            
+        Returns:
+            torch.Tensor: (total_tiles, N) boolean mask where [i, j] indicates 
+                         if primitive j affects tile i
+        """
         N = len(x)
         total_tiles = len(x_starts)
+        p = len(self.primitive_bboxes)
+        
+        # Pre-compute trigonometric values for all primitives
+        cos_theta = torch.cos(theta)  # (N,)
+        sin_theta = torch.sin(theta)  # (N,)
+        
+        # Get primitive indices (cycling through available primitives)
+        prim_indices = torch.arange(N, device=self.device) % p  # (N,)
+        
+        # Extract bounding boxes for all primitives
+        # Convert list of tuples to tensor for vectorized operations
+        bbox_tensor = torch.tensor(self.primitive_bboxes, device=self.device)  # (p, 4)
+        selected_bboxes = bbox_tensor[prim_indices]  # (N, 4)
+        
+        min_u = selected_bboxes[:, 0]  # (N,)
+        max_u = selected_bboxes[:, 1]  # (N,)
+        min_v = selected_bboxes[:, 2]  # (N,)
+        max_v = selected_bboxes[:, 3]  # (N,)
+        
+        # Create all corner combinations for bounding boxes
+        corners_u = torch.stack([min_u, max_u, min_u, max_u], dim=1)  # (N, 4)
+        corners_v = torch.stack([min_v, min_v, max_v, max_v], dim=1)  # (N, 4)
+        
+        # Transform all corners to world coordinates (vectorized)
+        # Broadcasting: (N, 1) * (N, 4) -> (N, 4)
+        world_x = x.unsqueeze(1) + r.unsqueeze(1) * (
+            corners_u * cos_theta.unsqueeze(1) - corners_v * sin_theta.unsqueeze(1)
+        )  # (N, 4)
+        world_y = y.unsqueeze(1) + r.unsqueeze(1) * (
+            corners_u * sin_theta.unsqueeze(1) + corners_v * cos_theta.unsqueeze(1)
+        )  # (N, 4)
+        
+        # Compute bounding box extents for each primitive
+        bbox_x_min = world_x.min(dim=1)[0]  # (N,)
+        bbox_x_max = world_x.max(dim=1)[0]  # (N,)
+        bbox_y_min = world_y.min(dim=1)[0]  # (N,)
+        bbox_y_max = world_y.max(dim=1)[0]  # (N,)
         
         # Expand dimensions for broadcasting: (N, 1) and (1, total_tiles)
-        x_exp = x.unsqueeze(1)  # (N, 1)
-        y_exp = y.unsqueeze(1)  # (N, 1)
-        r_exp = r.unsqueeze(1)  # (N, 1)
+        bbox_x_min_exp = bbox_x_min.unsqueeze(1)  # (N, 1)
+        bbox_x_max_exp = bbox_x_max.unsqueeze(1)  # (N, 1)
+        bbox_y_min_exp = bbox_y_min.unsqueeze(1)  # (N, 1)
+        bbox_y_max_exp = bbox_y_max.unsqueeze(1)  # (N, 1)
         
         x_starts_exp = x_starts.unsqueeze(0)  # (1, total_tiles)
         x_ends_exp = x_ends.unsqueeze(0)      # (1, total_tiles)
         y_starts_exp = y_starts.unsqueeze(0)  # (1, total_tiles)
         y_ends_exp = y_ends.unsqueeze(0)      # (1, total_tiles)
         
-        # Compute primitive bounding boxes (considering rotation and radius)
-        # For simplicity, use conservative bounding box: center ± (r * sqrt(2))
-        bbox_margin = r_exp * 1.5  # Conservative margin for rotation
-        
-        prim_x_min = x_exp - bbox_margin
-        prim_x_max = x_exp + bbox_margin
-        prim_y_min = y_exp - bbox_margin
-        prim_y_max = y_exp + bbox_margin
-        
-        # Check intersection: primitive bbox overlaps with tile bbox
-        # Intersection condition: not (prim_max < tile_min or prim_min > tile_max)
-        x_intersect = ~((prim_x_max < x_starts_exp) | (prim_x_min > x_ends_exp))
-        y_intersect = ~((prim_y_max < y_starts_exp) | (prim_y_min > y_ends_exp))
+        # Vectorized intersection test for all primitive-tile pairs
+        # Intersection condition: not (bbox_max < tile_min or bbox_min > tile_max)
+        x_intersect = ~((bbox_x_max_exp < x_starts_exp) | (bbox_x_min_exp > x_ends_exp))
+        y_intersect = ~((bbox_y_max_exp < y_starts_exp) | (bbox_y_min_exp > y_ends_exp))
         
         # Both x and y must intersect
         intersections = x_intersect & y_intersect  # (N, total_tiles)
@@ -324,56 +379,7 @@ class VectorRenderer:
         # Transpose to get (total_tiles, N) - each row is primitives affecting that tile
         return intersections.t()
     
-    def _get_tile_primitives(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
-                            theta: torch.Tensor, x_start: int, x_end: int, 
-                            y_start: int, y_end: int) -> List[int]:
-        """
-        Find primitives whose transformed bounding boxes intersect with the given tile.
-        
-        Args:
-            x, y: (N,) primitive positions
-            r: (N,) primitive scales
-            theta: (N,) primitive rotations
-            x_start, x_end, y_start, y_end: Tile boundaries
-            
-        Returns:
-            List of primitive indices that affect this tile
-        """
-        N = x.shape[0]
-        p = len(self.primitive_bboxes)
-        intersecting_indices = []
-        
-        for i in range(N):
-            # Get primitive index (cycling through available primitives)
-            prim_idx = i % p
-            min_u, max_u, min_v, max_v = self.primitive_bboxes[prim_idx]
-            
-            # Transform bounding box corners to world coordinates
-            # Apply scale and rotation
-            cos_t = torch.cos(theta[i])
-            sin_t = torch.sin(theta[i])
-            scale = r[i]
-            
-            # Bounding box corners in primitive space
-            corners_u = torch.tensor([min_u, max_u, min_u, max_u], device=self.device)
-            corners_v = torch.tensor([min_v, min_v, max_v, max_v], device=self.device)
-            
-            # Transform to world coordinates
-            world_x = x[i] + scale * (corners_u * cos_t - corners_v * sin_t)
-            world_y = y[i] + scale * (corners_u * sin_t + corners_v * cos_t)
-            
-            # Check if transformed bounding box intersects tile
-            bbox_x_min = world_x.min().item()
-            bbox_x_max = world_x.max().item()
-            bbox_y_min = world_y.min().item()
-            bbox_y_max = world_y.max().item()
-            
-            # Intersection test
-            if (bbox_x_min < x_end and bbox_x_max > x_start and
-                bbox_y_min < y_end and bbox_y_max > y_start):
-                intersecting_indices.append(i)
-        
-        return intersecting_indices
+
     
     def _render_tile(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                      theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
