@@ -265,6 +265,12 @@ class VectorRenderer:
             c = c
             N = v.shape[0]
 
+            # Debug: Print input data ranges
+            print(f"📊 VectorRenderer Input data ranges:")
+            print(f"      v (opacities): [{v.min():.4f}, {v.max():.4f}]")
+            print(f"      c (colors): [{c.min():.4f}, {c.max():.4f}]")
+            print(f"      cached_masks: [{cached_masks.min():.4f}, {cached_masks.max():.4f}]")
+
             # 1. per-primitive alpha & color
             v_alpha = self.alpha_upper_bound * torch.sigmoid(v).view(N, 1, 1)
             a = v_alpha * cached_masks                     # (N, H, W)

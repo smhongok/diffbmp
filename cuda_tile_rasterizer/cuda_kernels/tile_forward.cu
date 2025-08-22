@@ -2,337 +2,478 @@
 #include <device_launch_parameters.h>
 #include <stdio.h>
 #include "tile_forward.h"
+#include "tile_common.h"
 
-#define DEBUG_CUDA_KERNELS 1
+#define DEBUG_CUDA_KERNELS 0
+#define DEBUG_SEQUENTIAL 0  // Set to 1 for sequential debugging, 0 for parallel execution
 
-__device__ float bilinear_sample(const float* data, int height, int width, float y, float x) {
-    // Clamp coordinates
-    x = fmaxf(0.0f, fminf(width - 1.0f, x));
-    y = fmaxf(0.0f, fminf(height - 1.0f, y));
-    
-    int x0 = (int)floorf(x);
-    int y0 = (int)floorf(y);
-    int x1 = min(x0 + 1, width - 1);
-    int y1 = min(y0 + 1, height - 1);
-    
-    float wx = x - x0;
-    float wy = y - y0;
-    
-    float v00 = data[y0 * width + x0];
-    float v01 = data[y0 * width + x1];
-    float v10 = data[y1 * width + x0];
-    float v11 = data[y1 * width + x1];
-    
-    return v00 * (1 - wx) * (1 - wy) + v01 * wx * (1 - wy) + 
-           v10 * (1 - wx) * wy + v11 * wx * wy;
-}
-
+// Forward kernel:
+// - Per pixel: iterate tile's primitive list (global ids)
+// - Push into per-pixel caches (alpha, color, T placeholder) in the SAME order as forward condition
+//   * Push condition == radius check ONLY (to keep k mapping with backward)
+// - Compute T[k] and composite with OVER: C = Σ T[k] * (c_k * α_k),  A = 1 - Π(1-α_k)
 __global__ void tile_rasterize_forward_kernel(
-    const float* means2D,
-    const float* radii,
-    const float* rotations,
-    const float* opacities,
-    const float* colors,
-    const float* primitive_templates,
-    float* out_color,
-    float* out_alpha,
-    int num_primitives,
-    int num_templates,
-    int template_height,
-    int template_width,
-    int image_height,
-    int image_width,
-    int tile_size,
-    float sigma,
-    float alpha_upper_bound,
-    int total_tiles) {
+    const InputTensors inputs,
+    const OutputTensors outputs,
+    const GlobalBuffers buffers,
+    const TileConfig tile_config,
+    const PrimitiveConfig prim_config)
+{
+    const int W = tile_config.image_width;
+    const int H = tile_config.image_height;
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= W || y >= H) return;
+
+    // Tile mapping
+    const int tilesX = (W + tile_config.tile_size - 1) / tile_config.tile_size;
+    const int tx = x / tile_config.tile_size;
+    const int ty = y / tile_config.tile_size;
+    const int tile_id = ty * tilesX + tx;
     
-    // Shared memory for caching frequently accessed data
-    __shared__ float shared_templates[1024];  // Cache template data
-    
-    // Debug: Print kernel launch info (only from first thread)
-#if DEBUG_CUDA_KERNELS
-    if (blockIdx.x == 0 && threadIdx.x == 0) {
-        printf("CUDA Kernel: num_primitives=%d, num_templates=%d, template_size=%dx%d, image_size=%dx%d\n",
-               num_primitives, num_templates, template_width, template_height, image_width, image_height);
-    }
-#endif
-    
-    int tile_id = blockIdx.x;
-    int pixel_id = threadIdx.x;
-    
-    if (tile_id >= total_tiles) return;
-    
-    // Calculate tile coordinates
-    int tiles_x = (image_width + tile_size - 1) / tile_size;
-    int tile_x = tile_id % tiles_x;
-    int tile_y = tile_id / tiles_x;
-    
-    // Calculate tile bounds
-    int tile_start_x = tile_x * tile_size;
-    int tile_start_y = tile_y * tile_size;
-    int tile_end_x = min(tile_start_x + tile_size, image_width);
-    int tile_end_y = min(tile_start_y + tile_size, image_height);
-    
-    int tile_width = tile_end_x - tile_start_x;
-    int tile_height = tile_end_y - tile_start_y;
-    int pixels_in_tile = tile_width * tile_height;
-    
-    if (pixel_id >= pixels_in_tile) return;
-    
-    // Calculate pixel coordinates within tile
-    int local_x = pixel_id % tile_width;
-    int local_y = pixel_id / tile_width;
-    int global_x = tile_start_x + local_x;
-    int global_y = tile_start_y + local_y;
-    
-    // Initialize pixel values (start with transparent, background will be added later)
-    float pixel_color[3] = {0.0f, 0.0f, 0.0f};
-    float pixel_alpha = 0.0f;
-    
-    // Process all primitives for this pixel
-    int primitives_processed = 0;
-    int primitives_in_range = 0;
-    
-    // Early exit if no primitives are likely to affect this pixel
-    // This reduces unnecessary computation for empty regions
-    bool has_primitives_nearby = false;
-    for (int prim_id = 0; prim_id < num_primitives; prim_id++) {
-        float mean_x = means2D[prim_id * 2];
-        float mean_y = means2D[prim_id * 2 + 1];
-        float radius = radii[prim_id];
-        
-        // Quick distance check
-        float dx = (float)global_x - mean_x;
-        float dy = (float)global_y - mean_y;
-        float dist_sq = dx * dx + dy * dy;
-        
-        if (dist_sq <= radius * radius * 2.0f) {
-            has_primitives_nearby = true;
-            break;
-        }
+    #if DEBUG_CUDA_KERNELS
+    // Debug tile access
+    if (x == 0 && y == 0) {
+        printf("CUDA Kernel: Debug - tilesX=%d, total_tiles=%d, tile_id=%d\n", tilesX, tile_config.total_tiles, tile_id);
+        printf("CUDA Kernel: Debug - d_tile_offsets ptr=%p, d_tile_indices ptr=%p\n", buffers.d_tile_offsets, buffers.d_tile_indices);
+        printf("CUDA Kernel: Debug - tile_offsets_size=%d, tile_indices_size=%d\n", buffers.tile_offsets_size, buffers.tile_indices_size);
     }
     
-    if (!has_primitives_nearby) {
-        // No primitives nearby, set transparent pixels (background will be applied by Python)
-        int output_idx = global_y * image_width + global_x;
-        out_color[output_idx * 3] = 0.0f;     // Transparent
-        out_color[output_idx * 3 + 1] = 0.0f;
-        out_color[output_idx * 3 + 2] = 0.0f;
-        out_alpha[output_idx] = 0.0f;
+    // Bounds checking for tile access
+    if (tile_id >= tile_config.total_tiles) {
+        printf("CUDA Kernel: Invalid tile ID: tile_id=%d, total_tiles=%d\n", 
+               tile_id, tile_config.total_tiles);
+        return;
+    }
+
+    // Additional bounds checking for tile offsets
+    if (tile_id >= buffers.tile_offsets_size - 1) {
+        printf("CUDA Kernel: Invalid tile ID for offsets: tile_id=%d, offsets_size=%d\n", 
+               tile_id, buffers.tile_offsets_size);
+        return;
+    }
+    #endif
+
+    // Tile list
+    const int start = buffers.d_tile_offsets[tile_id + 0];
+    const int end   = buffers.d_tile_offsets[tile_id + 1];
+    
+    #if DEBUG_CUDA_KERNELS
+    // Debug tile offsets
+    if (x == 0 && y == 0) {
+        printf("CUDA Kernel: Debug - tile_id=%d, start=%d, end=%d\n", tile_id, start, end);
+    }
+    
+    if (end < start) { // 방어
+        if (x==0 && y==0) printf("Forward: bad tile offsets tile=%d start=%d end=%d\n", tile_id, start, end);
         return;
     }
     
-    // Process primitives that might affect this pixel
-    for (int prim_id = 0; prim_id < num_primitives; prim_id++) {
-        float mean_x = means2D[prim_id * 2];
-        float mean_y = means2D[prim_id * 2 + 1];
-        float radius = radii[prim_id];
-        float rotation = rotations[prim_id];
-        float opacity_logit = opacities[prim_id];
-        
-#if DEBUG_CUDA_KERNELS
-        // Debug: Print first few primitives info (only from first pixel)
-        if (global_x == 0 && global_y == 0 && prim_id < 3) {
-            printf("Primitive %d: pos=(%.2f,%.2f), r=%.2f, theta=%.2f, opacity=%.2f\n",
-                   prim_id, mean_x, mean_y, radius, rotation, opacity_logit);
-        }
-#endif
-        
-        // Quick distance check first (avoid expensive operations)
-        float dx = (float)global_x - mean_x;
-        float dy = (float)global_y - mean_y;
-        float dist_sq = dx * dx + dy * dy;
-        
-        if (dist_sq > radius * radius * 2.0f) {
-            continue; // Pixel too far from primitive
-        }
-        
-        primitives_in_range++;
-        
-        
-#if DEBUG_CUDA_KERNELS
-        // Debug: Print primitive processing info (only from first pixel and first few primitives)
-        if (global_x == 0 && global_y == 0 && prim_id < 3) {
-            printf("Primitive %d processing: dist_sq=%.2f, radius_sq=%.2f, in_range=%s\n",
-                   prim_id, dist_sq, radius * radius * 2.0f, (dist_sq <= radius * radius * 2.0f) ? "YES" : "NO");
-        }
-#endif
-        
-        // Normalize by radius
-        float norm_dx = dx / radius;
-        float norm_dy = dy / radius;
-        
-        // Apply inverse rotation
-        float cos_theta = cosf(rotation);
-        float sin_theta = sinf(rotation);
-        float u = cos_theta * norm_dx + sin_theta * norm_dy;
-        float v = -sin_theta * norm_dx + cos_theta * norm_dy;
-        
-        // Convert to template coordinates [-1, 1] -> [0, template_size-1]
-        // PyTorch grid_sample with align_corners=True
-        float sample_u = (u + 1.0f) * 0.5f * (template_width - 1);
-        float sample_v = (v + 1.0f) * 0.5f * (template_height - 1);
-        
-        // Ensure coordinates are within bounds
-        sample_u = fmaxf(0.0f, fminf(template_width - 1.0f, sample_u));
-        sample_v = fmaxf(0.0f, fminf(template_height - 1.0f, sample_v));
-        
-        // Template selection (match PyTorch periodic assignment with flip)
-        int template_idx;
-        if (num_templates > 1) {
-            template_idx = (num_primitives - 1 - prim_id) % num_templates;
-            // Ensure template_idx is within bounds
-            if (template_idx >= num_templates) {
-                template_idx = 0;
-            }
-        } else {
-            template_idx = 0;
-        }
-        
-        // Sample primitive template
-        float mask_value = 0.0f;
-        if (template_idx >= 0 && template_idx < num_templates) {
-            mask_value = bilinear_sample(
-                &primitive_templates[template_idx * template_height * template_width],
-                template_height, template_width, sample_v, sample_u);
-            
-            // Clamp mask_value to valid range
-            mask_value = fmaxf(0.0f, fminf(1.0f, mask_value));
-            
-#if DEBUG_CUDA_KERNELS
-            // Debug: Print template sampling info (only from first pixel and first primitive)
-            if (global_x == 0 && global_y == 0 && prim_id == 0) {
-                printf("Template sampling: idx=%d, u=%.2f, v=%.2f, sample_u=%.2f, sample_v=%.2f, mask=%.4f\n",
-                       template_idx, u, v, sample_u, sample_v, mask_value);
-            }
-            
-            // Debug: Check if mask_value is reasonable
-            if (global_x == 0 && global_y == 0 && prim_id == 0) {
-                printf("Template check: template_idx=%d, num_templates=%d, mask_value=%.4f\n",
-                       template_idx, num_templates, mask_value);
-            }
-            
+    // Bounds checking for tile indices
+    if (end > buffers.tile_indices_size) {
+        printf("CUDA Kernel: Invalid tile indices end: end=%d, indices_size=%d\n", 
+               end, buffers.tile_indices_size);
+        return;
+    }
+    #endif
+    
+    const int Ktile = end - start;
+    const int* prim_ids = buffers.d_tile_indices + start;
 
-#endif
+    // Pixel index and per-pixel cache base
+    const int pixel_idx = y * W + x;
+    const int base = pixel_idx * prim_config.max_prims_per_pixel;
+    
+    // Bounds checking for base index
+    const int total_pixels = W * H;
+    const int max_base = total_pixels * prim_config.max_prims_per_pixel;
+    #if DEBUG_CUDA_KERNELS
+    if (base >= max_base) {
+        printf("CUDA Kernel: Invalid base index: pixel_idx=%d, base=%d, max_base=%d\n", pixel_idx, base, max_base);
+        return;
+    }
+    #endif
+
+    // Reset count (optional if already zeroed by caller)
+    int local_k = 0;
+
+    // Phase 1: fill per-pixel caches in forward push order (radius check only)
+    for (int kk = 0; kk < Ktile; ++kk) {
+        const int n = prim_ids[kk];                     // global primitive id
+        if (n < 0 || n >= prim_config.num_primitives)   // safety
+            continue;
+
+        // Forward push condition: radius check only (to keep k mapping with backward)
+        const float mx = inputs.means2D[2*n + 0];
+        const float my = inputs.means2D[2*n + 1];
+        const float r  = inputs.radii[n];
+        const float dx = (float)x - mx;
+        const float dy = (float)y - my;
+        if (dx*dx + dy*dy > r*r) {
+            continue;  // not pushed, keep local_k unchanged
         }
-        
-        // Convert opacity logit to probability
-        float opacity = 1.0f / (1.0f + expf(-opacity_logit));
-        float alpha = alpha_upper_bound * opacity * mask_value;
-        
-#if DEBUG_CUDA_KERNELS
-        // Debug: Print more detailed info for first few primitives
-        if (global_x == 0 && global_y == 0 && prim_id < 3) {
-            printf("Primitive %d: template_idx=%d, mask=%.4f, opacity=%.4f, alpha=%.4f\n",
-                   prim_id, template_idx, mask_value, opacity, alpha);
+
+        if (local_k >= prim_config.max_prims_per_pixel) {
+            // cache overflow guard: ignore remaining
+            printf("@@@@@@@@@@@@@@@@@@@@@@@@@[ERROR]CUDA Kernel: cache overflow guard: ignore remaining@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
+            break;
         }
-#endif
-        
-        // Convert color logits to RGB
-        float color_r = 1.0f / (1.0f + expf(-colors[prim_id * 3]));
-        float color_g = 1.0f / (1.0f + expf(-colors[prim_id * 3 + 1]));
-        float color_b = 1.0f / (1.0f + expf(-colors[prim_id * 3 + 2]));
-        
-        // Alpha compositing (Porter-Duff over)
-        float one_minus_alpha = 1.0f - alpha;
-        pixel_color[0] = pixel_color[0] * one_minus_alpha + color_r * alpha;
-        pixel_color[1] = pixel_color[1] * one_minus_alpha + color_g * alpha;
-        pixel_color[2] = pixel_color[2] * one_minus_alpha + color_b * alpha;
-        pixel_alpha = pixel_alpha * one_minus_alpha + alpha;
-        
-#if DEBUG_CUDA_KERNELS
-        // Debug: Print alpha compositing info (only from first pixel and first primitive)
-        if (global_x == 0 && global_y == 0 && prim_id == 0) {
-            printf("Alpha compositing: alpha=%.4f, color=(%.4f,%.4f,%.4f), final_color=(%.4f,%.4f,%.4f)\n",
-                   alpha, color_r, color_g, color_b, pixel_color[0], pixel_color[1], pixel_color[2]);
+
+        // Opacity: logits -> prob via sigmoid
+        const float op_logit = inputs.opacities[n];
+        const float s_op     = sigmoidf_safe(op_logit);           // in [0,1]
+        const float alpha_max= tile_config.alpha_upper_bound;
+
+        // Template mask via bilinear
+        const int template_idx = inputs.global_bmp_sel[n];
+        float mask_value = 0.f;
+        if (template_idx >= 0 && template_idx < prim_config.num_templates) {
+            const float r_inv = r > 1e-6f ? (1.f / r) : 1e6f;     // avoid div0
+            const float phi = inputs.rotations[n];
+            const float c = __cosf(phi), s = __sinf(phi);
+            const float ndx = dx * r_inv;
+            const float ndy = dy * r_inv;
+            const float u =  c*ndx + s*ndy;                        // [-?,?]
+            const float v = -s*ndx + c*ndy;
+
+            const float tex_x = (u + 1.f) * 0.5f * (prim_config.template_width  - 1); // [0..W-1]
+            const float tex_y = (v + 1.f) * 0.5f * (prim_config.template_height - 1); // [0..H-1]
+
+            const float* tex = &inputs.primitive_templates[template_idx * prim_config.template_height * prim_config.template_width];
+            mask_value = bilinear_sample(tex, prim_config.template_height, prim_config.template_width, tex_y, tex_x);
+            //mask_value = fmaxf(0.f, fminf(1.f, mask_value));
+            mask_value = fminf(fmaxf(mask_value, 0.f), 1.f);
         }
+
+        // Alpha and color for this primitive at this pixel
+        const float a_k = alpha_max * s_op * mask_value;          // α_k
+        const float sr  = sigmoidf_safe(inputs.colors[3*n + 0]);  // c_k (premult src)
+        const float sg  = sigmoidf_safe(inputs.colors[3*n + 1]);
+        const float sb  = sigmoidf_safe(inputs.colors[3*n + 2]);
+
+        const int idx = base + local_k;
         
-        // Debug: Print intermediate values (only from first pixel and first primitive)
-        if (global_x == 0 && global_y == 0 && prim_id == 0) {
-            printf("Intermediate: opacity_logit=%.2f, opacity=%.4f, mask_value=%.4f, alpha=%.4f\n",
-                   opacity_logit, opacity, mask_value, alpha);
+        #if DEBUG_CUDA_KERNELS
+        // Bounds checking for cache access
+        if (idx >= max_base) {
+            printf("CUDA Kernel: Invalid cache index: idx=%d, max_base=%d\n", idx, max_base);
+            break;
         }
-#endif
+        #endif
+
+        // Cache: α_k, colors (non-premult), and T placeholder (set later)
+        buffers.pixel_alphas[idx]   = a_k;
+        buffers.pixel_colors_r[idx] = sr;
+        buffers.pixel_colors_g[idx] = sg;
+        buffers.pixel_colors_b[idx] = sb;
+        // T[k] will be written after we know previous alphas
+        // buffers.pixel_T_values[idx] = ???  (set in Phase 2)
+
+        local_k++;
+    }
+
+    // Store per-pixel count
+    buffers.pixel_prim_counts[pixel_idx] = local_k;
+
+    float T = 1.f;
+    float comp_r = 0.f, comp_g = 0.f, comp_b = 0.f;
+
+    // Phase 2: compute T[k] and OVER composite
+    for (int k = 0; k < local_k; ++k) {
+        const int idx = base + k;
         
-        primitives_processed++;
+        #if DEBUG_CUDA_KERNELS
+        // Bounds checking for cache access
+        if (idx >= max_base) {
+            printf("CUDA Kernel: Invalid cache index in Phase 2: idx=%d, max_base=%d\n", idx, max_base);
+            break;
+        }
+        #endif
+        
+        const float a_k = buffers.pixel_alphas[idx];
+        const float cr  = buffers.pixel_colors_r[idx];
+        const float cg  = buffers.pixel_colors_g[idx];
+        const float cb  = buffers.pixel_colors_b[idx];
+
+        // cache T[k] BEFORE updating by (1-α_k)
+        buffers.pixel_T_values[idx] = T;
+
+        // OVER accumulation with premultiplied color m_k = c_k * α_k
+        comp_r += T * cr * a_k;
+        comp_g += T * cg * a_k;
+        comp_b += T * cb * a_k;
+
+        T *= fmaxf(1.f - a_k, 0.f);
+    }
+    const float comp_a = 1.f - T;
+
+    outputs.out_color[pixel_idx * 3 + 0] = comp_r;
+    outputs.out_color[pixel_idx * 3 + 1] = comp_g;
+    outputs.out_color[pixel_idx * 3 + 2] = comp_b;
+    outputs.out_alpha[pixel_idx]         = comp_a;
+}
+
+// DEBUG MODE: Sequential version of the forward kernel for debugging
+__global__ void tile_rasterize_forward_kernel_debug(
+    const InputTensors inputs,
+    const OutputTensors outputs,
+    const GlobalBuffers buffers,
+    const TileConfig tile_config,
+    const PrimitiveConfig prim_config)
+{
+    const int W = tile_config.image_width;
+    const int H = tile_config.image_height;
+    
+    // Only thread (0,0) does the work
+    if (threadIdx.x != 0 || threadIdx.y != 0 || blockIdx.x != 0 || blockIdx.y != 0) {
+        return;
     }
     
-    // Write output (HWC format) - no background compositing here, handled by Python
-    int output_idx = global_y * image_width + global_x;
-    out_color[output_idx * 3] = pixel_color[0];
-    out_color[output_idx * 3 + 1] = pixel_color[1];
-    out_color[output_idx * 3 + 2] = pixel_color[2];
-    out_alpha[output_idx] = pixel_alpha;
+    printf("CUDA Kernel: DEBUG MODE - Processing all pixels sequentially\n");
     
-#if DEBUG_CUDA_KERNELS
-    // Debug: Print final output info (only from first pixel)
-    if (global_x == 0 && global_y == 0) {
-        printf("Final output: pixel=(%d,%d), color=(%.4f,%.4f,%.4f), alpha=%.4f, primitives_processed=%d, primitives_in_range=%d\n",
-               global_x, global_y, pixel_color[0], pixel_color[1], pixel_color[2], pixel_alpha, primitives_processed, primitives_in_range);
+    // Process all pixels sequentially
+    for (int y = 0; y < H; ++y) {
+        for (int x = 0; x < W; ++x) {
+            // Tile mapping
+            const int tilesX = (W + tile_config.tile_size - 1) / tile_config.tile_size;
+            const int tx = x / tile_config.tile_size;
+            const int ty = y / tile_config.tile_size;
+            const int tile_id = ty * tilesX + tx;
+            
+            // Debug tile access (only for first few pixels)
+            if (x < 2 && y < 2) {
+                printf("CUDA Kernel: Debug - pixel(%d,%d), tilesX=%d, total_tiles=%d, tile_id=%d\n", 
+                       x, y, tilesX, tile_config.total_tiles, tile_id);
+                printf("CUDA Kernel: Debug - d_tile_offsets ptr=%p, d_tile_indices ptr=%p\n", 
+                       buffers.d_tile_offsets, buffers.d_tile_indices);
+                printf("CUDA Kernel: Debug - tile_offsets_size=%d, tile_indices_size=%d\n", 
+                       buffers.tile_offsets_size, buffers.tile_indices_size);
+            }
+
+            // Bounds checking for tile access
+            if (tile_id >= tile_config.total_tiles) {
+                printf("CUDA Kernel: Invalid tile ID: pixel(%d,%d), tile_id=%d, total_tiles=%d\n", 
+                       x, y, tile_id, tile_config.total_tiles);
+                continue;
+            }
+
+            // Additional bounds checking for tile offsets
+            if (tile_id >= buffers.tile_offsets_size - 1) {
+                printf("CUDA Kernel: Invalid tile ID for offsets: pixel(%d,%d), tile_id=%d, offsets_size=%d\n", 
+                       x, y, tile_id, buffers.tile_offsets_size);
+                continue;
+            }
+
+            // Tile list
+            const int start = buffers.d_tile_offsets[tile_id + 0];
+            const int end   = buffers.d_tile_offsets[tile_id + 1];
+            
+            // Debug tile offsets (only for first few pixels)
+            if (x < 2 && y < 2) {
+                printf("CUDA Kernel: Debug - pixel(%d,%d), tile_id=%d, start=%d, end=%d\n", x, y, tile_id, start, end);
+            }
+            
+            if (end < start) { // 방어
+                if (x < 2 && y < 2) printf("Forward: bad tile offsets pixel(%d,%d) tile=%d start=%d end=%d\n", x, y, tile_id, start, end);
+                continue;
+            }
+            
+            // Bounds checking for tile indices
+            if (end > buffers.tile_indices_size) {
+                printf("CUDA Kernel: Invalid tile indices end: pixel(%d,%d), end=%d, indices_size=%d\n", 
+                       x, y, end, buffers.tile_indices_size);
+                continue;
+            }
+            
+            const int Ktile = end - start;
+            const int* prim_ids = buffers.d_tile_indices + start;
+
+            // Pixel index and per-pixel cache base
+            const int pixel_idx = y * W + x;
+            const int base = pixel_idx * prim_config.max_prims_per_pixel;
+            
+            // Bounds checking for base index
+            const int total_pixels = W * H;
+            const int max_base = total_pixels * prim_config.max_prims_per_pixel;
+            if (base >= max_base) {
+                printf("CUDA Kernel: Invalid base index: pixel(%d,%d), pixel_idx=%d, base=%d, max_base=%d\n", 
+                       x, y, pixel_idx, base, max_base);
+                continue;
+            }
+
+            // Reset count (optional if already zeroed by caller)
+            int local_k = 0;
+
+            // Phase 1: fill per-pixel caches in forward push order (radius check only)
+            for (int kk = 0; kk < Ktile; ++kk) {
+                const int n = prim_ids[kk];                     // global primitive id
+                if (n < 0 || n >= prim_config.num_primitives)   // safety
+                    continue;
+
+                // Forward push condition: radius check only (to keep k mapping with backward)
+                const float mx = inputs.means2D[2*n + 0];
+                const float my = inputs.means2D[2*n + 1];
+                const float r  = inputs.radii[n];
+                const float dx = (float)x - mx;
+                const float dy = (float)y - my;
+                if (dx*dx + dy*dy > r*r) {
+                    continue;  // not pushed, keep local_k unchanged
+                }
+
+                if (local_k >= prim_config.max_prims_per_pixel) {
+                    // cache overflow guard: ignore remaining
+                    printf("CUDA Kernel: DEBUG MODE - cache overflow guard: ignore remaining\n");
+                    break;
+                }
+
+                // Opacity: logits -> prob via sigmoid
+                const float op_logit = inputs.opacities[n];
+                const float s_op     = sigmoidf_safe(op_logit);           // in [0,1]
+                const float alpha_max= tile_config.alpha_upper_bound;
+
+                // Template mask via bilinear
+                const int template_idx = inputs.global_bmp_sel[n];
+                float mask_value = 0.f;
+                if (template_idx >= 0 && template_idx < prim_config.num_templates) {
+                    const float r_inv = r > 1e-6f ? (1.f / r) : 1e6f;     // avoid div0
+                    const float phi = inputs.rotations[n];
+                    const float c = __cosf(phi), s = __sinf(phi);
+                    const float ndx = dx * r_inv;
+                    const float ndy = dy * r_inv;
+                    const float u =  c*ndx + s*ndy;                        // [-?,?]
+                    const float v = -s*ndx + c*ndy;
+
+                    const float tex_x = (u + 1.f) * 0.5f * (prim_config.template_width  - 1); // [0..W-1]
+                    const float tex_y = (v + 1.f) * 0.5f * (prim_config.template_height - 1); // [0..H-1]
+
+                    const float* tex = &inputs.primitive_templates[template_idx * prim_config.template_height * prim_config.template_width];
+                    mask_value = bilinear_sample(tex, prim_config.template_height, prim_config.template_width, tex_y, tex_x);
+                    //mask_value = fmaxf(0.f, fminf(1.f, mask_value));
+                    mask_value = fminf(fmaxf(mask_value, 0.f), 1.f);
+                }
+
+                // Alpha and color for this primitive at this pixel
+                const float a_k = alpha_max * s_op * mask_value;          // α_k
+                const float sr  = sigmoidf_safe(inputs.colors[3*n + 0]);  // c_k (premult src)
+                const float sg  = sigmoidf_safe(inputs.colors[3*n + 1]);
+                const float sb  = sigmoidf_safe(inputs.colors[3*n + 2]);
+
+                const int idx = base + local_k;
+                
+                // Bounds checking for cache access
+                if (idx >= max_base) {
+                    printf("CUDA Kernel: Invalid cache index: pixel(%d,%d), idx=%d, max_base=%d\n", x, y, idx, max_base);
+                    break;
+                }
+
+                // Cache: α_k, colors (non-premult), and T placeholder (set later)
+                buffers.pixel_alphas[idx]   = a_k;
+                buffers.pixel_colors_r[idx] = sr;
+                buffers.pixel_colors_g[idx] = sg;
+                buffers.pixel_colors_b[idx] = sb;
+                // T[k] will be written after we know previous alphas
+                // buffers.pixel_T_values[idx] = ???  (set in Phase 2)
+
+                local_k++;
+            }
+
+            // Store per-pixel count
+            buffers.pixel_prim_counts[pixel_idx] = local_k;
+
+            float T = 1.f;
+            float comp_r = 0.f, comp_g = 0.f, comp_b = 0.f;
+
+            // Phase 2: compute T[k] and OVER composite
+            for (int k = 0; k < local_k; ++k) {
+                const int idx = base + k;
+                
+                // Bounds checking for cache access
+                if (idx >= max_base) {
+                    printf("CUDA Kernel: Invalid cache index in Phase 2: pixel(%d,%d), idx=%d, max_base=%d\n", x, y, idx, max_base);
+                    break;
+                }
+                
+                const float a_k = buffers.pixel_alphas[idx];
+                const float cr  = buffers.pixel_colors_r[idx];
+                const float cg  = buffers.pixel_colors_g[idx];
+                const float cb  = buffers.pixel_colors_b[idx];
+
+                // cache T[k] BEFORE updating by (1-α_k)
+                buffers.pixel_T_values[idx] = T;
+
+                // OVER accumulation with premultiplied color m_k = c_k * α_k
+                comp_r += T * cr * a_k;
+                comp_g += T * cg * a_k;
+                comp_b += T * cb * a_k;
+
+                T *= fmaxf(1.f - a_k, 0.f);
+            }
+            const float comp_a = 1.f - T;
+
+            outputs.out_color[pixel_idx * 3 + 0] = comp_r;
+            outputs.out_color[pixel_idx * 3 + 1] = comp_g;
+            outputs.out_color[pixel_idx * 3 + 2] = comp_b;
+            outputs.out_alpha[pixel_idx]         = comp_a;
+        }
     }
-#endif
+    
+    printf("CUDA Kernel: DEBUG MODE - Sequential processing completed\n");
 }
 
 void CudaRasterizeTilesForwardKernel(
-    const float* means2D,
-    const float* radii,
-    const float* rotations,
-    const float* opacities,
-    const float* colors,
-    const float* primitive_templates,
-    float* out_color,
-    float* out_alpha,
-    int num_primitives,
-    int num_templates,
-    int template_height,
-    int template_width,
-    int image_height,
-    int image_width,
-    int tile_size,
-    float sigma,
-    float alpha_upper_bound,
-    int total_tiles) {
+    const InputTensors inputs,
+    const OutputTensors outputs,
+    const GlobalBuffers buffers,
+    const TileConfig tile_config,
+    const PrimitiveConfig prim_config) {
+
+    #if DEBUG_CUDA_KERNELS
+    printf("CUDA Forward Kernel: Launching with %dx%d image, tile_size=%d\n", tile_config.image_width, tile_config.image_height, tile_config.tile_size);
+    #endif
+
+#if DEBUG_SEQUENTIAL
+    // DEBUG MODE: Sequential execution for debugging
+    // Use only 1 block with 1 thread to avoid race conditions
+    dim3 grid(1, 1);  // Single block
+    dim3 block(1, 1); // Single thread
     
-    // Calculate maximum pixels per tile
-    int max_pixels_per_tile = tile_size * tile_size;
+    printf("CUDA Forward Kernel: DEBUG MODE - Grid size: %dx%d, Block size: %dx%d\n", grid.x, grid.y, block.x, block.y);
     
-#if DEBUG_CUDA_KERNELS
-    // Debug: Print launch configuration
-    printf("CudaRasterizeTilesForwardKernel: grid=%d, block=%d, max_pixels_per_tile=%d\n", total_tiles, max_pixels_per_tile, max_pixels_per_tile);
-#endif
-    // Optimize block size for performance
-    int block_size = 1024;  // Use maximum block size for better occupancy
+    printf("CUDA Forward Kernel: About to launch debug kernel...\n");
+    
+    tile_rasterize_forward_kernel_debug<<<grid, block>>>(inputs, outputs, buffers, tile_config, prim_config);
+#else
+    // NORMAL MODE: Parallel execution
+    // Calculate grid and block dimensions
+    int grid_x = (tile_config.image_width + tile_config.tile_size - 1) / tile_config.tile_size;
+    int grid_y = (tile_config.image_height + tile_config.tile_size - 1) / tile_config.tile_size;
+    
+    printf("CUDA Forward Kernel: NORMAL MODE - Grid size: %dx%d, Block size: %dx%d\n", grid_x, grid_y, tile_config.tile_size, tile_config.tile_size);
     
     // Launch kernel: one block per tile
-    dim3 grid(total_tiles);
-    dim3 block(block_size);
+    dim3 grid(grid_x, grid_y);
+    dim3 block(tile_config.tile_size, tile_config.tile_size);
     
-    tile_rasterize_forward_kernel<<<grid, block>>>(
-        means2D, radii, rotations, opacities, colors, primitive_templates,
-        out_color, out_alpha, num_primitives, num_templates, template_height, template_width,
-        image_height, image_width, tile_size, sigma, alpha_upper_bound, total_tiles);
+    printf("CUDA Forward Kernel: About to launch normal kernel...\n");
+    
+    tile_rasterize_forward_kernel<<<grid, block>>>(inputs, outputs, buffers, tile_config, prim_config);
+#endif
     
     // Check for kernel launch errors
     cudaError_t err = cudaGetLastError();
-#if DEBUG_CUDA_KERNELS
     if (err != cudaSuccess) {
         printf("CUDA kernel launch error: %s\n", cudaGetErrorString(err));
         return;
     }
-#endif
     
-    // Synchronize
-    cudaDeviceSynchronize();
-    
-    // Check for runtime errors
-    err = cudaGetLastError();
-#if DEBUG_CUDA_KERNELS
+    // Synchronize to ensure kernel completes
+    err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {
-        printf("CUDA kernel runtime error: %s\n", cudaGetErrorString(err));
+        printf("CUDA kernel execution error: %s\n", cudaGetErrorString(err));
         return;
     }
     
-    printf("CUDA kernel execution completed successfully\n");
-#endif
+    #if DEBUG_CUDA_KERNELS
+    printf("CUDA Forward Kernel: Kernel completed successfully\n");
+    #endif
 }

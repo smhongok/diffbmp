@@ -3,29 +3,91 @@
 
 #include <torch/extension.h>
 #include <tuple>
+#include <memory>
+#include <cuda_runtime.h>
 
-// CUDA kernel wrapper declarations
-void CudaRasterizeTilesForwardKernel(
-    const float* means2D,
-    const float* radii,
-    const float* rotations,
-    const float* opacities,
-    const float* colors,
-    const float* primitive_templates,
-    float* out_color,
-    float* out_alpha,
-    int num_primitives,
-    int num_templates,
-    int template_height,
-    int template_width,
-    int image_height,
-    int image_width,
-    int tile_size,
-    float sigma,
-    float alpha_upper_bound,
-    int total_tiles);
+// TileRasterizer class for managing global memory
+class TileRasterizer {
+private:
+    // Global memory arrays (shared between forward and backward)
+    float* pixel_alphas;
+    float* pixel_colors_r;
+    float* pixel_colors_g;
+    float* pixel_colors_b;
+    float* pixel_T_values;    // Transmittance values for accurate gradient computation
+    int* pixel_prim_counts;
+    float* sigma_inv;
+    float* grad_sigma;
+    
+    // Tile-related arrays for backward pass (allocated once and reused)
+    int* d_tile_offsets;      // [num_tiles + 1] - device tile offsets
+    int* d_tile_indices;      // [total_prims] - device tile indices
+    int tile_offsets_size;    // Size of tile_offsets array
+    int tile_indices_size;    // Size of tile_indices array
+    
+    // Gradient tensors and output tensors (allocated once and reused)
+    float* out_color;
+    float* out_alpha;
+    float* grad_means2D;
+    float* grad_radii;
+    float* grad_rotations;
+    float* grad_opacities;
+    float* grad_colors;
+    
+    // Track if memory is allocated
+    bool memory_allocated;
+    
+public:
+    // Configuration (public for access in wrapper functions)
+    int max_prims_per_pixel;
+    int image_height;
+    int image_width;
+    int tile_size;
+    float sigma;
+    float alpha_upper_bound;
+    int num_primitives;
+    
+    // Constructor
+    TileRasterizer(int image_h, int image_w, int tile_sz, float sig = 0.0f, float alpha_ub = 1.0f, int max_prims = 16, int num_prims = 1024);
+    
+    // Destructor
+    ~TileRasterizer();
+    
+    // Forward pass
+    std::tuple<torch::Tensor, torch::Tensor> forward(
+        torch::Tensor means2D,
+        torch::Tensor radii,
+        torch::Tensor rotations,
+        torch::Tensor opacities,
+        torch::Tensor colors,
+        torch::Tensor primitive_templates,
+        torch::Tensor global_bmp_sel);
+    
+    // Backward pass
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> backward(
+        torch::Tensor grad_out_color,
+        torch::Tensor grad_out_alpha,
+        torch::Tensor means2D,
+        torch::Tensor radii,
+        torch::Tensor rotations,
+        torch::Tensor opacities,
+        torch::Tensor colors,
+        torch::Tensor primitive_templates,
+        torch::Tensor global_bmp_sel,
+        torch::Tensor lr_config
+    );
+    
+    // Allocate memory if not already allocated
+    void allocateMemory();
+    
+    // Free memory
+    void freeMemory();
+};
 
-// Forward declarations for CUDA functions
+// Global instance for Python binding (will be managed by Python)
+extern std::shared_ptr<TileRasterizer> global_tile_rasterizer;
+
+// Forward declarations for CUDA functions (for backward compatibility)
 std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForward(
     torch::Tensor means2D,
     torch::Tensor radii,
@@ -33,6 +95,7 @@ std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForward(
     torch::Tensor opacities,
     torch::Tensor colors,
     torch::Tensor primitive_templates,
+    torch::Tensor global_bmp_sel,
     int image_height,
     int image_width,
     int tile_size,
@@ -47,6 +110,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     torch::Tensor opacities,
     torch::Tensor colors,
     torch::Tensor primitive_templates,
+    torch::Tensor global_bmp_sel,  // [num_primitives] - template selection indices
+    torch::Tensor lr_config_tensor,
     int image_height,
     int image_width,
     int tile_size,

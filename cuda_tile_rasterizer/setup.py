@@ -10,6 +10,7 @@ setup(
             sources=[
                 'ext.cpp',
                 'tile_rasterize.cu',
+                'cuda_kernels/tile_common.cu',
                 'cuda_kernels/tile_forward.cu',
                 'cuda_kernels/tile_backward.cu',
             ],

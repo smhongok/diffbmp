@@ -29,7 +29,7 @@ def load_test_config():
 
 def create_simple_test_data(device='cuda'):
     """Create simple test data for comparison"""
-    N = 10000  # Larger number for better CUDA performance
+    N = 1000  # Larger number for better CUDA performance
     H, W = 256, 256  # Larger image size
     
     # Create simple primitive parameters
@@ -67,8 +67,18 @@ def test_cuda_vs_pytorch():
     print(f"Test data: {len(x)} primitives, {H}x{W} image")
     
     # Create two SimpleTileRenderer instances
-    cuda_renderer = SimpleTileRenderer(canvas_size=(H, W), S=S, tile_size=32, device=device)
-    pytorch_renderer = SimpleTileRenderer(canvas_size=(H, W), S=S, tile_size=32, device=device)
+    cuda_renderer = SimpleTileRenderer(canvas_size=(H, W), S=S, tile_size=32, alpha_upper_bound=1.0, device=device)
+    pytorch_renderer = SimpleTileRenderer(canvas_size=(H, W), S=S, tile_size=32, alpha_upper_bound=1.0, device=device)
+
+    lr_conf = {
+        'default': 0.1,
+        'gain_x': 1.0,
+        'gain_y': 1.0,
+        'gain_r': 1.0,
+        'gain_v': 1.0,
+        'gain_theta': 1.0,
+        'gain_c': 1.0
+    }
     
     print("\n🚀 Rendering with CUDA SimpleTileRenderer...")
     try:
@@ -80,7 +90,7 @@ def test_cuda_vs_pytorch():
         # Warm up CUDA
         print("🔥 Warming up CUDA...")
         for _ in range(3):
-            _ = cuda_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
+            _ = cuda_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, lr_conf=lr_conf)
         
         # Synchronize GPU
         if torch.cuda.is_available():
@@ -102,7 +112,7 @@ def test_cuda_vs_pytorch():
         end_time = torch.cuda.Event(enable_timing=True)
         
         start_time.record()
-        cuda_result = cuda_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
+        cuda_result = cuda_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, lr_conf=lr_conf)
         end_time.record()
         
         # Wait for GPU to finish
@@ -125,7 +135,7 @@ def test_cuda_vs_pytorch():
         # Warm up PyTorch
         print("🔥 Warming up PyTorch...")
         for _ in range(3):
-            _ = pytorch_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
+            _ = pytorch_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, lr_conf=lr_conf)
         
         # Synchronize if using CUDA
         if torch.cuda.is_available():
@@ -136,7 +146,7 @@ def test_cuda_vs_pytorch():
         import time
         
         start_time = time.time()
-        pytorch_result = pytorch_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
+        pytorch_result = pytorch_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, lr_conf=lr_conf)
         
         # Synchronize if using CUDA
         if torch.cuda.is_available():
