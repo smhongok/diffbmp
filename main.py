@@ -8,6 +8,8 @@ import warnings
 import torch
 import torch.nn.functional as F
 import numpy as np
+import matplotlib as mpl
+mpl.use("Agg")  
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from PIL import Image
@@ -187,15 +189,7 @@ except Exception as e:
     )
     primitive_loader = None
 
-# Initialize renderer based on loss type
-renderer_type = opt_conf.get("renderer_type", "mse")
-renderer_class = {
-    "mse": MseRenderer,
-}.get(renderer_type.lower())
-
-if renderer_class is None:
-    raise ValueError(f"Invalid renderer type: {renderer_type}")
-
+# Initialize MseRenderer with tile-based rendering capabilities
 bmp_tensor = svg_loader.load_alpha_bitmap()
 if use_fp16:
     bmp_tensor = bmp_tensor.to(dtype=torch.float16)
@@ -205,13 +199,17 @@ else:
 H = preprocessor.final_height
 W = preprocessor.final_width
 
-# Create renderer only when needed - defer instantiation
-renderer = renderer_class((H, W), S=bmp_tensor, 
-                        alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
-                        device=device,
-                        use_fp16=use_fp16,
-                        output_path=config["postprocessing"].get("output_folder", "./outputs/"))
-print(f"Using {renderer_class.__name__} for optimization")
+# Create MseRenderer with tile-based rendering support
+renderer = MseRenderer(
+    canvas_size=(H, W),
+    S=bmp_tensor,
+    alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
+    device=device,
+    use_fp16=use_fp16,
+    output_path=config["postprocessing"].get("output_folder", "./outputs/"),
+    tile_size=opt_conf.get("tile_size", 32)
+)
+print(f"Using MseRenderer with tile-based rendering (tile_size: {opt_conf.get('tile_size', 32)})")
 
 # Initialize parameters
 print("---Initializing vector graphics with Structure-Aware method---")
@@ -227,14 +225,18 @@ if sequential_config.get("enabled", False):
     # Sequential frame-by-frame optimization
     print("Starting sequential frame-by-frame optimization...")
     
-    # Create sequential renderer for subsequent frames
+    # Create sequential renderer for subsequent frames with tile-based rendering
     sequential_renderer = SequentialFrameRenderer(
-        (H, W), S=bmp_tensor,
+        canvas_size=(H, W), 
+        S=bmp_tensor,
         alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
         device=device,
         use_fp16=use_fp16,
-        gamma=config["optimization"].get("gamma", 1.0)
+        gamma=config["optimization"].get("gamma", 1.0),
+        output_path=config["postprocessing"].get("output_folder", "./outputs/"),
+        tile_size=sequential_config.get("tile_size", 32)
     )
+    print(f"Using SequentialFrameRenderer with tile-based rendering (tile_size: {sequential_config.get('tile_size', 32)})")
     
     # Store optimized parameters for each frame
     frame_results = []
@@ -303,8 +305,7 @@ if sequential_config.get("enabled", False):
         
         # Render final frame for export
         with torch.no_grad():
-            cached_masks = sequential_renderer._batched_soft_rasterize(x, y, r, theta, sigma=0)
-            rendered_frame = sequential_renderer.render(cached_masks, v, c)
+            rendered_frame = sequential_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
         
         # Store results for this frame
         current_params = {
@@ -391,8 +392,12 @@ if sequential_config.get("enabled", False):
         if export_config.get("export_frames", True):
             frame_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}.png')
             with torch.no_grad():
-                cached_masks = sequential_renderer._batched_soft_rasterize(x_frame, y_frame, r_frame, theta_frame, sigma=0)
-                sequential_renderer.save_rendered_image(cached_masks, v_frame, c_frame, frame_path)
+                # Render frame directly using tile-based rendering
+                frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, sigma=0.0)
+                # Save rendered frame directly
+                frame_rendered_np = frame_rendered.detach().cpu().numpy()
+                frame_rendered_np = (frame_rendered_np * 255).astype(np.uint8)
+                Image.fromarray(frame_rendered_np).save(frame_path)
         
         # Store rendered frame for GIF/MP4 export
         frame_np = rendered_frame.cpu().numpy()
@@ -513,17 +518,21 @@ if not (primitive_loader and primitive_loader.has_raster_primitives()):
 if not sequential_config.get("enabled", False):
     # Single image final rendering and export (original behavior)
     with torch.no_grad():
-        # Generate final masks and render
-        cached_masks = renderer._batched_soft_rasterize(
-            x, y, r, theta,
-            sigma=0
-        )
+        cached_masks = renderer._batched_soft_rasterize(x, y, r, theta, sigma=0)
+        
+        # Generate final render using tile-based rendering
+        white_bg = torch.ones((renderer.H, renderer.W, 3), device=renderer.device)
+        rendered = renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0)
+        
+        # For alpha loss calculation, we need to generate masks if background doesn't exist
         if not exist_bg:
+            
             alpha_loss = (cached_masks * target_binary_mask.unsqueeze(0)).sum(dim=0).mean()
-
-        white_bg = torch.ones((renderer.H, renderer.W, 3), device=cached_masks.device)
-        rendered = renderer.render(cached_masks, v, c, I_bg=white_bg)
-        renderer.save_rendered_image(cached_masks, v, c, output_path)
+        
+        # Save rendered image directly from rendered tensor
+        rendered_np = rendered.detach().cpu().numpy()
+        rendered_np = (rendered_np * 255).astype(np.uint8)
+        Image.fromarray(rendered_np).save(output_path)
         # High-resolution export configuration (recommended only when you have raster primitives)
         hires_enabled = config["postprocessing"].get("hires_export", False)
         scale_factor = config["postprocessing"].get("hires_scale_factor", 4.0)
@@ -556,23 +565,25 @@ if config['postprocessing'].get('compute_psnr', False):
             total_lpips = 0
             
             for frame_idx, (frame_result, I_target_frame) in enumerate(zip(frame_results, I_targets)):
-                # Render frame for metrics
+                # Render frame for metrics using tile-based rendering
                 with torch.no_grad():
-                    cached_masks = renderer._batched_soft_rasterize(
+                    rendered_frame = renderer.render_from_params(
                         frame_result['x'], frame_result['y'], frame_result['r'], frame_result['theta'],
-                        sigma=0
+                        frame_result['v'], frame_result['c'], sigma=0.0
                     )
-                    rendered_frame = renderer.render(cached_masks, frame_result['v'], frame_result['c'])
                 
                 # Convert to tensor format for metrics
                 rendered_t = rendered_frame.permute(2, 0, 1).unsqueeze(0)
                 target_t = I_target_frame.permute(2, 0, 1).unsqueeze(0)
                 
+                rendered_t_f32 = rendered_t.float()
+                target_t_f32 = target_t.float()
+
                 # Compute metrics for this frame
-                psnr_val = piq.psnr(rendered_t, target_t, data_range=1.0)
-                ssim_val = piq.ssim(rendered_t, target_t, data_range=1.0)
-                vif_val = piq.vif_p(rendered_t, target_t, data_range=1.0)
-                lpips_val = piq.LPIPS()(rendered_t, target_t)
+                psnr_val = piq.psnr(rendered_t_f32, target_t_f32, data_range=1.0)
+                ssim_val = piq.ssim(rendered_t_f32, target_t_f32, data_range=1.0)
+                vif_val = piq.vif_p(rendered_t_f32, target_t_f32, data_range=1.0)
+                lpips_val = piq.LPIPS()(rendered_t_f32, target_t_f32)
                 
                 print(f"Frame {frame_idx + 1}: PSNR: {psnr_val.item():.2f} dB, SSIM: {ssim_val.item():.4f}, VIF: {vif_val.item():.4f}, LPIPS: {lpips_val.item():.4f}")
                 
@@ -609,10 +620,13 @@ if config['postprocessing'].get('compute_psnr', False):
                 target_t = target_t * mask_tensor
 
             # Compute metrics
-            psnr_val = piq.psnr(rendered_t, target_t, data_range=1.0)
-            ssim_val = piq.ssim(rendered_t, target_t, data_range=1.0)
-            vif_val = piq.vif_p(rendered_t, target_t, data_range=1.0)
-            lpips_val = piq.LPIPS()(rendered_t, target_t)
+            rendered_t_f32 = rendered_t.float()
+            target_t_f32 = target_t.float()
+
+            psnr_val = piq.psnr(rendered_t_f32, target_t_f32, data_range=1.0)
+            ssim_val = piq.ssim(rendered_t_f32, target_t_f32, data_range=1.0)
+            vif_val = piq.vif_p(rendered_t_f32, target_t_f32, data_range=1.0)
+            lpips_val = piq.LPIPS()(rendered_t_f32, target_t_f32)
 
             # If no background, compute alpha loss
             if not exist_bg:

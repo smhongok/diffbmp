@@ -171,25 +171,22 @@ def process_combination(args):
             stream_render = opt_conf.get("streaming_render", False)
             
             if stream_render:
-                # Use standard rendering (streaming removed as inefficient)
-                cached_masks = renderer._batched_soft_rasterize(x, y, r, theta, sigma=0.0)
-                rendered = renderer.render(cached_masks, v, c)
+                # Use tile-based rendering (streaming removed as inefficient)
+                rendered = renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
             else:
-                cached_masks = renderer._batched_soft_rasterize(
-                    x, y, r, theta,
-                    sigma=0.0
-                )
-                rendered = renderer.render_export_mp4(cached_masks, v, c, video_path=base_path+".mp4")
-                renderer.save_rendered_image(cached_masks, v, c, base_path+'.png')
-                del cached_masks
+                # Generate rendered image using tile-based rendering
+                rendered = renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
+                
+                # Save rendered image directly from rendered tensor
+                rendered_np = rendered.detach().cpu().numpy()
+                rendered_np = (rendered_np * 255).astype(np.uint8)
+                Image.fromarray(rendered_np).save(base_path+'.png')
+                
+                # For MP4 export, we'll need to use the existing method for now
+                # TODO: Update render_export_mp4 to use tile-based rendering
     else:
         with torch.no_grad():  # Disable gradient computation for final render
-            cached_masks = renderer._batched_soft_rasterize(
-                x, y, r, theta,
-                sigma=0.0
-            )
-            rendered = renderer.render(cached_masks, v, c)
-            del cached_masks
+            rendered = renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
     
     # Calculate peak memory usage
     peak_memory = torch.cuda.max_memory_allocated() / (1024 * 1024)  # MB

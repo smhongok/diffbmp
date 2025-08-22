@@ -11,8 +11,8 @@ class SequentialFrameRenderer(MseRenderer):
     Inherits from MseRenderer but uses warmup scheduling for loss.
     """
     
-    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None):
-        super().__init__(canvas_size, S, alpha_upper_bound, device, use_fp16, gamma, output_path)
+    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None, tile_size=32):
+        super().__init__(canvas_size, S, alpha_upper_bound, device, use_fp16, gamma, output_path, tile_size)
     
     def compute_loss_with_warmup(self, 
                                rendered: torch.Tensor, 
@@ -155,6 +155,8 @@ class SequentialFrameRenderer(MseRenderer):
         
         pbar = tqdm(range(num_iter), desc="Optimizing with warmup scheduling")
         
+        print(f"Starting tile-based optimization for sequential frames, {num_iter} iterations...")
+
         # Main optimization loop
         for i in pbar:
             # Apply adaptive control periodically if enabled
@@ -175,9 +177,8 @@ class SequentialFrameRenderer(MseRenderer):
             
             optimizer.zero_grad()
             
-            # Generate masks and render
-            cached_masks = self._batched_soft_rasterize(x, y, r, theta, sigma=0)
-            rendered = self.render(cached_masks, v, c)
+            # Generate rendered image using tile-based rendering
+            rendered = self.render_from_params(x, y, r, theta, v, c, sigma=0.0)
             
             # Compute loss with warmup scheduling
             loss_config = {

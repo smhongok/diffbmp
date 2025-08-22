@@ -25,7 +25,7 @@
     },
     "svg": {
         "svg_file": "arial.ttf",
-        "text": "S",
+        "text": ["s","e", "u", "r", "a", "t"],
         "svg_hollow": false,
         "output_width": 128
     },

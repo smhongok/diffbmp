@@ -5,8 +5,7 @@
         "FM_halftone": false,
         "transform": "none",
         "img_path": [
-            "images/nature/Matterhorn.jpg",
-            "images/nature/melon.jpg"
+            "images/artwork/seurat.jpg"
         ],
         "bg_threshold": 250,
         "do_equalize": false,
@@ -26,13 +25,13 @@
     },
     "svg": {
         "svg_file": "arial.ttf",
-        "text": "S",
+        "text": ["S","e","u","r","a","t"],
         "svg_hollow": false,
         "output_width": 128
     },
     "initialization": {
         "initializer": "structure_aware",
-        "N": [1500],
+        "N": [2000],
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
@@ -50,6 +49,7 @@
     "optimization": {
         "use_fp16": true,
         "renderer_type": "mse",
+        "tile_size": 32,
         "num_iterations": 100,
         "batch_optimization": false,
         "batch_size": 256,
@@ -79,46 +79,39 @@
             "sparsified_N": 1000,
             "dst_enabled": true,
             "dst_period": 4,
-            "dst_loss_coeff": 1.0
-        }
-    },
-    "xy_dynamics": {
-        "xy_optimization": {
-            "num_iterations": 100,
-            "learning_rate": {
-                "default": 0.1,
-                "gain_x": 5.0,
-                "gain_y": 5.0,
-                "gain_r": 2.0,
-                "gain_v": 1.2,
-                "gain_theta": 1.0,
-                "gain_c": 0.7
-            },
-            "do_decay": true,
-            "decay_rate": 0.98,
-            "transition_frames": 180,
-            "optimization_process_mp4": {
-                "enabled": true,
-                "fps": 10,
-                "save_every_n_epochs": 1
-            },
-            "use_combined_loss": true,
-            "grayscale_weight": 0.7,
-            "color_weight": 0.5,
-            "use_gradient_loss": false,
-            "gradient_weight": 0,
-            "use_cosine_similarity": true,
-            "use_canny_loss": true,
-            "canny_weight": 0.3,
-            "canny_low_threshold": 0.1,
-            "canny_high_threshold": 0.2
+            "dst_tau": 0.01,
+            "dst_warmup": 10
+        },
+        "densifying": {
+            "do_densify": false,
+            "densify_warmup": 10,
+            "densify_duration": 24,
+            "densify_loss_coeff": 1.0,
+            "densifying_period": 4,
+            "densified_N": 3000,
+            "grad_threshold": 0.01
         }
     },
     "postprocessing": {
-        "compute_psnr": true,
-        "save_intermediate": true,
-        "export_mp4": true,
-        "mp4_fps": 30,
-        "output_dir": "outputs/xy_dynamics/color+gray+canny/0.7_0.5_0.3"
-    }
+        "output_folder": "./outputs/tile_1",
+        "save_final_image": true,
+        "save_video": false,
+        "video_fps": 30,
+        "save_gif": false,
+        "gif_fps": 10,
+        "save_pdf": false,
+        "pdf_width": 8.5,
+        "pdf_height": 11,
+        "pdf_dpi": 300,
+        "save_svg": false,
+        "save_params": true,
+        "save_intermediate": false,
+        "intermediate_interval": 10
+    },
+    "logging": {
+        "log_interval": 10,
+        "save_logs": true,
+        "log_level": "INFO"
+    },
+    "seed": 42
 }
