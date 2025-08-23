@@ -129,10 +129,8 @@
         "enabled": false,
         "mode": "pixel"
       },
-      "gradient_criterion": {
-        "enabled": true,
-        "threshold_percentile": 0.8,
-        "pixel_sample_ratio": 0.1
+      "gradient_ranking": {
+        "pixels_per_tile": 4
       }
     },
     "combined_loss": {

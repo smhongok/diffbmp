@@ -256,12 +256,10 @@ class SequentialFrameRenderer(MseRenderer):
         tile_height = canvas_height // tile_rows
         tile_width = canvas_width // tile_cols
         
-        # Compute gradient magnitudes once if gradient criterion is enabled
-        gradient_magnitudes = None
-        if use_gradient_criterion:
-            gradient_magnitudes = self._compute_per_primitive_gradient_magnitude(
-                x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted, target_image, adaptive_config
-            )
+        # Compute gradient magnitudes once for ranking (always computed now)
+        gradient_magnitudes = self._compute_per_primitive_gradient_magnitude(
+            x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted, target_image, adaptive_config
+        )
         
         # Process each tile
         for row in range(tile_rows):
@@ -282,19 +280,11 @@ class SequentialFrameRenderer(MseRenderer):
                 # Get indices of primitives in this tile
                 tile_indices = torch.where(in_tile_mask)[0]
                 
-                # Apply criteria to find problematic primitives
+                # Find problematic primitives (already limited by max_primitives_per_tile)
                 problematic_indices = self._find_problematic_primitives(
                     tile_indices, x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
-                    scale_threshold, opacity_threshold, gradient_magnitudes, 
-                    use_gradient_criterion, gradient_threshold_percentile
+                    scale_threshold, opacity_threshold, gradient_magnitudes, max_primitives_per_tile
                 )
-                
-                # Limit to max primitives per tile
-                if len(problematic_indices) > max_primitives_per_tile:
-                    # Sort by combined score (scale * opacity) and take top ones
-                    scores = r_adapted[problematic_indices] * torch.sigmoid(v_adapted[problematic_indices])
-                    _, top_indices = torch.topk(scores, max_primitives_per_tile)
-                    problematic_indices = problematic_indices[top_indices]
                 
                 # Apply opacity reduction using in-place operation to maintain leaf tensor status
                 if len(problematic_indices) > 0:
@@ -314,34 +304,29 @@ class SequentialFrameRenderer(MseRenderer):
                                v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
                                scale_threshold: float, opacity_threshold: float,
                                gradient_magnitudes: torch.Tensor = None,
-                               use_gradient_criterion: bool = False,
-                               gradient_threshold_percentile: float = 0.7) -> torch.Tensor:
+                               max_primitives_per_tile: int = 16) -> torch.Tensor:
         """
-        Find primitives that meet the problematic criteria within a tile.
+        Find problematic primitives within a tile based on three criteria,
+        then select top-k by gradient magnitude.
         
         Args:
-            tile_indices: Indices of primitives in the current tile
+            tile_indices: Indices of primitives in this tile
             x, y, r, v, theta, c: Primitive parameters
-            scale_threshold: Minimum scale to be considered large
-            opacity_threshold: Minimum opacity to be considered opaque
-            gradient_magnitudes: Pre-computed gradient magnitudes for all primitives
-            use_gradient_criterion: Whether to include gradient-based criterion
-            gradient_threshold_percentile: Percentile threshold for high gradients
+            scale_threshold: Threshold for large scale primitives
+            opacity_threshold: Threshold for high opacity primitives
+            gradient_magnitudes: Per-primitive gradient magnitudes for ranking
+            max_primitives_per_tile: Maximum number of primitives to select
             
         Returns:
-            Tensor of indices of problematic primitives
+            Indices of problematic primitives (top-k by gradient magnitude)
         """
         if len(tile_indices) == 0:
-            return torch.tensor([], dtype=torch.long, device=x.device)
+            return torch.tensor([], dtype=torch.long, device=tile_indices.device)
         
         # Extract parameters for primitives in this tile
-        tile_x = x[tile_indices]
-        tile_y = y[tile_indices]
         tile_r = r[tile_indices]
         tile_v = v[tile_indices]
-        
-        # Convert visibility to opacity using sigmoid (matching vector_renderer.py)
-        tile_opacity = self.alpha_upper_bound * torch.sigmoid(tile_v)
+        tile_opacity = self.alpha_upper_bound*torch.sigmoid(tile_v)
         
         # Criterion 1: Large scale primitives
         large_scale_mask = tile_r >= scale_threshold
@@ -362,53 +347,50 @@ class SequentialFrameRenderer(MseRenderer):
         else:
             front_mask = torch.tensor([], dtype=torch.bool, device=tile_indices.device)
         
-        # Criterion 4: High gradient magnitude primitives (inspired by AbsGS)
-        if use_gradient_criterion and gradient_magnitudes is not None:
-            # Get gradient magnitudes for primitives in this tile
-            tile_gradients = gradient_magnitudes[tile_indices]
-            
-            # Compute threshold based on percentile within this tile
-            if len(tile_gradients) > 0:
-                gradient_threshold = torch.quantile(tile_gradients, gradient_threshold_percentile)
-                high_gradient_mask = tile_gradients >= gradient_threshold
-            else:
-                high_gradient_mask = torch.zeros(len(tile_indices), dtype=torch.bool, device=tile_indices.device)
-        else:
-            # Create empty mask with correct size if gradient criterion is disabled
-            high_gradient_mask = torch.zeros(len(tile_indices), dtype=torch.bool, device=tile_indices.device)
-        
-        # Debug logging: Count primitives meeting each criterion
-        large_scale_count = torch.sum(large_scale_mask).item()
-        high_opacity_count = torch.sum(high_opacity_mask).item()
-        front_count = torch.sum(front_mask).item()
-        high_gradient_count = torch.sum(high_gradient_mask).item()
-        
+        # Debug: Print criteria counts
         print(f"[Adaptive Control Debug] Tile criteria counts:")
-        print(f"  - Large scale (>={scale_threshold}): {large_scale_count}/{len(tile_indices)}")
-        print(f"  - High opacity (>={opacity_threshold:.2f}): {high_opacity_count}/{len(tile_indices)}")
-        print(f"  - Front primitives (top 30%): {front_count}/{len(tile_indices)}")
-        if use_gradient_criterion:
-            print(f"  - High gradient (top 30%): {high_gradient_count}/{len(tile_indices)}")
-        else:
-            print(f"  - High gradient: disabled")
+        print(f"  - Large scale (>={scale_threshold}): {large_scale_mask.sum().item()}/{len(tile_indices)}")
+        print(f"  - High opacity (>={opacity_threshold:.2f}): {high_opacity_mask.sum().item()}/{len(tile_indices)}")
+        print(f"  - Front primitives (top 30%): {front_mask.sum().item()}/{len(tile_indices)}")
         
-        # Combine all criteria (primitives that meet at least 2 out of 4 criteria)
-        criteria_count = (large_scale_mask.float() + high_opacity_mask.float() + 
-                         front_mask.float() + high_gradient_mask.float())
+        # Combine criteria: primitives meeting at least 2 out of 3 criteria
+        criteria_count = (large_scale_mask.float() + high_opacity_mask.float() + front_mask.float())
         problematic_mask = criteria_count >= 2.0
         
-        # Debug logging: Count final problematic primitives
-        problematic_count = torch.sum(problematic_mask).item()
-        print(f"  - Final problematic (>=2 criteria): {problematic_count}/{len(tile_indices)}")
+        print(f"  - Problematic by criteria (>=2/3): {problematic_mask.sum().item()}/{len(tile_indices)}")
         
-        # Get the original indices of problematic primitives
+        # Get indices of problematic primitives within the tile
         problematic_tile_indices = torch.where(problematic_mask)[0]
+        problematic_global_indices = tile_indices[problematic_tile_indices]
         
-        if len(problematic_tile_indices) == 0:
-            return torch.tensor([], dtype=torch.long, device=x.device)
+        # If we have gradient magnitudes, select top-k by gradient magnitude
+        if gradient_magnitudes is not None and len(problematic_global_indices) > 0:
+            # Get gradient magnitudes for problematic primitives
+            problematic_gradients = gradient_magnitudes[problematic_global_indices]
+            
+            # Select top-k by gradient magnitude
+            num_to_select = min(max_primitives_per_tile, len(problematic_global_indices))
+            if num_to_select < len(problematic_global_indices):
+                _, top_gradient_indices = torch.topk(problematic_gradients, num_to_select)
+                selected_indices = problematic_global_indices[top_gradient_indices]
+                print(f"  - Selected top-{num_to_select} by gradient: {num_to_select}/{len(problematic_global_indices)}")
+            else:
+                selected_indices = problematic_global_indices
+                print(f"  - Selected all problematic: {len(problematic_global_indices)}/{len(problematic_global_indices)}")
+        else:
+            # Fallback: limit by max_primitives_per_tile using scale*opacity score
+            num_to_select = min(max_primitives_per_tile, len(problematic_global_indices))
+            if num_to_select < len(problematic_global_indices):
+                scores = r[problematic_global_indices] * torch.sigmoid(v[problematic_global_indices])
+                _, top_indices = torch.topk(scores, num_to_select)
+                selected_indices = problematic_global_indices[top_indices]
+                print(f"  - Selected top-{num_to_select} by scale*opacity: {num_to_select}/{len(problematic_global_indices)}")
+            else:
+                selected_indices = problematic_global_indices
+                print(f"  - Selected all problematic: {len(problematic_global_indices)}/{len(problematic_global_indices)}")
         
-        return tile_indices[problematic_tile_indices]
-
+        return selected_indices
+    
     def _apply_color_nerf(self, 
                          tile_indices: torch.Tensor,
                          selected_indices: torch.Tensor,
@@ -456,12 +438,12 @@ class SequentialFrameRenderer(MseRenderer):
         """
         Compute per-primitive gradient magnitude based on absolute x,y gradients.
         Inspired by AbsGS research - measures how much each primitive's position affects the total loss.
-        Uses global random pixel sampling for performance optimization.
+        Uses fixed-count pixel sampling per tile for performance optimization.
         
         Args:
             x, y, r, v, theta, c: Primitive parameters with gradients
             target: Target image tensor [H, W, 3]
-            adaptive_config: Configuration dict containing sampling parameters
+            adaptive_config: Configuration dict containing tile and sampling parameters
             
         Returns:
             Tensor of gradient magnitudes per primitive [N]
@@ -479,50 +461,83 @@ class SequentialFrameRenderer(MseRenderer):
         pixel_losses = (rendered - target).pow(2).mean(dim=2)  # [H, W]
         H, W = pixel_losses.shape
         
-        # Get gradient sampling configuration
+        # Get tile configuration (same as apply_adaptive_control)
         if adaptive_config is None:
             adaptive_config = {}
-        gradient_config = adaptive_config.get('gradient_criterion', {})
-        pixel_sample_ratio = gradient_config.get('pixel_sample_ratio', 0.1)
+        tile_rows = adaptive_config.get('tile_rows', 4)
+        tile_cols = adaptive_config.get('tile_cols', 4)
+        
+        # Get gradient sampling configuration
+        gradient_config = adaptive_config.get('gradient_ranking', {})
+        pixels_per_tile = gradient_config.get('pixels_per_tile', 16)
+        
+        # Calculate tile dimensions (same as apply_adaptive_control)
+        tile_height = H // tile_rows
+        tile_width = W // tile_cols
         
         # Initialize gradient magnitude accumulator
         gradient_magnitudes = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
         
-        # Global random pixel sampling
-        total_pixels = H * W
-        num_sample_pixels = max(1, int(total_pixels * pixel_sample_ratio))
+        total_pixels_processed = 0
+        total_pixels_available = H * W
         
-        # Generate random pixel indices
-        pixel_indices = torch.randperm(total_pixels, device=x.device)[:num_sample_pixels]
+        print(f"[Gradient Computation] Processing {tile_rows}x{tile_cols} tiles with {pixels_per_tile} pixels per tile")
         
-        print(f"[Gradient Computation] Sampling {num_sample_pixels}/{total_pixels} pixels ({pixel_sample_ratio*100:.1f}%) globally")
-        
-        # Process sampled pixels
-        for pixel_idx in pixel_indices:
-            # Convert flat index to 2D coordinates
-            i = pixel_idx // W
-            j = pixel_idx % W
-            
-            pixel_loss = pixel_losses[i, j]
-            
-            # Compute gradients w.r.t. x, y for this pixel
-            if pixel_loss.requires_grad:
-                grads = torch.autograd.grad(
-                    outputs=pixel_loss,
-                    inputs=[x, y],
-                    retain_graph=True,
-                    create_graph=False,
-                    allow_unused=True
-                )
+        # Process each tile
+        for row in range(tile_rows):
+            for col in range(tile_cols):
+                # Define tile boundaries (same as apply_adaptive_control)
+                y_min = row * tile_height
+                y_max = (row + 1) * tile_height
+                x_min = col * tile_width
+                x_max = (col + 1) * tile_width
                 
-                # Sum absolute gradients for x and y per primitive (AbsGS style)
-                if grads[0] is not None:  # x gradients [N]
-                    gradient_magnitudes += torch.abs(grads[0])
-                if grads[1] is not None:  # y gradients [N]
-                    gradient_magnitudes += torch.abs(grads[1])
+                # Get all pixel coordinates in this tile
+                tile_pixels = []
+                for i in range(y_min, min(y_max, H)):
+                    for j in range(x_min, min(x_max, W)):
+                        tile_pixels.append((i, j))
+                
+                # Sample fixed number of pixels within this tile
+                num_tile_pixels = len(tile_pixels)
+                num_sample_pixels = min(pixels_per_tile, num_tile_pixels)  # Don't exceed available pixels
+                
+                if num_tile_pixels > 0 and num_sample_pixels > 0:
+                    # Random sampling within this tile
+                    if num_sample_pixels < num_tile_pixels:
+                        sample_indices = torch.randperm(num_tile_pixels)[:num_sample_pixels]
+                        sampled_pixels = [tile_pixels[idx] for idx in sample_indices]
+                    else:
+                        # Use all pixels if requested count >= available pixels
+                        sampled_pixels = tile_pixels
+                    
+                    # Process sampled pixels in this tile
+                    for i, j in sampled_pixels:
+                        pixel_loss = pixel_losses[i, j]
+                        
+                        # Compute gradients w.r.t. x, y for this pixel
+                        if pixel_loss.requires_grad:
+                            grads = torch.autograd.grad(
+                                outputs=pixel_loss,
+                                inputs=[x, y],
+                                retain_graph=True,
+                                create_graph=False,
+                                allow_unused=True
+                            )
+                            
+                            # Sum absolute gradients for x and y per primitive (AbsGS style)
+                            if grads[0] is not None:  # x gradients [N]
+                                gradient_magnitudes += torch.abs(grads[0])
+                            if grads[1] is not None:  # y gradients [N]
+                                gradient_magnitudes += torch.abs(grads[1])
+                    
+                    total_pixels_processed += len(sampled_pixels)
         
-        # Scale by sampling ratio to approximate full image gradient
-        gradient_magnitudes = gradient_magnitudes / pixel_sample_ratio
+        # Scale by actual sampling ratio to approximate full image gradient
+        actual_sample_ratio = total_pixels_processed / total_pixels_available if total_pixels_available > 0 else 1.0
+        gradient_magnitudes = gradient_magnitudes / actual_sample_ratio
+        
+        print(f"[Gradient Computation] Processed {total_pixels_processed}/{total_pixels_available} pixels ({actual_sample_ratio*100:.1f}%)")
         
         return gradient_magnitudes
     
