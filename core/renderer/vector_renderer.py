@@ -20,6 +20,8 @@ import subprocess
 import glob
 import wandb
 
+DEBUG_MODE_DETAIL = False
+
 class VectorRenderer:
     """
     A class for rendering vector graphics using differentiable primitives.
@@ -887,6 +889,43 @@ class VectorRenderer:
                 else:
                     optimizer.step()
                 
+            if DEBUG_MODE_DETAIL:
+                print(f"\n🔍 Gradient Analysis (First 10 Primitives) - Iteration {epoch}")
+                print("=" * 80)
+                
+                # Check if gradients exist
+                if x.grad is not None:
+                    print("📊 X Gradients (First 10):")
+                    for i in range(min(10, len(x))):
+                        print(f"  Primitive {i}: {x.grad[i].item():.6f}")
+                
+                if y.grad is not None:
+                    print("📊 Y Gradients (First 10):")
+                    for i in range(min(10, len(y))):
+                        print(f"  Primitive {i}: {y.grad[i].item():.6f}")
+                
+                if r.grad is not None:
+                    print("📊 R Gradients (First 10):")
+                    for i in range(min(10, len(r))):
+                        print(f"  Primitive {i}: {r.grad[i].item():.6f}")
+                
+                if theta.grad is not None:
+                    print("📊 Theta Gradients (First 10):")
+                    for i in range(min(10, len(theta))):
+                        print(f"  Primitive {i}: {theta.grad[i].item():.6f}")
+                
+                if v.grad is not None:
+                    print("📊 V (Opacity) Gradients (First 10):")
+                    for i in range(min(10, len(v))):
+                        print(f"  Primitive {i}: {v.grad[i].item():.6f}")
+                
+                if c.grad is not None:
+                    print("📊 C (Color) Gradients (First 10):")
+                    for i in range(min(10, len(c))):
+                        print(f"  Primitive {i}: R={c.grad[i,0].item():.6f}, G={c.grad[i,1].item():.6f}, B={c.grad[i,2].item():.6f}")
+                
+                print("=" * 80)
+
             # Record loss value for next epoch logging
             loss_value = loss.item()
             
@@ -1014,10 +1053,19 @@ class VectorRenderer:
                             sched_xyr = torch.optim.lr_scheduler.ExponentialLR(
                                 optimizer_xyr, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
 
+            if DEBUG_MODE:
+                print(f"    📊 Input data ranges: iteration {epoch}")
+                print(f"      x: [{x.min():.4f}, {x.max():.4f}]")
+                print(f"      y: [{y.min():.4f}, {y.max():.4f}]")
+                print(f"      r: [{r.min():.4f}, {r.max():.4f}]")
+                print(f"      v: [{v.min():.4f}, {v.max():.4f}]")
+                print(f"      theta: [{theta.min():.4f}, {theta.max():.4f}]")
+                print(f"      c: [{c.min():.4f}, {c.max():.4f}]")
+
             if not streaming_render and not opt_conf.get("multi_level", False) and 'cached_masks_ref' in locals():
                 del cached_masks_ref
             
-            if epoch % 20 == 0:
+            if epoch % 10 == 0:
                 print(f"Epoch {epoch}, Loss: {loss_value:.4f}")
 
         # Final memory report
