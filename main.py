@@ -579,6 +579,14 @@ if config['postprocessing'].get('compute_psnr', False):
             print(f"LPIPS: {total_lpips / num_frames:.4f}")
             print(f"Number of splats: {len(frame_results[0]['x'])}")
             
+            # Save trained parameters for testing
+            from test_cuda_forward import save_trained_parameters
+            save_trained_parameters(
+                frame_results[0]['x'], frame_results[0]['y'], frame_results[0]['r'], 
+                frame_results[0]['theta'], frame_results[0]['v'], frame_results[0]['c'],
+                renderer.S, (H, W)
+            )
+            
         else:
             # Single image metrics (original behavior)
             # Convert rendered image to tensor format for metrics
@@ -612,6 +620,10 @@ if config['postprocessing'].get('compute_psnr', False):
             print(f"VIF: {vif_val.item():.4f}")
             print(f"LPIPS: {lpips_val.item():.4f}")
             print(f"Number of splats: {len(x)}")
+            
+            # Save trained parameters for testing
+            from test_cuda_forward import save_trained_parameters
+            save_trained_parameters(x, y, r, theta, v, c, renderer.S, (H, W))
             
     except ImportError as e:
         print(f"Required library missing: {e}. Cannot compute metrics.")
