@@ -5,7 +5,7 @@
     "FM_halftone": false,
     "transform": "none",
     "img_path": [
-      "images/gif/pororo_monkey_crop_first2.gif"
+      "images/gif/simpson_jumping.gif"
     ],
     "bg_threshold": 250,
     "do_equalize": false,
@@ -118,16 +118,21 @@
     },
     "adaptive_control": {
       "enabled": true,
-      "tile_rows": 8,
-      "tile_cols": 8,
-      "scale_threshold": 8.0,
-      "opacity_threshold": 0.5,
+      "tile_rows": 4,
+      "tile_cols": 4,
+      "scale_threshold": 12.0,
+      "opacity_threshold": 0.7,
       "opacity_reduction_factor": 0.4,
-      "max_primitives_per_tile": 6,
-      "apply_every_n_iterations": 10,
+      "max_primitives_per_tile": 16,
+      "apply_every_n_iterations": 20,
       "color_nerf": {
         "enabled": false,
         "mode": "pixel"
+      },
+      "gradient_criterion": {
+        "enabled": true,
+        "threshold_percentile": 0.8,
+        "pixel_sample_ratio": 0.1
       }
     },
     "combined_loss": {
@@ -148,7 +153,7 @@
     }
   },
   "postprocessing": {
-    "output_folder": "./outputs/simpson_jumping/NODETACH_adaptive_commit1",
+    "output_folder": "./outputs/simpson_jumping/adaptive_gradient_abs",
     "hires_export": false,
     "hires_scale_factor": 4.0,
     "compute_psnr": false,

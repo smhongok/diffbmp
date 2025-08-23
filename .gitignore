@@ -42,6 +42,8 @@ images/gif/*
 !images/gif/pororo_monkey_crop_first2.gif
 !images/gif/cat.gif
 
+images/hwar/*
+
 wandb
 
 visualization_output
