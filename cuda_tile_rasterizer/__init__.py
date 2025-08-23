@@ -6,6 +6,8 @@ import ctypes
                     
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+DEBUG_MODE = False
+
 # Import regular FP32 CUDA extension
 try:
     from .cuda_tile_rasterizer import _C
@@ -35,7 +37,7 @@ class TileRasterizer:
     Class-based tile rasterizer that manages global memory between forward and backward passes.
     This ensures accurate gradient computation for transmit-over compositing.
     """
-    def __init__(self, image_height, image_width, tile_size=16, sigma=0.0, alpha_upper_bound=1.0, max_prims_per_pixel=256, num_primitives=None):
+    def __init__(self, image_height, image_width, tile_size=16, sigma=0.0, alpha_upper_bound=1.0, max_prims_per_pixel=500, num_primitives=None):
         self.image_height = image_height
         self.image_width = image_width
         self.tile_size = tile_size
@@ -48,24 +50,25 @@ class TileRasterizer:
         if CUDA_AVAILABLE:
             _C.init_tile_rasterizer(image_height, image_width, tile_size, sigma, alpha_upper_bound, max_prims_per_pixel, num_primitives)
     
-    def __call__(self, means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, lr_conf):
+    def __call__(self, means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, lr_conf, tile_primitive_mapping=None):
         """
-        Forward pass using the class-based rasterizer
+        Forward pass using the class-based rasterizer with dynamic tile-primitive mapping
         """
         
         return TileRasterizerFunction.apply(
-            means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, lr_conf,
+            means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, lr_conf, tile_primitive_mapping,
             self.image_height, self.image_width, self.tile_size, self.sigma, True  # use_class=True
         )
 
 class TileRasterizerFunction(Function):
     @staticmethod
     def forward(ctx, means2D, radii, rotations, opacities, colors, 
-                primitive_templates, global_bmp_sel, lr_conf, image_height, image_width, tile_size, sigma, use_class=False):
+                primitive_templates, global_bmp_sel, lr_conf, tile_primitive_mapping, image_height, image_width, tile_size, sigma, use_class=False):
         
         # Call CUDA forward
         if use_class and CUDA_AVAILABLE:
-            print("Using class-based approach")
+            if DEBUG_MODE:
+                print("Using class-based approach")
             # Convert global_bmp_sel to int32 to match CUDA kernel expectation
             global_bmp_sel_int32 = global_bmp_sel.to(dtype=torch.int32)
             # Save for backward (save the int32 version)
@@ -75,9 +78,10 @@ class TileRasterizerFunction(Function):
             ctx.tile_size = tile_size
             ctx.sigma = sigma
             ctx.use_class = use_class
+            ctx.tile_primitive_mapping = tile_primitive_mapping
             # Use class-based approach with global memory management
             out_color, out_alpha = _C.rasterize_tiles_class(
-                means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel_int32)
+                means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel_int32, tile_primitive_mapping)
         else:
             # Save for backward (original approach)
             global_bmp_sel_int32 = global_bmp_sel.to(dtype=torch.int32)
@@ -87,9 +91,10 @@ class TileRasterizerFunction(Function):
             ctx.tile_size = tile_size
             ctx.sigma = sigma
             ctx.use_class = use_class
+            ctx.tile_primitive_mapping = tile_primitive_mapping
             # Use original approach
             out_color, out_alpha = _C.rasterize_tiles(
-                means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel_int32,
+                means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel_int32, tile_primitive_mapping, 
                 image_height, image_width, tile_size, sigma)
         
         return out_color, out_alpha
@@ -120,12 +125,12 @@ class TileRasterizerFunction(Function):
                 grad_out_color, grad_out_alpha, means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, lr_config,
                 ctx.image_height, ctx.image_width, ctx.tile_size, ctx.sigma)
                 
-        return grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors, None, None, None, None, None, None, None, None
+        return grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors, None, None, None, None, None, None, None, None, None
 
 class CudaTileRasterizeFunction(Function):
     @staticmethod
     def forward(ctx, means2D, radii, rotations, opacities, colors, 
-                primitive_templates, global_bmp_sel, lr_conf, image_height, image_width, tile_size, sigma):
+                primitive_templates, global_bmp_sel, lr_conf, tile_primitive_mapping, image_height, image_width, tile_size, sigma):
         
         # Save for backward
         global_bmp_sel_int32 = global_bmp_sel.to(dtype=torch.int32)
@@ -134,10 +139,10 @@ class CudaTileRasterizeFunction(Function):
         ctx.image_width = image_width
         ctx.tile_size = tile_size
         ctx.sigma = sigma
-        
+        ctx.tile_primitive_mapping = tile_primitive_mapping
         # Call CUDA forward using class-based function that supports global_bmp_sel
         out_color, out_alpha = _C.rasterize_tiles_class(
-            means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel_int32)
+            means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel_int32, tile_primitive_mapping)
         
         return out_color, out_alpha
     
@@ -163,7 +168,7 @@ class CudaTileRasterizeFunction(Function):
                 means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, lr_config,
                 ctx.image_height, ctx.image_width, ctx.tile_size, ctx.sigma)
         
-        return grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors, None, None, None, None, None, None, None
+        return grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors, None, None, None, None, None, None, None, None
 
 # class CudaTileRasterizeFunctionFP16(Function):
 #     """
@@ -208,7 +213,7 @@ class CudaTileRasterizeFunction(Function):
 #         return grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors, None, None, None, None, None
 
 def rasterize_tiles(means2D, radii, rotations, opacities, colors, 
-                   primitive_templates, global_bmp_sel, lr_conf, image_height, image_width, tile_size, sigma=0.0):
+                   primitive_templates, global_bmp_sel, lr_conf, tile_primitive_mapping, image_height, image_width, tile_size, sigma=0.0):
     """
     CUDA-accelerated tile-based rasterization of 2D primitives.
     
@@ -232,7 +237,7 @@ def rasterize_tiles(means2D, radii, rotations, opacities, colors,
         
     return CudaTileRasterizeFunction.apply(
         means2D, radii, rotations, opacities, colors, 
-        primitive_templates, global_bmp_sel, lr_conf, image_height, image_width, tile_size, sigma
+        primitive_templates, global_bmp_sel, lr_conf, tile_primitive_mapping, image_height, image_width, tile_size, sigma
     )
 
 # def rasterize_tiles_fp16(means2D, radii, rotations, opacities, colors, 

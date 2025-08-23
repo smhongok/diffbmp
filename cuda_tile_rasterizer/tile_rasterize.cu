@@ -6,7 +6,7 @@
 #include "cuda_kernels/tile_backward.h"
 #include "cuda_kernels/tile_common.h"
 
-#define DEBUG_CUDA_KERNELS 1
+#define DEBUG_CUDA_KERNELS 0
 
 // Global instance for Python binding
 std::shared_ptr<TileRasterizer> global_tile_rasterizer = nullptr;
@@ -192,9 +192,8 @@ void TileRasterizer::allocateMemory() {
     delete[] h_tile_offsets_init;
     delete[] h_tile_indices_init;
     
-    // Initialize to zero
-    cudaMemset(out_color, 0, total_pixels * 3 * sizeof(float));
-    cudaMemset(out_alpha, 0, total_pixels * sizeof(float));
+    cudaMemset(out_color, 1.f, total_pixels * 3 * sizeof(float));
+    cudaMemset(out_alpha, 1.f, total_pixels * sizeof(float));
     cudaMemset(grad_means2D, 0, num_primitives * 2 * sizeof(float));
     cudaMemset(grad_radii, 0, num_primitives * sizeof(float));
     cudaMemset(grad_rotations, 0, num_primitives * sizeof(float));
@@ -301,7 +300,8 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
     torch::Tensor opacities,
     torch::Tensor colors,
     torch::Tensor primitive_templates,
-    torch::Tensor global_bmp_sel) {
+    torch::Tensor global_bmp_sel,
+    torch::Tensor tile_primitive_mapping) {
     
     // Check if memory is allocated
     if (!memory_allocated) {
@@ -316,8 +316,93 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
     
     const int num_primitives = radii.size(0);
     
-    printf("TileRasterizer::forward: %d primitives, %dx%d image, tile_size=%d\n", 
-           num_primitives, image_width, image_height, tile_size);
+    // Apply dynamic tile-primitive mapping if provided
+    if (tile_primitive_mapping.defined()) {
+        // Extract tile offsets and indices from mapping
+        // tile_primitive_mapping is a 1D tensor containing concatenated data
+        // Format: [tile_offsets_size, tile_indices_size, tile_offsets..., tile_indices...]
+        int tile_offsets_size_from_tensor = tile_primitive_mapping[0].item<int>();
+        int tile_indices_size_from_tensor = tile_primitive_mapping[1].item<int>();
+        
+        // Extract tile_offsets and tile_indices from the 1D tensor using narrow
+        auto tile_offsets = tile_primitive_mapping.narrow(0, 2, tile_offsets_size_from_tensor);
+        auto tile_indices = tile_primitive_mapping.narrow(0, 2 + tile_offsets_size_from_tensor, tile_indices_size_from_tensor);
+        
+        // Copy new tile mapping to device
+        cudaMemcpy(d_tile_offsets, tile_offsets.data_ptr<int>(), 
+                   tile_offsets_size_from_tensor * sizeof(int), cudaMemcpyDeviceToDevice);
+        cudaMemcpy(d_tile_indices, tile_indices.data_ptr<int>(), 
+                   tile_indices_size_from_tensor * sizeof(int), cudaMemcpyDeviceToDevice);
+        
+        // Update sizes
+        tile_offsets_size = tile_offsets_size_from_tensor;
+        tile_indices_size = tile_indices_size_from_tensor;
+
+#if DEBUG_CUDA_KERNELS
+        
+        printf("TileRasterizer::forward: Applied dynamic tile mapping - offsets_size=%d, indices_size=%d\n", tile_offsets_size, tile_indices_size);
+        
+        // Detailed tile mapping validation
+        printf("TileRasterizer::forward: Tile mapping validation:\n");
+        printf("  - Total tiles: %d\n", tile_offsets_size - 1);
+        printf("  - Total primitive indices: %d\n", tile_indices_size);
+        
+        // Print first few tile offsets for validation
+        printf("  - First 5 tile offsets: ");
+        for (int i = 0; i < std::min(5, tile_offsets_size); i++) {
+            printf("%d ", tile_offsets[i].item<int>());
+        }
+        printf("\n");
+        
+        // Print last few tile offsets for validation
+        if (tile_offsets_size > 5) {
+            printf("  - Last 5 tile offsets: ");
+            for (int i = std::max(0, tile_offsets_size - 5); i < tile_offsets_size; i++) {
+                printf("%d ", tile_offsets[i].item<int>());
+            }
+            printf("\n");
+        }
+        
+        // Print first few primitive indices for validation
+        printf("  - First 10 primitive indices: ");
+        for (int i = 0; i < std::min(10, tile_indices_size); i++) {
+            printf("%d ", tile_indices[i].item<int>());
+        }
+        printf("\n");
+        
+        // Calculate and print primitive distribution per tile
+        printf("  - Primitive distribution per tile:\n");
+        for (int tile_idx = 0; tile_idx < std::min(10, tile_offsets_size - 1); tile_idx++) {
+            int start_idx = tile_offsets[tile_idx].item<int>();
+            int end_idx = tile_offsets[tile_idx + 1].item<int>();
+            int num_prims = end_idx - start_idx;
+            printf("    Tile %d: %d primitives (indices %d-%d)\n", tile_idx, num_prims, start_idx, end_idx - 1);
+        }
+        
+        for (int tile_idx = tile_offsets_size - 4; tile_idx < tile_offsets_size - 1; tile_idx++) {
+            int start_idx = tile_offsets[tile_idx].item<int>();
+            int end_idx = tile_offsets[tile_idx + 1].item<int>();
+            int num_prims = end_idx - start_idx;
+            printf("    Tile %d: %d primitives (indices %d-%d)\n", tile_idx, num_prims, start_idx, end_idx - 1);
+        }
+        
+        printf("    ... (showing first 10 tiles with last 3 tiles only)\n");
+        
+        // Verify total primitive count matches
+        int total_mapped_prims = tile_offsets[tile_offsets_size - 1].item<int>();
+        printf("  - Total mapped primitives: %d (should match indices_size: %d)\n", total_mapped_prims, tile_indices_size);
+        
+        if (total_mapped_prims != tile_indices_size) {
+            printf("  ⚠️ WARNING: Total mapped primitives (%d) != indices_size (%d)\n", total_mapped_prims, tile_indices_size);
+        }
+        
+        printf("TileRasterizer::forward: Tile mapping validation completed.\n");
+#endif
+    }
+    
+#if DEBUG_CUDA_KERNELS
+    printf("TileRasterizer::forward: %d primitives, %dx%d image, tile_size=%d\n", num_primitives, image_width, image_height, tile_size);
+#endif
     
     // Create configuration structures
     TileConfig tile_config(image_height, image_width, tile_size, sigma, alpha_upper_bound);
@@ -336,6 +421,9 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
     cudaMemset(pixel_prim_counts, 0, total_pixels * sizeof(int));
     cudaMemset(sigma_inv, 0, num_primitives * 4 * sizeof(float));
     cudaMemset(grad_sigma, 0, num_primitives * 4 * sizeof(float));
+
+    cudaMemset(out_color, 1.f, total_pixels * 3 * sizeof(float));
+    cudaMemset(out_alpha, 1.f, total_pixels * sizeof(float));
     
     // Launch CUDA forward kernel
     CudaRasterizeTilesForwardKernel(
@@ -366,8 +454,6 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
         prim_config
     );
     
-    printf("TileRasterizer::forward: Kernel completed, creating CUDA tensors...\n");
-    
     // Create CUDA tensors directly (no CPU copy needed)
     auto out_color_tensor = torch::zeros({image_height, image_width, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
     auto out_alpha_tensor = torch::zeros({image_height, image_width}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
@@ -388,7 +474,9 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
         throw std::runtime_error("CUDA memory copy failed");
     }
     
+#if DEBUG_CUDA_KERNELS
     printf("TileRasterizer::forward: CUDA tensors created successfully\n");
+#endif
     
     return std::make_tuple(out_color_tensor, out_alpha_tensor);
 }
@@ -423,6 +511,12 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     PrimitiveConfig prim_config(num_primitives, primitive_templates.size(0), 
                                primitive_templates.size(1), primitive_templates.size(2), 
                                max_prims_per_pixel);
+
+    cudaMemset(grad_means2D, 0,  num_primitives* 2 * sizeof(float));
+    cudaMemset(grad_radii, 0,  num_primitives * sizeof(float));
+    cudaMemset(grad_rotations, 0,  num_primitives * sizeof(float));
+    cudaMemset(grad_opacities, 0,  num_primitives * sizeof(float));
+    cudaMemset(grad_colors, 0,  num_primitives * 3 * sizeof(float));
     
     // Launch CUDA backward kernel using the stored global memory
     CudaRasterizeTilesBackwardKernel(
@@ -508,8 +602,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
         printf("CUDA Error: Failed to copy grad_colors to CUDA tensor: %s\n", cudaGetErrorString(err));
         throw std::runtime_error("CUDA memory copy failed");
     }
-    
+
+#if DEBUG_CUDA_KERNELS
     printf("TileRasterizer::backward: Tensors created successfully\n");
+#endif
     
     return std::make_tuple(grad_means2D_tensor, grad_radii_tensor, grad_rotations_tensor, grad_opacities_tensor, grad_colors_tensor);
 }
@@ -523,6 +619,7 @@ std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForward(
     torch::Tensor colors,
     torch::Tensor primitive_templates,
     torch::Tensor global_bmp_sel,
+    torch::Tensor tile_primitive_mapping,
     int image_height,
     int image_width,
     int tile_size,
@@ -533,8 +630,8 @@ std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForward(
     // Create configuration structures
     TileConfig tile_config(image_height, image_width, tile_size, sigma, 1.0f);
     PrimitiveConfig prim_config(num_primitives, primitive_templates.size(0), 
-                               primitive_templates.size(1), primitive_templates.size(2), 256);
-    
+                               primitive_templates.size(1), primitive_templates.size(2), 500);
+
     // Debug: Print input tensor info
 #if DEBUG_CUDA_KERNELS
     printf("C++ Wrapper: num_primitives=%d, image_size=%dx%d, tile_size=%d, total_tiles=%d\n",
@@ -548,16 +645,18 @@ std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForward(
         global_tile_rasterizer->tile_size != tile_size ||
         global_tile_rasterizer->num_primitives != num_primitives) {
         
-        printf("Creating new TileRasterizer: %dx%d, tile_size=%d, num_prims=%d\n", 
-               image_width, image_height, tile_size, num_primitives);
+#if DEBUG_CUDA_KERNELS
+        printf("Creating new TileRasterizer: %dx%d, tile_size=%d, num_prims=%d\n", image_width, image_height, tile_size, num_primitives);
+#endif
         
-        global_tile_rasterizer = std::make_shared<TileRasterizer>(
-            image_height, image_width, tile_size, sigma, 1.0f, 256, num_primitives);
+        global_tile_rasterizer = std::make_shared<TileRasterizer>(image_height, image_width, tile_size, sigma, 1.0f, 500, num_primitives);
         
+#if DEBUG_CUDA_KERNELS
         printf("TileRasterizer created successfully\n");
+#endif
     }
     
-    return global_tile_rasterizer->forward(means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel);
+    return global_tile_rasterizer->forward(means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, tile_primitive_mapping);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> CudaRasterizeTilesBackward(

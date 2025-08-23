@@ -15,13 +15,14 @@ std::tuple<torch::Tensor, torch::Tensor> rasterize_tiles_class(
     torch::Tensor opacities,
     torch::Tensor colors,
     torch::Tensor primitive_templates,
-    torch::Tensor global_bmp_sel) {
+    torch::Tensor global_bmp_sel,
+    torch::Tensor tile_primitive_mapping) {
     
     if (!global_tile_rasterizer) {
         throw std::runtime_error("TileRasterizer not initialized. Call init_tile_rasterizer first.");
     }
     
-    return global_tile_rasterizer->forward(means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel);
+    return global_tile_rasterizer->forward(means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, tile_primitive_mapping);
 }
 
 // Class-based backward function
@@ -52,12 +53,13 @@ std::tuple<torch::Tensor, torch::Tensor> rasterize_tiles(
     torch::Tensor colors,
     torch::Tensor primitive_templates,
     torch::Tensor global_bmp_sel,
+    torch::Tensor tile_primitive_mapping,
     int image_height,
     int image_width,
     int tile_size,
     float sigma) {
     
-    return CudaRasterizeTilesForward(means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, image_height, image_width, tile_size, sigma);
+    return CudaRasterizeTilesForward(means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, tile_primitive_mapping, image_height, image_width, tile_size, sigma);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> rasterize_tiles_backward(

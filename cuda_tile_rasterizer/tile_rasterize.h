@@ -61,7 +61,8 @@ public:
         torch::Tensor opacities,
         torch::Tensor colors,
         torch::Tensor primitive_templates,
-        torch::Tensor global_bmp_sel);
+        torch::Tensor global_bmp_sel,
+        torch::Tensor tile_primitive_mapping);
     
     // Backward pass
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> backward(
@@ -96,6 +97,7 @@ std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForward(
     torch::Tensor colors,
     torch::Tensor primitive_templates,
     torch::Tensor global_bmp_sel,
+    torch::Tensor tile_primitive_mapping,
     int image_height,
     int image_width,
     int tile_size,

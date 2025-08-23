@@ -4,6 +4,9 @@
 #include "tile_forward.h"
 #include "tile_common.h"
 
+// Enable deterministic math operations
+#pragma STDC FP_CONTRACT OFF
+
 #define DEBUG_CUDA_KERNELS 0
 #define DEBUG_SEQUENTIAL 0  // Set to 1 for sequential debugging, 0 for parallel execution
 
@@ -31,7 +34,7 @@ __global__ void tile_rasterize_forward_kernel(
     const int ty = y / tile_config.tile_size;
     const int tile_id = ty * tilesX + tx;
     
-    #if DEBUG_CUDA_KERNELS
+#if DEBUG_CUDA_KERNELS
     // Debug tile access
     if (x == 0 && y == 0) {
         printf("CUDA Kernel: Debug - tilesX=%d, total_tiles=%d, tile_id=%d\n", tilesX, tile_config.total_tiles, tile_id);
@@ -52,13 +55,13 @@ __global__ void tile_rasterize_forward_kernel(
                tile_id, buffers.tile_offsets_size);
         return;
     }
-    #endif
+#endif
 
     // Tile list
     const int start = buffers.d_tile_offsets[tile_id + 0];
     const int end   = buffers.d_tile_offsets[tile_id + 1];
     
-    #if DEBUG_CUDA_KERNELS
+#if DEBUG_CUDA_KERNELS
     // Debug tile offsets
     if (x == 0 && y == 0) {
         printf("CUDA Kernel: Debug - tile_id=%d, start=%d, end=%d\n", tile_id, start, end);
@@ -75,7 +78,7 @@ __global__ void tile_rasterize_forward_kernel(
                end, buffers.tile_indices_size);
         return;
     }
-    #endif
+#endif
     
     const int Ktile = end - start;
     const int* prim_ids = buffers.d_tile_indices + start;
@@ -87,12 +90,12 @@ __global__ void tile_rasterize_forward_kernel(
     // Bounds checking for base index
     const int total_pixels = W * H;
     const int max_base = total_pixels * prim_config.max_prims_per_pixel;
-    #if DEBUG_CUDA_KERNELS
+#if DEBUG_CUDA_KERNELS
     if (base >= max_base) {
         printf("CUDA Kernel: Invalid base index: pixel_idx=%d, base=%d, max_base=%d\n", pixel_idx, base, max_base);
         return;
     }
-    #endif
+#endif
 
     // Reset count (optional if already zeroed by caller)
     int local_k = 0;
@@ -103,15 +106,37 @@ __global__ void tile_rasterize_forward_kernel(
         if (n < 0 || n >= prim_config.num_primitives)   // safety
             continue;
 
-        // Forward push condition: radius check only (to keep k mapping with backward)
+        // Forward push condition: template-aware bounding box check
         const float mx = inputs.means2D[2*n + 0];
         const float my = inputs.means2D[2*n + 1];
         const float r  = inputs.radii[n];
         const float dx = (float)x - mx;
         const float dy = (float)y - my;
-        if (dx*dx + dy*dy > r*r) {
-            continue;  // not pushed, keep local_k unchanged
+        
+        // Template-aware bounding box check instead of circular check
+        const int template_idx = inputs.global_bmp_sel[n];
+        if (template_idx >= 0 && template_idx < prim_config.num_templates) {
+            // Use template's actual dimensions for bounding box
+            const float template_width = (float)prim_config.template_width;
+            const float template_height = (float)prim_config.template_height;
+            const float max_dim = fmaxf(template_width, template_height);
+            const float scale_factor = r / (max_dim * 0.5f);  // r as scale factor
+            
+            // Calculate scaled template bounds
+            const float half_width = template_width * 0.5f * scale_factor;
+            const float half_height = template_height * 0.5f * scale_factor;
+            
+            // Check if pixel is outside template's bounding box
+            if (fabsf(dx) > half_width || fabsf(dy) > half_height) {
+                continue;  // pixel outside template bounds
+            }
+        } else {
+            // Fallback to circular check for invalid template index
+            if (dx*dx + dy*dy > r*r) {
+                continue;  // not pushed, keep local_k unchanged
+            }
         }
+        
 
         if (local_k >= prim_config.max_prims_per_pixel) {
             // cache overflow guard: ignore remaining
@@ -125,7 +150,6 @@ __global__ void tile_rasterize_forward_kernel(
         const float alpha_max= tile_config.alpha_upper_bound;
 
         // Template mask via bilinear
-        const int template_idx = inputs.global_bmp_sel[n];
         float mask_value = 0.f;
         if (template_idx >= 0 && template_idx < prim_config.num_templates) {
             const float r_inv = r > 1e-6f ? (1.f / r) : 1e6f;     // avoid div0
@@ -141,8 +165,14 @@ __global__ void tile_rasterize_forward_kernel(
 
             const float* tex = &inputs.primitive_templates[template_idx * prim_config.template_height * prim_config.template_width];
             mask_value = bilinear_sample(tex, prim_config.template_height, prim_config.template_width, tex_y, tex_x);
-            //mask_value = fmaxf(0.f, fminf(1.f, mask_value));
-            mask_value = fminf(fmaxf(mask_value, 0.f), 1.f);
+            // Convert to binary mask (0 or 1) after bilinear sampling
+            //mask_value = mask_value > 0.5f ? 1.0f : 0.0f;
+            //mask_value = fminf(fmaxf(mask_value, 0.f), 1.f);
+            mask_value = fmaxf(0.f, fminf(1.f, mask_value));
+        }
+
+        if (mask_value <= 1e-6f) {
+            continue;  // foreground가 아니면 모든 계산 건너뛰기
         }
 
         // Alpha and color for this primitive at this pixel
@@ -153,13 +183,13 @@ __global__ void tile_rasterize_forward_kernel(
 
         const int idx = base + local_k;
         
-        #if DEBUG_CUDA_KERNELS
+#if DEBUG_CUDA_KERNELS
         // Bounds checking for cache access
         if (idx >= max_base) {
             printf("CUDA Kernel: Invalid cache index: idx=%d, max_base=%d\n", idx, max_base);
             break;
         }
-        #endif
+#endif
 
         // Cache: α_k, colors (non-premult), and T placeholder (set later)
         buffers.pixel_alphas[idx]   = a_k;
@@ -182,23 +212,21 @@ __global__ void tile_rasterize_forward_kernel(
     for (int k = 0; k < local_k; ++k) {
         const int idx = base + k;
         
-        #if DEBUG_CUDA_KERNELS
+#if DEBUG_CUDA_KERNELS
         // Bounds checking for cache access
         if (idx >= max_base) {
             printf("CUDA Kernel: Invalid cache index in Phase 2: idx=%d, max_base=%d\n", idx, max_base);
             break;
         }
-        #endif
+#endif
         
         const float a_k = buffers.pixel_alphas[idx];
         const float cr  = buffers.pixel_colors_r[idx];
         const float cg  = buffers.pixel_colors_g[idx];
         const float cb  = buffers.pixel_colors_b[idx];
 
-        // cache T[k] BEFORE updating by (1-α_k)
         buffers.pixel_T_values[idx] = T;
 
-        // OVER accumulation with premultiplied color m_k = c_k * α_k
         comp_r += T * cr * a_k;
         comp_g += T * cg * a_k;
         comp_b += T * cb * a_k;
@@ -310,14 +338,35 @@ __global__ void tile_rasterize_forward_kernel_debug(
                 if (n < 0 || n >= prim_config.num_primitives)   // safety
                     continue;
 
-                // Forward push condition: radius check only (to keep k mapping with backward)
+                // Forward push condition: template-aware bounding box check
                 const float mx = inputs.means2D[2*n + 0];
                 const float my = inputs.means2D[2*n + 1];
                 const float r  = inputs.radii[n];
                 const float dx = (float)x - mx;
                 const float dy = (float)y - my;
-                if (dx*dx + dy*dy > r*r) {
-                    continue;  // not pushed, keep local_k unchanged
+                
+                // Template-aware bounding box check instead of circular check
+                const int template_idx = inputs.global_bmp_sel[n];
+                if (template_idx >= 0 && template_idx < prim_config.num_templates) {
+                    // Use template's actual dimensions for bounding box
+                    const float template_width = (float)prim_config.template_width;
+                    const float template_height = (float)prim_config.template_height;
+                    const float max_dim = fmaxf(template_width, template_height);
+                    const float scale_factor = r / (max_dim * 0.5f);  // r as scale factor
+                    
+                    // Calculate scaled template bounds
+                    const float half_width = template_width * 0.5f * scale_factor;
+                    const float half_height = template_height * 0.5f * scale_factor;
+                    
+                    // Check if pixel is outside template's bounding box
+                    if (fabsf(dx) > half_width || fabsf(dy) > half_height) {
+                        continue;  // pixel outside template bounds
+                    }
+                } else {
+                    // Fallback to circular check for invalid template index
+                    if (dx*dx + dy*dy > r*r) {
+                        continue;  // not pushed, keep local_k unchanged
+                    }
                 }
 
                 if (local_k >= prim_config.max_prims_per_pixel) {
@@ -332,7 +381,6 @@ __global__ void tile_rasterize_forward_kernel_debug(
                 const float alpha_max= tile_config.alpha_upper_bound;
 
                 // Template mask via bilinear
-                const int template_idx = inputs.global_bmp_sel[n];
                 float mask_value = 0.f;
                 if (template_idx >= 0 && template_idx < prim_config.num_templates) {
                     const float r_inv = r > 1e-6f ? (1.f / r) : 1e6f;     // avoid div0
@@ -349,7 +397,8 @@ __global__ void tile_rasterize_forward_kernel_debug(
                     const float* tex = &inputs.primitive_templates[template_idx * prim_config.template_height * prim_config.template_width];
                     mask_value = bilinear_sample(tex, prim_config.template_height, prim_config.template_width, tex_y, tex_x);
                     //mask_value = fmaxf(0.f, fminf(1.f, mask_value));
-                    mask_value = fminf(fmaxf(mask_value, 0.f), 1.f);
+                    //mask_value = fminf(fmaxf(mask_value, 0.f), 1.f);
+                    mask_value = fmaxf(0.f, fminf(1.f, mask_value));
                 }
 
                 // Alpha and color for this primitive at this pixel
@@ -427,9 +476,9 @@ void CudaRasterizeTilesForwardKernel(
     const TileConfig tile_config,
     const PrimitiveConfig prim_config) {
 
-    #if DEBUG_CUDA_KERNELS
+#if DEBUG_CUDA_KERNELS
     printf("CUDA Forward Kernel: Launching with %dx%d image, tile_size=%d\n", tile_config.image_width, tile_config.image_height, tile_config.tile_size);
-    #endif
+#endif
 
 #if DEBUG_SEQUENTIAL
     // DEBUG MODE: Sequential execution for debugging
@@ -448,13 +497,13 @@ void CudaRasterizeTilesForwardKernel(
     int grid_x = (tile_config.image_width + tile_config.tile_size - 1) / tile_config.tile_size;
     int grid_y = (tile_config.image_height + tile_config.tile_size - 1) / tile_config.tile_size;
     
+#if DEBUG_CUDA_KERNELS
     printf("CUDA Forward Kernel: NORMAL MODE - Grid size: %dx%d, Block size: %dx%d\n", grid_x, grid_y, tile_config.tile_size, tile_config.tile_size);
-    
+#endif
+
     // Launch kernel: one block per tile
     dim3 grid(grid_x, grid_y);
     dim3 block(tile_config.tile_size, tile_config.tile_size);
-    
-    printf("CUDA Forward Kernel: About to launch normal kernel...\n");
     
     tile_rasterize_forward_kernel<<<grid, block>>>(inputs, outputs, buffers, tile_config, prim_config);
 #endif
@@ -473,7 +522,7 @@ void CudaRasterizeTilesForwardKernel(
         return;
     }
     
-    #if DEBUG_CUDA_KERNELS
+#if DEBUG_CUDA_KERNELS
     printf("CUDA Forward Kernel: Kernel completed successfully\n");
-    #endif
+#endif
 }

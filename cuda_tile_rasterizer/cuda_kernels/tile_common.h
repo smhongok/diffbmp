@@ -172,13 +172,13 @@ __device__ __forceinline__ int idx_hwc(int h, int w, int W, int c) {
 // Simple bilinear sample (for forward pass)
 __device__ __forceinline__ float bilinear_sample(const float* data, int height, int width, float y, float x) {
     // 완전 OOB는 즉시 0 반환 (int 캐스팅 전에 컷)
-    if (x <= -1.f || x >= (float)width || y <= -1.f || y >= (float)height)
+    if (x < 0.f || x > (float)(width-1) || y < 0.f || y > (float)(height-1))
         return 0.f;
 
     int x0 = (int)floorf(x);
     int y0 = (int)floorf(y);
-    x0 = max(-1, min(x0, width - 1));
-    y0 = max(-1, min(y0, height - 1));
+    x0 = max(0, min(x0, width - 1));
+    y0 = max(0, min(y0, height - 1));
 
     float wx = x - x0;
     float wy = y - y0;
@@ -198,15 +198,15 @@ __device__ __forceinline__ float bilinear_sample(const float* data, int height, 
 // Bilinear sample + gradients w.r.t. x (u) and y (v) in template space
 __device__ __forceinline__ float bilinear_value_and_grad_xy(const float* data, int height, int width, float y, float x, float& grad_x, float& grad_y) {
     // 완전 OOB는 값/그라드 0
-    if (x <= -1.f || x >= (float)width || y <= -1.f || y >= (float)height) {
+    if (x < 0.f || x > (float)(width-1) || y < 0.f || y > (float)(height-1)) {
         grad_x = 0.f; grad_y = 0.f;
         return 0.f;
     }
 
     int x0 = (int)floorf(x);
     int y0 = (int)floorf(y);
-    x0 = max(-1, min(x0, width - 1));
-    y0 = max(-1, min(y0, height - 1));
+    x0 = max(0, min(x0, width - 1));
+    y0 = max(0, min(y0, height - 1));
 
     float wx = x - x0;
     float wy = y - y0;

@@ -3,10 +3,13 @@
 // Gsplat-style OVER compositing backward (2D SVGSplat)
 // ===============================
 #include <cuda_runtime.h>
+#include <device_launch_parameters.h>
 #include <math_constants.h>
 #include <stdio.h>
 #include "tile_backward.h"
 #include "tile_common.h"
+
+#pragma STDC FP_CONTRACT OFF
 
 #ifndef CHECK_CUDA
 #define CHECK_CUDA(x) (x)
@@ -54,7 +57,24 @@ __device__ inline void backward_over_one_pixel(
         const float r  = inputs.radii[n];
         const float dx = (float)x - mx;
         const float dy = (float)y - my;
-        if (dx*dx + dy*dy > r*r) continue;
+        const int template_idx = inputs.global_bmp_sel[n];
+        if (template_idx >= 0 && template_idx < prim_config.num_templates) {
+            const float template_width = (float)prim_config.template_width;
+            const float template_height = (float)prim_config.template_height;
+            const float max_dim = fmaxf(template_width, template_height);
+            const float scale_factor = r / (max_dim * 0.5f);
+            
+            const float half_width = template_width * 0.5f * scale_factor;
+            const float half_height = template_height * 0.5f * scale_factor;
+            
+            if (fabsf(dx) > half_width || fabsf(dy) > half_height) {
+                continue;
+            }
+        } else {
+            if (dx*dx + dy*dy > r*r) {
+                continue;
+            }
+        }
 
         const int k = k_running;
         if (k >= num_k) { k_running++; continue; } // safety
@@ -67,6 +87,30 @@ __device__ inline void backward_over_one_pixel(
         const float cg  = buffers.pixel_colors_g[idx];
         const float cb  = buffers.pixel_colors_b[idx];
 
+        // Get mask value early for gradient computation decisions
+        float mask_val = 0.f;
+        if (template_idx >= 0 && template_idx < prim_config.num_templates) {
+            const float inv_r = (r > 1e-6f) ? (1.f/r) : 1e6f;
+            const float phi = inputs.rotations[n];
+            const float c = __cosf(phi), s = __sinf(phi);
+            const float ndx = dx * inv_r;
+            const float ndy = dy * inv_r;
+            const float u =  c*ndx + s*ndy;
+            const float v = -s*ndx + c*ndy;
+            const float tex_x = (u + 1.f) * 0.5f * (prim_config.template_width  - 1);
+            const float tex_y = (v + 1.f) * 0.5f * (prim_config.template_height - 1);
+
+            const float* tex = &inputs.primitive_templates[
+                template_idx * prim_config.template_height * prim_config.template_width];
+            mask_val = bilinear_sample(tex, prim_config.template_height, prim_config.template_width, tex_y, tex_x);
+            mask_val = fmaxf(0.f, fminf(1.f, mask_val));
+        }
+        
+        if (mask_val <= 1e-6f) {
+            // This primitive doesn't affect this pixel, skip
+            continue;
+        }
+            
         // Build suffix S and back-product B:
         // S = Σ_{m>k} c_m α_m T_m,  B = Π_{m>k}(1-α_m)
         float Sx=0.f, Sy=0.f, Sz=0.f, B=1.f;
@@ -84,16 +128,18 @@ __device__ inline void backward_over_one_pixel(
         }
 
         // (1) dL/d(color logits): ∂L/∂c = gC * (α_k T_k); ∂c/∂z = σ(z)(1-σ(z))
-        const float sr = sigmoidf_safe(inputs.colors[3*n+0]);
-        const float sg = sigmoidf_safe(inputs.colors[3*n+1]);
-        const float sb = sigmoidf_safe(inputs.colors[3*n+2]);
-        const float dcr = gCx * (a_k * T_k);
-        const float dcg = gCy * (a_k * T_k);
-        const float dcb = gCz * (a_k * T_k);
-        // Apply learning rate and gain for colors
-        atomicAdd(&outputs.grad_colors[3*n+0], dcr * sr*(1.f-sr));
-        atomicAdd(&outputs.grad_colors[3*n+1], dcg * sg*(1.f-sg));
-        atomicAdd(&outputs.grad_colors[3*n+2], dcb * sb*(1.f-sb));
+        // Only compute color gradients if mask value is significant (not transparent)
+        if (mask_val > 1e-6f) {
+            const float sr = sigmoidf_safe(inputs.colors[3*n+0]);
+            const float sg = sigmoidf_safe(inputs.colors[3*n+1]);
+            const float sb = sigmoidf_safe(inputs.colors[3*n+2]);
+            const float dcr = gCx * (a_k * T_k);
+            const float dcg = gCy * (a_k * T_k);
+            const float dcb = gCz * (a_k * T_k);
+            atomicAdd(&outputs.grad_colors[3*n+0], (dcr * sr*(1.f-sr)));
+            atomicAdd(&outputs.grad_colors[3*n+1], (dcg * sg*(1.f-sg)));
+            atomicAdd(&outputs.grad_colors[3*n+2], (dcb * sb*(1.f-sb)));
+        }
 
         // (2) dL/dα_k (OVER):
         // ∂C/∂α_k = T_k c_k - S/(1-α_k),  ∂A/∂α_k = T_k * B
@@ -108,7 +154,7 @@ __device__ inline void backward_over_one_pixel(
         //     opacities are LOGITS  → dα/dv = α_max * mask * σ(v)*(1-σ(v))
         const float v_op = inputs.opacities[n];
         const float s_op = sigmoidf_safe(v_op);
-        float mask_val = 0.f, dmask_dx_tex=0.f, dmask_dy_tex=0.f;
+        float dmask_dx_tex=0.f, dmask_dy_tex=0.f;
 
         // Template coords (forward-identical): (u,v) from rotation φ and scale r
         const float inv_r = (r > 1e-6f) ? (1.f/r) : 1e6f;
@@ -121,7 +167,6 @@ __device__ inline void backward_over_one_pixel(
         const float tex_x = (u + 1.f) * 0.5f * (prim_config.template_width  - 1);
         const float tex_y = (v + 1.f) * 0.5f * (prim_config.template_height - 1);
 
-        const int template_idx = inputs.global_bmp_sel[n];
         if (template_idx >= 0 && template_idx < prim_config.num_templates) {
             const float* tex = &inputs.primitive_templates[
                 template_idx * prim_config.template_height * prim_config.template_width];
@@ -134,43 +179,47 @@ __device__ inline void backward_over_one_pixel(
             dmask_dx_tex = 0.f;
             dmask_dy_tex = 0.f;
         }
+        
 
-        const float d_alpha_dv = tile_config.alpha_upper_bound * mask_val * s_op * (1.f - s_op);
-        // Apply learning rate and gain for opacities
-        atomicAdd(&outputs.grad_opacities[n], dLdalpha * d_alpha_dv);
+        // Only compute gradients if mask value is significant (not transparent)
+        if (mask_val > 1e-6f) {
+            const float d_alpha_dv = tile_config.alpha_upper_bound * mask_val * s_op * (1.f - s_op);
+            atomicAdd(&outputs.grad_opacities[n], (dLdalpha * d_alpha_dv));
 
-        // (4) mask path: dα/dmask = α_max * σ(v_op)
-        const float dalpha_dmask = tile_config.alpha_upper_bound * s_op;
+            // (4) mask path: dα/dmask = α_max * σ(v_op)
+            const float dalpha_dmask = tile_config.alpha_upper_bound * s_op;
 
-        // (5) ∂mask/∂(u,v) from texture-space grads:
-        // tex_x = 0.5*(u+1)*(W-1), tex_y = 0.5*(v+1)*(H-1)
-        const float du2x = 0.5f * (prim_config.template_width  - 1);
-        const float dv2y = 0.5f * (prim_config.template_height - 1);
-        const float dmask_du = dmask_dx_tex * du2x;
-        const float dmask_dv = dmask_dy_tex * dv2y;
+            // (5) ∂mask/∂(u,v) from texture-space grads:
+            // tex_x = 0.5*(u+1)*(W-1), tex_y = 0.5*(v+1)*(H-1)
+            const float du2x = 0.5f * (prim_config.template_width  - 1);
+            const float dv2y = 0.5f * (prim_config.template_height - 1);
+            const float dmask_du = dmask_dx_tex * du2x;
+            const float dmask_dv = dmask_dy_tex * dv2y;
 
-        const float dL_dmask = dLdalpha * dalpha_dmask;
-        const float dL_du = dL_dmask * dmask_du;
-        const float dL_dv = dL_dmask * dmask_dv;
+            const float dL_dmask = dLdalpha * dalpha_dmask;
+            const float dL_du = dL_dmask * dmask_du;
+            const float dL_dv = dL_dmask * dmask_dv;
 
-        // (6) ∂(u,v)/∂(μx,μy,r,φ)   (r is scale)
-        // u = ( c*dx + s*dy)/r,   v = (-s*dx + c*dy)/r
-        const float du_dmx = -c*inv_r,  du_dmy = -s*inv_r;
-        const float dv_dmx =  s*inv_r,  dv_dmy = -c*inv_r;
-        const float du_dr  = -u*inv_r,  dv_dr  = -v*inv_r;
-        const float du_dphi= (-s*ndx +  c*ndy);
-        const float dv_dphi= (-c*ndx -  s*ndy);
-
-        // Apply learning rate and gains for position, radius, and rotation
-        atomicAdd(&outputs.grad_means2D[2*n+0], (dL_du*du_dmx + dL_dv*dv_dmx));
-        atomicAdd(&outputs.grad_means2D[2*n+1], (dL_du*du_dmy + dL_dv*dv_dmy));
-        atomicAdd(&outputs.grad_radii[n],       (dL_du*du_dr  + dL_dv*dv_dr));
-        atomicAdd(&outputs.grad_rotations[n],   (dL_du*du_dphi+ dL_dv*dv_dphi));
+            // (6) ∂(u,v)/∂(μx,μy,r,φ)   (r is scale)
+            // u = ( c*dx + s*dy)/r,   v = (-s*dx + c*dy)/r
+            const float du_dmx = -c*inv_r,  du_dmy = -s*inv_r;
+            const float dv_dmx =  s*inv_r,  dv_dmy = -c*inv_r;
+            const float du_dr  = -u*inv_r,  dv_dr  = -v*inv_r;
+            const float du_dphi= (-s*ndx +  c*ndy);
+            const float dv_dphi= (-c*ndx -  s*ndy);
+            
+            atomicAdd(&outputs.grad_means2D[2*n+0], (dL_du*du_dmx + dL_dv*dv_dmx));
+            atomicAdd(&outputs.grad_means2D[2*n+1], (dL_du*du_dmy + dL_dv*dv_dmy));
+            atomicAdd(&outputs.grad_radii[n],       (dL_du*du_dr  + dL_dv*dv_dr));
+            atomicAdd(&outputs.grad_rotations[n],   (dL_du*du_dphi+ dL_dv*dv_dphi));
+        }
 
         // advance local k just like forward push order
         k_running++;
         if (k_running >= num_k) break;
     }
+
+    //printf("CUDA Backward Kernel: DEBUG MODE - pixel(%d,%d), K=%d, k_running=%d\n", x, y, K, k_running);
 }
 
 // Backward tile kernel (Original parallel version)
@@ -287,8 +336,9 @@ void CudaRasterizeTilesBackwardKernel(
     const PrimitiveConfig prim_config,
     const LearningRateConfig lr_config) {
     
-    printf("CUDA Backward Kernel: Starting with %d primitives, %dx%d image\n",
-           prim_config.num_primitives, tile_config.image_width, tile_config.image_height);
+#if DEBUG_CUDA_KERNELS
+    printf("CUDA Backward Kernel: Starting with %d primitives, %dx%d image\n", prim_config.num_primitives, tile_config.image_width, tile_config.image_height);
+#endif
 
 #if DEBUG_SEQUENTIAL
     // DEBUG MODE: Sequential execution for debugging
@@ -307,16 +357,15 @@ void CudaRasterizeTilesBackwardKernel(
         lr_config
     );
 #else
-    // NORMAL MODE: Parallel execution
     dim3 block(tile_config.tile_size, tile_config.tile_size);
     dim3 grid((tile_config.image_width  + tile_config.tile_size - 1) / tile_config.tile_size,
               (tile_config.image_height + tile_config.tile_size - 1) / tile_config.tile_size);
     
-    #if DEBUG_CUDA_KERNELS
+#if DEBUG_CUDA_KERNELS
     printf("CUDA Backward Kernel: NORMAL MODE - Grid size: %dx%d, Block size: %dx%d\n", grid.x, grid.y, block.x, block.y);
     
     printf("CUDA Backward Kernel: About to launch normal kernel...\n");
-    #endif
+#endif
     
     tile_backward_over_tilelist_kernel<<<grid, block>>>(
         grad_out_color, grad_out_alpha,
@@ -339,7 +388,7 @@ void CudaRasterizeTilesBackwardKernel(
         return;
     }
     
-    #if DEBUG_CUDA_KERNELS
+#if DEBUG_CUDA_KERNELS
     printf("CUDA Backward Kernel: Kernel completed successfully\n");
-    #endif
+#endif
 }
