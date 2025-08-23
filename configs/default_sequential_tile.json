@@ -5,7 +5,7 @@
         "FM_halftone": false,
         "transform": "none",
         "img_path": [
-            "images/artwork/seurat.jpg"
+            "images/gif/pororo_monkey_crop_first2.gif"
         ],
         "bg_threshold": 250,
         "do_equalize": false,
@@ -25,7 +25,7 @@
     },
     "svg": {
         "svg_file": "arial.ttf",
-        "text": ["S","e","u","r","a","t"],
+        "text": ["P","o","r","o","r","o"],
         "svg_hollow": false,
         "output_width": 128
     },
@@ -90,6 +90,56 @@
             "densifying_period": 4,
             "densified_N": 3000,
             "grad_threshold": 0.01
+        }
+    },
+    "sequential": {
+        "enabled": true,
+        "input_type": "gif",
+        "max_frames": null,
+        "tile_size": 32,
+        "optimization": {
+          "num_iterations": 100,
+          "learning_rate": {
+            "default": 0.1,
+            "gain_x": 10.0,
+            "gain_y": 10.0,
+            "gain_r": 10.0,
+            "gain_v": 1.5,
+            "gain_theta": 1.0,
+            "gain_c": 1.0
+          },
+          "decay_rate": 0.98,
+          "warmup_steps": 10
+        },
+        "adaptive_control": {
+          "enabled": true,
+          "tile_rows": 8,
+          "tile_cols": 8,
+          "scale_threshold": 8.0,
+          "opacity_threshold": 0.5,
+          "opacity_reduction_factor": 0.4,
+          "max_primitives_per_tile": 6,
+          "apply_every_n_iterations": 10,
+          "color_nerf": {
+            "enabled": false,
+            "mode": "pixel"
+          }
+        },
+        "combined_loss": {
+          "enabled": false,
+          "grayscale_weight": 0.3,
+          "color_weight": 0.7,
+          "use_gradient_loss": false,
+          "gradient_weight": 0.1,
+          "use_cosine_similarity": false,
+          "use_canny_loss": true,
+          "canny_weight": 0.2
+        },
+        "export": {
+          "export_frames": true,
+          "export_gif": true,
+          "export_mp4": true,
+          "frame_duration": 100
         }
     },
     "postprocessing": {

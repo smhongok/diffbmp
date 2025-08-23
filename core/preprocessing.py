@@ -116,25 +116,34 @@ class Preprocessor:
         """
         img = Image.open(config["img_path"]).convert('RGB')  # 8-bit color
         w, h = img.size
-        self.width = w
-        self.height = h
-
+        
+        # Store original image dimensions for reference
+        original_w, original_h = w, h
+        
+        # Use target dimensions for cropping/padding (don't overwrite with actual dimensions)
+        target_w = getattr(self, 'width', w)  # Use existing width or default to image width
+        target_h = getattr(self, 'height', h)  # Use existing height or default to image height
+        
         if self.trim:
             # Not yet implemented
             raise NotImplementedError("trim=True is not yet implemented.")
 
         # 1) CenterCrop (if too large)
-        if w > self.width or h > self.height:
-            crop_w = min(w, self.width)
-            crop_h = min(h, self.height)
+        if w > target_w or h > target_h:
+            crop_w = min(w, target_w)
+            crop_h = min(h, target_h)
             left = (w - crop_w) // 2
             top = (h - crop_h) // 2
             img = img.crop((left, top, left + crop_w, top + crop_h))
             w, h = img.size
 
         # 2) Padding (white=255)
-        pad_w = self.width
-        pad_h = self.height
+        pad_w = target_w
+        pad_h = target_h
+        
+        # Update self.width and self.height to the target dimensions for consistency
+        self.width = target_w
+        self.height = target_h
         padded_arr = np.full((pad_h, pad_w, 3), fill_value=255, dtype=np.uint8)  # 3-channel white padding
 
         img_arr = np.array(img, dtype=np.uint8)
@@ -312,9 +321,10 @@ class Preprocessor:
     
     def get_final_width(self):
         if self.final_width is None:
-            raise ValueError("final_height has not been set.")
+            raise ValueError("final_width has not been set.")
         return self.final_width
     
+
     def load_gif_frames(self, gif_path, config):
         """
         Load GIF frames and preprocess each frame using the same pipeline as single images.
