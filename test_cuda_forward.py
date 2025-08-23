@@ -2,6 +2,14 @@
 """
 Test script to validate CUDA forward kernel correctness by comparing
 CUDA and PyTorch tile renderer outputs pixel by pixel.
+
+Usage:
+1. Test with synthetic data:
+   python test_cuda_forward.py
+
+2. Test with trained parameters from main.py:
+   python main.py --config configs/default.json  # First, train and save parameters
+   python test_cuda_forward.py --use-trained     # Then, test with trained parameters
 """
 
 import torch
@@ -27,15 +35,75 @@ def load_test_config():
             "num_primitives": 100
         }
 
+def load_trained_parameters(device='cuda'):
+    """Load trained parameters from main.py training output"""
+    # Path to saved parameters (adjust as needed)
+    param_path = "trained_parameters.pt"
+    
+    if not os.path.exists(param_path):
+        print(f"❌ Trained parameters file not found: {param_path}")
+        print("💡 Please run 'python main.py --config configs/default.json' first to generate parameters")
+        return None
+    
+    try:
+        # Load trained parameters
+        params = torch.load(param_path, map_location=device)
+        print(f"✅ Loaded trained parameters from {param_path}")
+        
+        # Extract parameters
+        x = params['x'].to(device)
+        y = params['y'].to(device)
+        r = params['r'].to(device)
+        theta = params['theta'].to(device)
+        v = params['v'].to(device)
+        c = params['c'].to(device)
+        S = params['S'].to(device)
+        
+        # Get canvas size from parameters
+        H, W = params.get('canvas_size', [256, 256])
+        
+        print(f"📊 Loaded parameters:")
+        print(f"  - Number of primitives: {len(x)}")
+        print(f"  - Canvas size: {H}x{W}")
+        print(f"  - Template shape: {S.shape}")
+        print(f"  - Parameter ranges:")
+        print(f"    x: [{x.min():.4f}, {x.max():.4f}]")
+        print(f"    y: [{y.min():.4f}, {y.max():.4f}]")
+        print(f"    r: [{r.min():.4f}, {r.max():.4f}]")
+        print(f"    v: [{v.min():.4f}, {v.max():.4f}]")
+        print(f"    c: [{c.min():.4f}, {c.max():.4f}]")
+        
+        return x, y, r, theta, v, c, S, H, W
+        
+    except Exception as e:
+        print(f"❌ Failed to load trained parameters: {e}")
+        return None
+
+def save_trained_parameters(x, y, r, theta, v, c, S, canvas_size):
+    """Save trained parameters for later testing"""
+    params = {
+        'x': x,
+        'y': y,
+        'r': r,
+        'theta': theta,
+        'v': v,
+        'c': c,
+        'S': S,
+        'canvas_size': canvas_size
+    }
+    
+    torch.save(params, "trained_parameters.pt")
+    print(f"✅ Saved trained parameters to trained_parameters.pt")
+
 def create_simple_test_data(device='cuda'):
     """Create simple test data for comparison"""
-    N = 1000  # Larger number for better CUDA performance
+    N = 2000  # Larger number for better CUDA performance
     H, W = 256, 256  # Larger image size
     
     # Create simple primitive parameters
     x = torch.rand(N, device=device) * W * 0.8 + W * 0.1  # Center in image
     y = torch.rand(N, device=device) * H * 0.8 + H * 0.1
-    r = torch.rand(N, device=device) * 20 + 5  # Radius 5-25
+    r = torch.rand(N, device=device) * 45 + 5  # Radius 5-50
     theta = torch.rand(N, device=device) * 2 * np.pi  # Random rotation
     v = torch.randn(N, device=device) * 2  # Opacity logits
     c = torch.randn(N, 3, device=device) * 2  # Color logits
@@ -55,15 +123,26 @@ def create_simple_test_data(device='cuda'):
     
     return x, y, r, theta, v, c, S, H, W
 
-def test_cuda_vs_pytorch():
+def test_cuda_vs_pytorch(use_trained_params=False):
     """Compare CUDA SimpleTileRenderer vs PyTorch fallback SimpleTileRenderer"""
     print("🔍 Testing CUDA Forward Kernel Correctness...")
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    # Create test data
-    x, y, r, theta, v, c, S, H, W = create_simple_test_data(device)
+    # Load test data
+    if use_trained_params:
+        print("📂 Using trained parameters from main.py...")
+        result = load_trained_parameters(device)
+        if result is None:
+            print("❌ Failed to load trained parameters, falling back to synthetic data")
+            x, y, r, theta, v, c, S, H, W = create_simple_test_data(device)
+        else:
+            x, y, r, theta, v, c, S, H, W = result
+    else:
+        print("🧪 Using synthetic test data...")
+        x, y, r, theta, v, c, S, H, W = create_simple_test_data(device)
+    
     print(f"Test data: {len(x)} primitives, {H}x{W} image")
     
     # Create two SimpleTileRenderer instances
@@ -86,11 +165,13 @@ def test_cuda_vs_pytorch():
         import core.renderer.simple_tile_renderer as str_module
         original_cuda_available = str_module.CUDA_AVAILABLE
         str_module.CUDA_AVAILABLE = True
+
+        white_bg = torch.ones((H, W, 3), device=device)
         
         # Warm up CUDA
         print("🔥 Warming up CUDA...")
         for _ in range(3):
-            _ = cuda_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, lr_conf=lr_conf)
+            _ = cuda_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, I_bg=white_bg, lr_conf=lr_conf)
         
         # Synchronize GPU
         if torch.cuda.is_available():
@@ -112,7 +193,7 @@ def test_cuda_vs_pytorch():
         end_time = torch.cuda.Event(enable_timing=True)
         
         start_time.record()
-        cuda_result = cuda_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, lr_conf=lr_conf)
+        cuda_result = cuda_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, I_bg=white_bg, lr_conf=lr_conf)
         end_time.record()
         
         # Wait for GPU to finish
@@ -135,7 +216,7 @@ def test_cuda_vs_pytorch():
         # Warm up PyTorch
         print("🔥 Warming up PyTorch...")
         for _ in range(3):
-            _ = pytorch_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, lr_conf=lr_conf)
+            _ = pytorch_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, I_bg=white_bg, lr_conf=lr_conf)
         
         # Synchronize if using CUDA
         if torch.cuda.is_available():
@@ -146,7 +227,7 @@ def test_cuda_vs_pytorch():
         import time
         
         start_time = time.time()
-        pytorch_result = pytorch_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, lr_conf=lr_conf)
+        pytorch_result = pytorch_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, I_bg=white_bg, lr_conf=lr_conf)
         
         # Synchronize if using CUDA
         if torch.cuda.is_available():
@@ -276,10 +357,23 @@ def test_cuda_vs_pytorch():
     return is_similar
 
 if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Test CUDA forward kernel with trained parameters")
+    parser.add_argument('--use-trained', action='store_true', 
+                       help='Use trained parameters from main.py instead of synthetic data')
+    args = parser.parse_args()
+    
     print("🧪 CUDA Forward Kernel Validation Test")
     print("=" * 50)
     
-    success = test_cuda_vs_pytorch()
+    if args.use_trained:
+        print("🎯 Using trained parameters from main.py training output")
+        print("💡 Make sure to run 'python main.py --config configs/default.json' first")
+    else:
+        print("🧪 Using synthetic test data")
+    
+    success = test_cuda_vs_pytorch(use_trained_params=args.use_trained)
     
     print("\n" + "=" * 50)
     if success:
