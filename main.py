@@ -19,6 +19,7 @@ import cv2
 from datetime import datetime
 from core.renderer.mse_renderer import MseRenderer
 from core.renderer.sequential_renderer import SequentialFrameRenderer
+from core.renderer.simple_tile_renderer import SimpleTileRenderer
 from util.svg_loader import SVGLoader
 from util.primitive_loader import PrimitiveLoader
 from util.svg_converter import FontParser, ImageToSVG
@@ -48,7 +49,7 @@ with open(config_path, "r", encoding="utf-8") as f:
 # After import or after loading config
 set_global_seed(config.get("seed", 42))
 
-# Force list attributes to single item for standard mode
+# Force list attributes to single item
 if type(config["preprocessing"]["img_path"]) is list:
     config["preprocessing"]["img_path"] = config["preprocessing"]["img_path"][0]
     print("Use only one file to inference")
@@ -122,7 +123,6 @@ else:
     H = preprocessor.final_height
     W = preprocessor.final_width
 
-
 # Handle SVG file loading
 svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
 if svg_ext == ".svg":
@@ -189,7 +189,16 @@ except Exception as e:
     )
     primitive_loader = None
 
-# Initialize MseRenderer with tile-based rendering capabilities
+# Initialize renderer based on loss type
+renderer_type = opt_conf.get("renderer_type", "mse")
+renderer_class = {
+    "mse": MseRenderer,
+    "tile": SimpleTileRenderer,
+}.get(renderer_type.lower())
+
+if renderer_class is None:
+    raise ValueError(f"Invalid renderer type: {renderer_type}")
+
 bmp_tensor = svg_loader.load_alpha_bitmap()
 if use_fp16:
     bmp_tensor = bmp_tensor.to(dtype=torch.float16)
@@ -199,17 +208,19 @@ else:
 H = preprocessor.final_height
 W = preprocessor.final_width
 
-# Create MseRenderer with tile-based rendering support
-renderer = MseRenderer(
-    canvas_size=(H, W),
-    S=bmp_tensor,
-    alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
-    device=device,
-    use_fp16=use_fp16,
-    output_path=config["postprocessing"].get("output_folder", "./outputs/"),
-    tile_size=opt_conf.get("tile_size", 32)
-)
-print(f"Using MseRenderer with tile-based rendering (tile_size: {opt_conf.get('tile_size', 32)})")
+# Create renderer only when needed - defer instantiation
+renderer_kwargs = {
+    "canvas_size": (H, W),
+    "S": bmp_tensor,
+    "alpha_upper_bound": config["optimization"].get("alpha_upper_bound", 0.5),
+    "device": device,
+    "use_fp16": use_fp16,
+    "output_path": config["postprocessing"].get("output_folder", "./outputs/"),
+	"tile_size": opt_conf.get("tile_size", 32)
+}
+
+renderer = renderer_class(**renderer_kwargs)
+print(f"Using {renderer_class.__name__} for optimization")
 
 # Initialize parameters
 print("---Initializing vector graphics with Structure-Aware method---")
@@ -225,7 +236,7 @@ if sequential_config.get("enabled", False):
     # Sequential frame-by-frame optimization
     print("Starting sequential frame-by-frame optimization...")
     
-    # Create sequential renderer for subsequent frames with tile-based rendering
+    # Create sequential renderer for subsequent frames
     sequential_renderer = SequentialFrameRenderer(
         canvas_size=(H, W), 
         S=bmp_tensor,
@@ -601,14 +612,6 @@ if config['postprocessing'].get('compute_psnr', False):
             print(f"LPIPS: {total_lpips / num_frames:.4f}")
             print(f"Number of splats: {len(frame_results[0]['x'])}")
             
-            # Save trained parameters for testing
-            from test_cuda_forward import save_trained_parameters
-            save_trained_parameters(
-                frame_results[0]['x'], frame_results[0]['y'], frame_results[0]['r'], 
-                frame_results[0]['theta'], frame_results[0]['v'], frame_results[0]['c'],
-                renderer.S, (H, W)
-            )
-            
         else:
             # Single image metrics (original behavior)
             # Convert rendered image to tensor format for metrics
@@ -645,10 +648,6 @@ if config['postprocessing'].get('compute_psnr', False):
             print(f"VIF: {vif_val.item():.4f}")
             print(f"LPIPS: {lpips_val.item():.4f}")
             print(f"Number of splats: {len(x)}")
-            
-            # Save trained parameters for testing
-            from test_cuda_forward import save_trained_parameters
-            save_trained_parameters(x, y, r, theta, v, c, renderer.S, (H, W))
             
     except ImportError as e:
         print(f"Required library missing: {e}. Cannot compute metrics.")

@@ -342,16 +342,27 @@ class SimpleTileRenderer(VectorRenderer):
                     primitive_tile_masks, x_starts, x_ends, y_starts, y_ends
                 )
                 
-                # Convert lr_conf dict to tensor
-                lr_config_tensor = torch.tensor([
-                    lr_conf.get('default', 0.1),
-                    lr_conf.get('gain_x', 1.0),
-                    lr_conf.get('gain_y', 1.0),
-                    lr_conf.get('gain_r', 1.0),
-                    lr_conf.get('gain_v', 1.0),
-                    lr_conf.get('gain_theta', 1.0),
-                    lr_conf.get('gain_c', 1.0)
-                ], dtype=torch.float32, device=means2D.device)
+                if lr_conf is None:
+                    lr_config_tensor = torch.tensor([
+                        0.1,
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
+                    ], dtype=torch.float32, device=means2D.device)
+                else:
+                    # Convert lr_conf dict to tensor
+                    lr_config_tensor = torch.tensor([
+                        lr_conf.get('default', 0.1),
+                        lr_conf.get('gain_x', 1.0),
+                        lr_conf.get('gain_y', 1.0),
+                        lr_conf.get('gain_r', 1.0),
+                        lr_conf.get('gain_v', 1.0),
+                        lr_conf.get('gain_theta', 1.0),
+                        lr_conf.get('gain_c', 1.0)
+                    ], dtype=torch.float32, device=means2D.device)
                 
                 cuda_color, cuda_alpha = self.cuda_rasterizer(
                     means2D, radii, rotations, opacities, colors,
