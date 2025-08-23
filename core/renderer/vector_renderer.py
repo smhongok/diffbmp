@@ -20,6 +20,7 @@ import subprocess
 import glob
 import wandb
 
+DEBUG_MODE = False
 DEBUG_MODE_DETAIL = False
 
 class VectorRenderer:
