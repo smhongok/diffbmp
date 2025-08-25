@@ -24,7 +24,7 @@ try:
     
     # Try to import FP16 version
     try:
-        from cuda_tile_rasterizer import rasterize_tiles_fp16 as cuda_rasterize_tiles_fp16
+        from cuda_tile_rasterizer_fp16 import rasterize_tiles_fp16 as cuda_rasterize_tiles_fp16
         CUDA_FP16_AVAILABLE = True
         print("CUDA tile rasterizer FP16 loaded successfully!")
     except ImportError as e:
