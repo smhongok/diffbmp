@@ -79,4 +79,18 @@ To test all default*.json configs:
 python test_configs.py --gpu 6 --no-wandb
 ```
 
+## Build
 
+To build .so file :
+
+```bash
+cd cuda_tile_rasterizer && python setup.py clean && rm -rf build/ *.egg-info *.so && python setup.py build_ext --inplace && cd ..
+```
+
+To build .so file fo fp16:
+```bash
+cd cuda_tile_rasterizer && python setup_fp16.py clean && rm -rf build/ *.egg-info *.so && python setup_fp16.py build_ext --inplace && cd ..
+```
+
+If you have some errors when you build, remove followings and do above commands again:
+`cuda_tile_rasterizer/cuda_tile_rasterizer`, `cuda_tile_rasterizer/cuda_tile_rasterizer_fp16`, `cuda_tile_rasterizer/build` 

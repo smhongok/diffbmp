@@ -1,6 +1,11 @@
+
+import os
 from setuptools import setup
 from torch.utils.cpp_extension import CUDAExtension, BuildExtension
 import torch
+
+# Ensure cuda_tile_rasterizer directory exists
+os.makedirs('cuda_tile_rasterizer', exist_ok=True)
 
 setup(
     name='cuda_tile_rasterizer',
