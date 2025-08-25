@@ -24,7 +24,7 @@ try:
     
     # Try to import FP16 version
     try:
-        from cuda_tile_rasterizer_fp16 import rasterize_tiles_fp16 as cuda_rasterize_tiles_fp16
+        from cuda_tile_rasterizer import rasterize_tiles_fp16 as cuda_rasterize_tiles_fp16
         CUDA_FP16_AVAILABLE = True
         print("CUDA tile rasterizer FP16 loaded successfully!")
     except ImportError as e:
@@ -194,7 +194,7 @@ class SimpleTileRenderer(VectorRenderer):
                 x_end = min(x_start + self.tile_size, self.W)
                 
                 # Find primitives that affect this tile
-                tile_primitive_indices = self._get_tile_primitives(
+                tile_primitive_indices = self._unified_primitive_assignment(
                     x, y, r, theta, x_start, x_end, y_start, y_end
                 )
                 
@@ -230,7 +230,7 @@ class SimpleTileRenderer(VectorRenderer):
         x_ends = torch.clamp(x_starts + self.tile_size, max=self.W)
         
         # Vectorized primitive-to-tile assignment
-        primitive_tile_masks = self._vectorized_primitive_assignment(
+        primitive_tile_masks = self._unified_primitive_assignment(
             x, y, r, theta, x_starts, x_ends, y_starts, y_ends
         )
         
@@ -403,44 +403,6 @@ class SimpleTileRenderer(VectorRenderer):
             traceback.print_exc()
             # Return None to trigger fallback
             return None
-    
-    def _vectorized_primitive_assignment(self, x: torch.Tensor, y: torch.Tensor, 
-                                       r: torch.Tensor, theta: torch.Tensor,
-                                       x_starts: torch.Tensor, x_ends: torch.Tensor,
-                                       y_starts: torch.Tensor, y_ends: torch.Tensor) -> torch.Tensor:
-        """Vectorized computation of which primitives affect which tiles."""
-        N = len(x)
-        total_tiles = len(x_starts)
-        
-        # Expand dimensions for broadcasting: (N, 1) and (1, total_tiles)
-        x_exp = x.unsqueeze(1)  # (N, 1)
-        y_exp = y.unsqueeze(1)  # (N, 1)
-        r_exp = r.unsqueeze(1)  # (N, 1)
-        
-        x_starts_exp = x_starts.unsqueeze(0)  # (1, total_tiles)
-        x_ends_exp = x_ends.unsqueeze(0)      # (1, total_tiles)
-        y_starts_exp = y_starts.unsqueeze(0)  # (1, total_tiles)
-        y_ends_exp = y_ends.unsqueeze(0)      # (1, total_tiles)
-        
-        # Compute primitive bounding boxes (considering rotation and radius)
-        # For simplicity, use conservative bounding box: center ± (r * sqrt(2))
-        bbox_margin = r_exp * 1.5  # Conservative margin for rotation
-        
-        prim_x_min = x_exp - bbox_margin
-        prim_x_max = x_exp + bbox_margin
-        prim_y_min = y_exp - bbox_margin
-        prim_y_max = y_exp + bbox_margin
-        
-        # Check intersection: primitive bbox overlaps with tile bbox
-        # Intersection condition: not (prim_max < tile_min or prim_min > tile_max)
-        x_intersect = ~((prim_x_max < x_starts_exp) | (prim_x_min > x_ends_exp))
-        y_intersect = ~((prim_y_max < y_starts_exp) | (prim_y_min > y_ends_exp))
-        
-        # Both x and y must intersect
-        intersections = x_intersect & y_intersect  # (N, total_tiles)
-        
-        # Transpose to get (total_tiles, N) - each row is primitives affecting that tile
-        return intersections.t()
     
     def _convert_masks_to_mapping(self, primitive_tile_masks: torch.Tensor,
                                  x_starts: torch.Tensor, x_ends: torch.Tensor,
@@ -810,57 +772,6 @@ class SimpleTileRenderer(VectorRenderer):
             # Original behavior for 3-channel targets
             return F.mse_loss(rendered, target)
     
-    def _get_tile_primitives(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
-                            theta: torch.Tensor, x_start: int, x_end: int, 
-                            y_start: int, y_end: int) -> List[int]:
-        """
-        Find primitives whose transformed bounding boxes intersect with the given tile.
-        
-        Args:
-            x, y: (N,) primitive positions
-            r: (N,) primitive scales
-            theta: (N,) primitive rotations
-            x_start, x_end, y_start, y_end: Tile boundaries
-            
-        Returns:
-            List of primitive indices that affect this tile
-        """
-        N = x.shape[0]
-        p = len(self.primitive_bboxes)
-        intersecting_indices = []
-        
-        for i in range(N):
-            # Get primitive index (cycling through available primitives)
-            prim_idx = i % p
-            min_u, max_u, min_v, max_v = self.primitive_bboxes[prim_idx]
-            
-            # Transform bounding box corners to world coordinates
-            # Apply scale and rotation
-            cos_t = torch.cos(theta[i])
-            sin_t = torch.sin(theta[i])
-            scale = r[i]
-            
-            # Bounding box corners in primitive space
-            corners_u = torch.tensor([min_u, max_u, min_u, max_u], device=self.device)
-            corners_v = torch.tensor([min_v, min_v, max_v, max_v], device=self.device)
-            
-            # Transform to world coordinates
-            world_x = x[i] + scale * (corners_u * cos_t - corners_v * sin_t)
-            world_y = y[i] + scale * (corners_u * sin_t + corners_v * cos_t)
-            
-            # Check if transformed bounding box intersects tile
-            bbox_x_min = world_x.min().item()
-            bbox_x_max = world_x.max().item()
-            bbox_y_min = world_y.min().item()
-            bbox_y_max = world_y.max().item()
-            
-            # Intersection test
-            if (bbox_x_min < x_end and bbox_x_max > x_start and
-                bbox_y_min < y_end and bbox_y_max > y_start):
-                intersecting_indices.append(i)
-        
-        return intersecting_indices
-    
     def _render_tile(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                      theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
                      primitive_indices: List[int], x_start: int, x_end: int,
@@ -1195,7 +1106,7 @@ if __name__ == "__main__":
                 x_start = tile_x * tile_size
                 x_end = min(x_start + tile_size, canvas_size[1])
                 
-                tile_primitives = renderer._get_tile_primitives(
+                tile_primitives = renderer._unified_primitive_assignment(
                     x, y, r, theta, x_start, x_end, y_start, y_end
                 )
                 tile_primitive_counts[tile_y, tile_x] = len(tile_primitives)
@@ -1307,7 +1218,7 @@ if __name__ == "__main__":
             x_start = tile_x * tile_size
             x_end = min(x_start + tile_size, canvas_size[1])
             
-            tile_primitives = renderer._get_tile_primitives(
+            tile_primitives = renderer._unified_primitive_assignment(
                 x, y, r, theta, x_start, x_end, y_start, y_end
             )
             print(f"  Tile ({tile_y},{tile_x}) [{x_start}-{x_end}, {y_start}-{y_end}]: {len(tile_primitives)} primitives {tile_primitives}")
