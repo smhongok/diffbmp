@@ -14,6 +14,7 @@ try:
     cuda_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cuda_tile_rasterizer',  'cuda_tile_rasterizer')
     cuda_fp16_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cuda_tile_rasterizer',  'cuda_tile_rasterizer_fp16')
     print(f"cuda_tile_rasterizer path: {cuda_path}")
+    print(f"cuda_tile_rasterizer_fp16 path: {cuda_fp16_path}")
     if cuda_path not in sys.path:
         sys.path.insert(0, cuda_path)
     if cuda_fp16_path not in sys.path:
