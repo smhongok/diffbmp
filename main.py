@@ -535,8 +535,10 @@ if not sequential_config.get("enabled", False):
         
         # For alpha loss calculation, we need to generate masks if background doesn't exist
         if not exist_bg:
-            alpha_loss = (cached_masks * target_binary_mask.unsqueeze(0)).sum(dim=0).mean()
-        
+            # TODO: 대협, 이제 cached_masks가 없어졌으니 코드 주석처리 할게. 다른방식으로 살리던지 해야 할 듯 
+            #alpha_loss = (cached_masks * target_binary_mask.unsqueeze(0)).sum(dim=0).mean()
+            print("TODO: alpha loss calculation")
+
         # Save rendered image directly from rendered tensor
         rendered_np = rendered.detach().cpu().numpy()
         rendered_np = (rendered_np * 255).astype(np.uint8)
@@ -623,10 +625,6 @@ if config['postprocessing'].get('compute_psnr', False):
             ssim_val = piq.ssim(rendered_t_f32, target_t_f32, data_range=1.0)
             vif_val = piq.vif_p(rendered_t_f32, target_t_f32, data_range=1.0)
             lpips_val = piq.LPIPS()(rendered_t_f32, target_t_f32)
-
-            # If no background, compute alpha loss
-            if not exist_bg:
-                print("Alpha loss (X 10^3): {:.4f}".format(alpha_loss.item()*1000.0))
             
             print(f"PSNR: {psnr_val.item():.2f} dB")
             print(f"SSIM: {ssim_val.item():.4f}")
