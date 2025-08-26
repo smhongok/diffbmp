@@ -1,6 +1,6 @@
 {
   "preprocessing": {
-      "final_width": [256],
+      "final_width": [1536],
       "trim": false,
       "FM_halftone": false,
       "transform": "none",
@@ -87,8 +87,6 @@
   "postprocessing": {
       "output_folder": "outputs/",
       "linewidth": 3.0,
-      "compute_psnr": true,
-      "hires_export": true,
-      "hires_scale_factor": 4.0
+      "compute_psnr": true
   }
 } 
