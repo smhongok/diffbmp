@@ -353,11 +353,11 @@ class SequentialFrameRenderer(MseRenderer):
         print(f"  - High opacity (>={opacity_threshold:.2f}): {high_opacity_mask.sum().item()}/{len(tile_indices)}")
         print(f"  - Front primitives (top 30%): {front_mask.sum().item()}/{len(tile_indices)}")
         
-        # Combine criteria: primitives meeting at least 2 out of 3 criteria
+        # Combine criteria: primitives meeting all 3 criteria
         criteria_count = (large_scale_mask.float() + high_opacity_mask.float() + front_mask.float())
-        problematic_mask = criteria_count >= 2.0
+        problematic_mask = criteria_count >= 3.0
         
-        print(f"  - Problematic by criteria (>=2/3): {problematic_mask.sum().item()}/{len(tile_indices)}")
+        print(f"  - Problematic by criteria (>=3/3): {problematic_mask.sum().item()}/{len(tile_indices)}")
         
         # Get indices of problematic primitives within the tile
         problematic_tile_indices = torch.where(problematic_mask)[0]
@@ -430,13 +430,13 @@ class SequentialFrameRenderer(MseRenderer):
                 pixel_colors = target_image[selected_y, selected_x]  # Shape: [num_selected, 3]
                 c[selected_indices] = pixel_colors
     
-    def _compute_per_primitive_gradient_magnitude(self, 
+    def _compute_per_pixel_gradient_magnitude(self, 
                                                  x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                                                  v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
                                                  target: torch.Tensor,
                                                  adaptive_config: dict = None) -> torch.Tensor:
         """
-        Compute per-primitive gradient magnitude based on absolute x,y gradients.
+        Compute per-pixel gradient magnitude based on absolute x,y gradients.
         Inspired by AbsGS research - measures how much each primitive's position affects the total loss.
         Uses fixed-count pixel sampling per tile for performance optimization.
         
@@ -446,7 +446,7 @@ class SequentialFrameRenderer(MseRenderer):
             adaptive_config: Configuration dict containing tile and sampling parameters
             
         Returns:
-            Tensor of gradient magnitudes per primitive [N]
+            Tensor of gradient magnitudes per pixel [H, W]
         """
         # Ensure x, y parameters require gradients
         if not x.requires_grad:
@@ -541,4 +541,325 @@ class SequentialFrameRenderer(MseRenderer):
         
         return gradient_magnitudes
     
+    def visualize_gradient_directions_for_selected_primitives(self,
+                                                               x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
+                                                               v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
+                                                               target: torch.Tensor,
+                                                               selected_indices: torch.Tensor,
+                                                               save_path: str = None) -> torch.Tensor:
+        """
+        Visualize per-pixel gradient directions for selected primitives to verify gradient collisions.
+        
+        For each selected primitive, this method:
+        1. Defines a circular region around the primitive (radius = 1.5 * r)
+        2. Computes per-pixel x,y gradients within that region
+        3. Converts gradient directions to colors (hue based on angle)
+        4. Overlays the visualization on the rendered image
+        
+        Args:
+            x, y, r, v, theta, c: Primitive parameters
+            target: Target image tensor [H, W, 3]
+            selected_indices: Indices of primitives to visualize [K]
+            save_path: Optional path to save the visualization
+            
+        Returns:
+            Visualization image tensor [H, W, 3] with gradient directions color-coded
+        """
+        import numpy as np
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import hsv_to_rgb
+        
+        print(f"[Gradient Visualization] Visualizing {len(selected_indices)} selected primitives")
+        
+        # Ensure x, y parameters require gradients
+        if not x.requires_grad:
+            x.requires_grad_(True)
+        if not y.requires_grad:
+            y.requires_grad_(True)
+        
+        # Render current state
+        rendered = self.render_from_params(x, y, r, v, theta, c)
+        H, W = rendered.shape[:2]
+        
+        # Compute pixel-wise loss (no reduction)
+        pixel_losses = (rendered - target).pow(2).mean(dim=2)  # [H, W]
+        
+        # Create visualization canvas (start with rendered image)
+        vis_image = rendered.detach().cpu().numpy().copy()
+        
+        # Create gradient direction overlay
+        gradient_overlay = np.zeros((H, W, 3), dtype=np.float32)
+        gradient_mask = np.zeros((H, W), dtype=bool)
+        
+        # Process each selected primitive
+        for idx, prim_idx in enumerate(selected_indices):
+            prim_idx = int(prim_idx.item()) if torch.is_tensor(prim_idx) else int(prim_idx)
+            
+            # Get primitive parameters
+            prim_x = float(x[prim_idx].item())
+            prim_y = float(y[prim_idx].item())
+            prim_r = float(r[prim_idx].item())
+            
+            # Define circular region (radius = 1.5 * r)
+            radius = 1.5 * prim_r
+            
+            print(f"[Gradient Visualization] Processing primitive {prim_idx}: center=({prim_x:.1f}, {prim_y:.1f}), radius={radius:.1f}")
+            
+            # Find pixels within the circular region
+            y_coords, x_coords = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+            distances = np.sqrt((x_coords - prim_x)**2 + (y_coords - prim_y)**2)
+            circle_mask = distances <= radius
+            
+            # Get pixel coordinates within the circle
+            circle_pixels = np.where(circle_mask)
+            num_pixels = len(circle_pixels[0])
+            
+            if num_pixels == 0:
+                print(f"[Gradient Visualization] No pixels found for primitive {prim_idx}")
+                continue
+                
+            print(f"[Gradient Visualization] Processing {num_pixels} pixels for primitive {prim_idx}")
+            
+            # Compute gradients for pixels in this circle
+            gradient_directions = np.zeros((num_pixels, 2))  # [num_pixels, 2] for x,y gradients
+            
+            for pixel_idx, (i, j) in enumerate(zip(circle_pixels[0], circle_pixels[1])):
+                pixel_loss = pixel_losses[i, j]
+                
+                if pixel_loss.requires_grad:
+                    # Compute gradients w.r.t. x, y for this pixel
+                    grads = torch.autograd.grad(
+                        outputs=pixel_loss,
+                        inputs=[x, y],
+                        retain_graph=True,
+                        create_graph=False,
+                        allow_unused=True
+                    )
+                    
+                    # Extract gradients for the current primitive
+                    if grads[0] is not None and grads[1] is not None:
+                        grad_x = float(grads[0][prim_idx].item())
+                        grad_y = float(grads[1][prim_idx].item())
+                        gradient_directions[pixel_idx] = [grad_x, grad_y]
+            
+            # Convert gradient directions to colors
+            for pixel_idx, (i, j) in enumerate(zip(circle_pixels[0], circle_pixels[1])):
+                grad_x, grad_y = gradient_directions[pixel_idx]
+                
+                # Compute gradient magnitude and direction
+                magnitude = np.sqrt(grad_x**2 + grad_y**2)
+                
+                if magnitude > 1e-8:  # Only visualize non-zero gradients
+                    # Compute angle in radians, then convert to [0, 1] for hue
+                    angle = np.arctan2(grad_y, grad_x)  # [-π, π]
+                    hue = (angle + np.pi) / (2 * np.pi)  # [0, 1]
+                    
+                    # Use magnitude for saturation (normalized)
+                    saturation = min(1.0, magnitude / (magnitude + 1e-6))  # Normalize magnitude
+                    value = 0.8  # Fixed brightness
+                    
+                    # Convert HSV to RGB
+                    rgb_color = hsv_to_rgb([hue, saturation, value])
+                    
+                    # Set color in overlay
+                    gradient_overlay[i, j] = rgb_color
+                    gradient_mask[i, j] = True
+        
+        # Blend gradient overlay with rendered image
+        alpha = 0.6  # Transparency for gradient overlay
+        final_vis = vis_image.copy()
+        final_vis[gradient_mask] = (1 - alpha) * vis_image[gradient_mask] + alpha * gradient_overlay[gradient_mask]
+        
+        # Add primitive centers as white dots
+        for prim_idx in selected_indices:
+            prim_idx = int(prim_idx.item()) if torch.is_tensor(prim_idx) else int(prim_idx)
+            prim_x = int(x[prim_idx].item())
+            prim_y = int(y[prim_idx].item())
+            
+            # Draw a small white circle at primitive center
+            if 0 <= prim_x < W and 0 <= prim_y < H:
+                for dy in range(-2, 3):
+                    for dx in range(-2, 3):
+                        if dx*dx + dy*dy <= 4:  # Circle with radius 2
+                            nx, ny = prim_x + dx, prim_y + dy
+                            if 0 <= nx < W and 0 <= ny < H:
+                                final_vis[ny, nx] = [1.0, 1.0, 1.0]  # White
+        
+        # Convert back to tensor
+        final_vis_tensor = torch.from_numpy(final_vis).to(rendered.device)
+        
+        # Save visualization if path provided
+        if save_path:
+            plt.figure(figsize=(12, 8))
+            plt.imshow(final_vis)
+            plt.title(f'Gradient Direction Visualization for {len(selected_indices)} Selected Primitives\n'
+                     f'Color represents gradient direction (hue = angle, saturation = magnitude)')
+            plt.axis('off')
+            
+            # Add colorbar for gradient directions
+            from matplotlib.patches import Circle
+            ax = plt.gca()
+            
+            # Create a small color wheel in the corner
+            wheel_center = (W * 0.9, H * 0.1)
+            wheel_radius = min(W, H) * 0.05
+            
+            angles = np.linspace(0, 2*np.pi, 360)
+            for i, angle in enumerate(angles):
+                hue = angle / (2 * np.pi)
+                color = hsv_to_rgb([hue, 1.0, 0.8])
+                
+                x_pos = wheel_center[0] + wheel_radius * np.cos(angle)
+                y_pos = wheel_center[1] + wheel_radius * np.sin(angle)
+                
+                circle = Circle((x_pos, y_pos), wheel_radius/20, color=color)
+                ax.add_patch(circle)
+            
+            plt.tight_layout()
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            print(f"[Gradient Visualization] Saved visualization to {save_path}")
+        
+        print(f"[Gradient Visualization] Completed visualization for {len(selected_indices)} primitives")
+        return final_vis_tensor
 
+    def debug_adaptive_control_with_visualization(self,
+                                                   x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
+                                                   v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
+                                                   target_image: torch.Tensor,
+                                                   adaptive_config: dict = None,
+                                                   save_dir: str = "./debug_gradients") -> tuple:
+        """
+        Apply adaptive control with gradient visualization for debugging gradient collisions.
+        
+        This method:
+        1. Applies normal adaptive control to identify problematic primitives
+        2. Visualizes gradient directions for selected primitives
+        3. Saves visualization images for analysis
+        
+        Args:
+            x, y, r, v, theta, c: Current primitive parameters
+            target_image: Target image tensor [H, W, 3]
+            adaptive_config: Configuration dict for adaptive control
+            save_dir: Directory to save visualization images
+            
+        Returns:
+            Tuple of (adapted_parameters, selected_indices_per_tile)
+        """
+        import os
+        from datetime import datetime
+        
+        if adaptive_config is None or not adaptive_config.get('enabled', False):
+            return (x, y, r, v, theta, c), []
+        
+        # Create save directory if it doesn't exist
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Extract configuration parameters
+        tile_rows = adaptive_config.get('tile_rows', 4)
+        tile_cols = adaptive_config.get('tile_cols', 4)
+        scale_threshold = adaptive_config.get('scale_threshold', 8.0)
+        opacity_threshold = adaptive_config.get('opacity_threshold', 0.7)
+        max_primitives_per_tile = adaptive_config.get('max_primitives_per_tile', 3)
+        
+        # Extract gradient-based criterion configuration
+        gradient_config = adaptive_config.get('gradient_criterion', {})
+        use_gradient_criterion = gradient_config.get('enabled', False)
+        
+        print(f"[Debug Adaptive Control] Starting debug with gradient visualization")
+        print(f"[Debug Adaptive Control] Tile grid: {tile_rows}x{tile_cols}, gradient criterion: {use_gradient_criterion}")
+        
+        # Create new leaf tensors
+        x_adapted = x.detach().requires_grad_(True)
+        y_adapted = y.detach().requires_grad_(True)
+        r_adapted = r.detach().requires_grad_(True)
+        v_adapted = v.detach().requires_grad_(True)
+        theta_adapted = theta.detach().requires_grad_(True)
+        c_adapted = c.detach().requires_grad_(True)
+        
+        # Get canvas dimensions
+        canvas_height, canvas_width = self.H, self.W
+        
+        # Calculate tile dimensions
+        tile_height = canvas_height // tile_rows
+        tile_width = canvas_width // tile_cols
+        
+        # Compute gradient magnitudes for ranking
+        gradient_magnitudes = self._compute_per_primitive_gradient_magnitude(
+            x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted, target_image, adaptive_config
+        )
+        
+        # Track selected primitives for each tile
+        all_selected_indices = []
+        tile_info = []
+        
+        # Process each tile
+        for row in range(tile_rows):
+            for col in range(tile_cols):
+                # Define tile boundaries
+                y_min = row * tile_height
+                y_max = (row + 1) * tile_height
+                x_min = col * tile_width
+                x_max = (col + 1) * tile_width
+                
+                # Find primitives in this tile
+                in_tile_mask = ((x_adapted >= x_min) & (x_adapted < x_max) & 
+                               (y_adapted >= y_min) & (y_adapted < y_max))
+                
+                if not in_tile_mask.any():
+                    continue
+                
+                # Get indices of primitives in this tile
+                tile_indices = torch.where(in_tile_mask)[0]
+                
+                # Find problematic primitives
+                problematic_indices = self._find_problematic_primitives(
+                    tile_indices, x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
+                    scale_threshold, opacity_threshold, gradient_magnitudes, max_primitives_per_tile
+                )
+                
+                if len(problematic_indices) > 0:
+                    all_selected_indices.extend(problematic_indices.tolist())
+                    tile_info.append({
+                        'row': row, 'col': col,
+                        'bounds': (x_min, y_min, x_max, y_max),
+                        'selected_indices': problematic_indices.tolist(),
+                        'total_primitives': len(tile_indices)
+                    })
+                    
+                    print(f"[Debug Adaptive Control] Tile ({row},{col}): {len(problematic_indices)}/{len(tile_indices)} primitives selected")
+                    
+                    # Visualize gradients for this tile's selected primitives
+                    if len(problematic_indices) > 0:
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        vis_path = os.path.join(save_dir, f"gradient_vis_tile_{row}_{col}_{timestamp}.png")
+                        
+                        self.visualize_gradient_directions_for_selected_primitives(
+                            x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
+                            target_image, problematic_indices, vis_path
+                        )
+                
+                # Apply opacity reduction (same as original adaptive control)
+                if len(problematic_indices) > 0:
+                    opacity_reduction_factor = adaptive_config.get('opacity_reduction_factor', 0.5)
+                    with torch.no_grad():
+                        v_adapted[problematic_indices] *= opacity_reduction_factor
+        
+        # Create overall visualization with all selected primitives
+        if len(all_selected_indices) > 0:
+            all_selected_tensor = torch.tensor(all_selected_indices, device=x.device)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            overall_vis_path = os.path.join(save_dir, f"gradient_vis_all_selected_{timestamp}.png")
+            
+            self.visualize_gradient_directions_for_selected_primitives(
+                x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
+                target_image, all_selected_tensor, overall_vis_path
+            )
+            
+            print(f"[Debug Adaptive Control] Total selected primitives: {len(all_selected_indices)}")
+            print(f"[Debug Adaptive Control] Saved visualizations to {save_dir}")
+        else:
+            print(f"[Debug Adaptive Control] No primitives selected for opacity reduction")
+        
+        return (x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted), tile_info
