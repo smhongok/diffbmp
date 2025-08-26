@@ -21,6 +21,26 @@ sudo apt-get install poppler-utils
 
 ## Usage
 
+### Building
+Tips :
+- Recommended CUDA version is 12.3.
+- Recommended C++ version is 9.4.0.
+
+To build:
+
+```bash
+cd cuda_tile_rasterizer && python setup.py clean && rm -rf build/ *.egg-info *.so && python setup.py build_ext --inplace && cd ..
+```
+
+To build for fp16:
+```bash
+cd cuda_tile_rasterizer && python setup_fp16.py clean && rm -rf build/ *.egg-info *.so && python setup_fp16.py build_ext --inplace && cd ..
+```
+
+If you have some errors when you build, remove followings and do above commands again:
+`cuda_tile_rasterizer/cuda_tile_rasterizer`, `cuda_tile_rasterizer/cuda_tile_rasterizer_fp16`, `cuda_tile_rasterizer/build` 
+
+
 ### Running the Main Script
 
 Execute the main script with a configuration file:
@@ -78,19 +98,3 @@ To test all default*.json configs:
 ```bash
 python test_configs.py --gpu 6 --no-wandb
 ```
-
-## Build
-
-To build .so file :
-
-```bash
-cd cuda_tile_rasterizer && python setup.py clean && rm -rf build/ *.egg-info *.so && python setup.py build_ext --inplace && cd ..
-```
-
-To build .so file fo fp16:
-```bash
-cd cuda_tile_rasterizer && python setup_fp16.py clean && rm -rf build/ *.egg-info *.so && python setup_fp16.py build_ext --inplace && cd ..
-```
-
-If you have some errors when you build, remove followings and do above commands again:
-`cuda_tile_rasterizer/cuda_tile_rasterizer`, `cuda_tile_rasterizer/cuda_tile_rasterizer_fp16`, `cuda_tile_rasterizer/build` 
