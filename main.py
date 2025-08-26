@@ -529,38 +529,23 @@ if not (primitive_loader and primitive_loader.has_raster_primitives()):
 if not sequential_config.get("enabled", False):
     # Single image final rendering and export (original behavior)
     with torch.no_grad():
-        cached_masks = renderer._batched_soft_rasterize(x, y, r, theta, sigma=0)
-        
-        # Generate final render using tile-based rendering
         white_bg = torch.ones((renderer.H, renderer.W, 3), device=renderer.device)
-        rendered = renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0)
+        rendered, output_alpha = renderer.render_from_params(x, y, r, theta, v, c,
+                            return_alpha=True, I_bg=white_bg, sigma=0.0)
         
         # For alpha loss calculation, we need to generate masks if background doesn't exist
         if not exist_bg:
-            
             alpha_loss = (cached_masks * target_binary_mask.unsqueeze(0)).sum(dim=0).mean()
         
         # Save rendered image directly from rendered tensor
         rendered_np = rendered.detach().cpu().numpy()
         rendered_np = (rendered_np * 255).astype(np.uint8)
         Image.fromarray(rendered_np).save(output_path)
-        # High-resolution export configuration (recommended only when you have raster primitives)
-        hires_enabled = config["postprocessing"].get("hires_export", False)
-        scale_factor = config["postprocessing"].get("hires_scale_factor", 4.0)
-        if hires_enabled:
-            # High-resolution MP4 export using streaming approach
-            warnings.warn("High-resolution export is not recommended for vector primitives. Use it only when you have raster primitives.")
-            hires_mp4_path = os.path.join(output_dir, f'output_{timestamp}_hires.mp4')
-            print(f"Generating high-resolution MP4 ({scale_factor}x scale)...")
-            renderer.render_export_mp4_hires(
-                x, y, r, theta, v, c,
-                video_path=hires_mp4_path,
-                scale_factor=scale_factor,
-                fps=60
-            )
-        else:
+
+        if config['postprocessing'].get('export_mp4', False):
             video_path = os.path.join(output_dir, f'output_{timestamp}.mp4')
-            renderer.render_export_mp4(cached_masks, v, c, video_path=video_path)
+            # Warning: this takes a long time. TODO: fix this
+            renderer.render_export_mp4(x, y, r, theta, v, c, video_path=video_path)
 
 # Compute metrics if requested
 if config['postprocessing'].get('compute_psnr', False):

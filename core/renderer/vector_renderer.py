@@ -774,6 +774,7 @@ class VectorRenderer:
             
             return final
     
+    # will soon be deprecated
     def render_export_mp4(
         self,
         cached_masks: torch.Tensor,  # (N, H, W)
@@ -1189,6 +1190,8 @@ class VectorRenderer:
         # Save the image using PIL
         Image.fromarray(final_render_np).save(output_path)
        
+
+    # will soon be deprecated
     def render_export_mp4_hires(self,
                               x: torch.Tensor,
                               y: torch.Tensor,

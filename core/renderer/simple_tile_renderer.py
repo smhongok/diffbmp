@@ -982,6 +982,90 @@ class SimpleTileRenderer(VectorRenderer):
             return sampled.squeeze(1)  # (num_primitives, tile_h, tile_w)
 
 
+    def render_export_mp4(self,
+                          x: torch.Tensor,
+                          y: torch.Tensor,
+                          r: torch.Tensor,
+                          theta: torch.Tensor,
+                          v: torch.Tensor,
+                          c: torch.Tensor,
+                          video_path: str,
+                          fps: int = 60) -> None:
+        """
+        Export MP4 video showing progressive primitive addition.
+        
+        Args:
+            x, y, r, theta, v, c: Primitive parameters
+            video_path: Output video file path
+            fps: Frames per second
+        """
+        import cv2
+        import tempfile
+        import subprocess
+        import os
+        import numpy as np
+        
+        N = len(x)
+        print(f"Generating MP4 with {N} primitives at {self.W}x{self.H}...")
+        
+        # Direct MP4 output with H.264 codec
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(video_path, fourcc, fps, (self.W, self.H))
+        
+        if not writer.isOpened():
+            raise RuntimeError(f"Could not open video writer for {video_path}")
+        
+        try:
+            # Create white background frame
+            white_bg = torch.ones((self.H, self.W, 3), device=x.device, dtype=torch.float32)
+            
+            # Write initial white frame
+            self._write_frame(writer, white_bg)
+            
+            # Process primitives incrementally
+            for frame_idx in range(N):
+                if frame_idx % max(1, N // 20) == 0:
+                    print(f"Processing frame {frame_idx+1}/{N}...")
+                
+                # Render frame with primitives 0 to frame_idx
+                frame = self.render_from_params(
+                    x[:frame_idx+1], y[:frame_idx+1], r[:frame_idx+1],
+                    theta[:frame_idx+1], v[:frame_idx+1], c[:frame_idx+1],
+                    sigma=0.0, I_bg=white_bg
+                )
+                
+                self._write_frame(writer, frame)
+                
+                # Clear GPU memory periodically
+                if frame_idx % 50 == 0:
+                    torch.cuda.empty_cache()
+            
+            print(f"Video saved to {video_path}")
+            
+        finally:
+            writer.release()
+    
+    def _write_frame(self, writer, frame_tensor: torch.Tensor) -> None:
+        """
+        Convert tensor frame to BGR format and write to video.
+        
+        Args:
+            writer: OpenCV VideoWriter object
+            frame_tensor: RGB frame tensor (H, W, 3) in range [0, 1]
+        """
+        import cv2
+        import numpy as np
+        
+        # Convert to numpy and scale to [0, 255]
+        frame_np = frame_tensor.detach().cpu().numpy()
+        frame_np = np.clip(frame_np * 255, 0, 255).astype(np.uint8)
+        
+        # Convert RGB to BGR for OpenCV
+        frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
+        
+        writer.write(frame_bgr)
+                
+
 if __name__ == "__main__":
     # Test the SimpleTileRenderer
     print("Testing SimpleTileRenderer...")
