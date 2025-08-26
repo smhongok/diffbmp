@@ -19,6 +19,7 @@ import cv2
 from datetime import datetime
 from core.renderer.mse_renderer import MseRenderer
 from core.renderer.sequential_renderer import SequentialFrameRenderer
+from core.renderer.simple_tile_renderer import SimpleTileRenderer
 from util.svg_loader import SVGLoader
 from util.primitive_loader import PrimitiveLoader
 from util.svg_converter import FontParser, ImageToSVG
@@ -48,7 +49,7 @@ with open(config_path, "r", encoding="utf-8") as f:
 # After import or after loading config
 set_global_seed(config.get("seed", 42))
 
-# Force list attributes to single item for standard mode
+# Force list attributes to single item
 if type(config["preprocessing"]["img_path"]) is list:
     config["preprocessing"]["img_path"] = config["preprocessing"]["img_path"][0]
     print("Use only one file to inference")
@@ -122,7 +123,6 @@ else:
     H = preprocessor.final_height
     W = preprocessor.final_width
 
-
 # Handle SVG file loading
 svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
 if svg_ext == ".svg":
@@ -189,7 +189,16 @@ except Exception as e:
     )
     primitive_loader = None
 
-# Initialize MseRenderer with tile-based rendering capabilities
+# Initialize renderer based on loss type
+renderer_type = opt_conf.get("renderer_type", "mse")
+renderer_class = {
+    "mse": MseRenderer,
+    "tile": SimpleTileRenderer,
+}.get(renderer_type.lower())
+
+if renderer_class is None:
+    raise ValueError(f"Invalid renderer type: {renderer_type}")
+
 bmp_tensor = svg_loader.load_alpha_bitmap()
 if use_fp16:
     bmp_tensor = bmp_tensor.to(dtype=torch.float16)
@@ -199,17 +208,19 @@ else:
 H = preprocessor.final_height
 W = preprocessor.final_width
 
-# Create MseRenderer with tile-based rendering support
-renderer = MseRenderer(
-    canvas_size=(H, W),
-    S=bmp_tensor,
-    alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
-    device=device,
-    use_fp16=use_fp16,
-    output_path=config["postprocessing"].get("output_folder", "./outputs/"),
-    tile_size=opt_conf.get("tile_size", 32)
-)
-print(f"Using MseRenderer with tile-based rendering (tile_size: {opt_conf.get('tile_size', 32)})")
+# Create renderer only when needed - defer instantiation
+renderer_kwargs = {
+    "canvas_size": (H, W),
+    "S": bmp_tensor,
+    "alpha_upper_bound": config["optimization"].get("alpha_upper_bound", 0.5),
+    "device": device,
+    "use_fp16": use_fp16,
+    "output_path": config["postprocessing"].get("output_folder", "./outputs/"),
+	"tile_size": opt_conf.get("tile_size", 32)
+}
+
+renderer = renderer_class(**renderer_kwargs)
+print(f"Using {renderer_class.__name__} for optimization")
 
 # Initialize parameters
 print("---Initializing vector graphics with Structure-Aware method---")
@@ -225,7 +236,7 @@ if sequential_config.get("enabled", False):
     # Sequential frame-by-frame optimization
     print("Starting sequential frame-by-frame optimization...")
     
-    # Create sequential renderer for subsequent frames with tile-based rendering
+    # Create sequential renderer for subsequent frames
     sequential_renderer = SequentialFrameRenderer(
         canvas_size=(H, W), 
         S=bmp_tensor,
@@ -518,38 +529,25 @@ if not (primitive_loader and primitive_loader.has_raster_primitives()):
 if not sequential_config.get("enabled", False):
     # Single image final rendering and export (original behavior)
     with torch.no_grad():
-        cached_masks = renderer._batched_soft_rasterize(x, y, r, theta, sigma=0)
-        
-        # Generate final render using tile-based rendering
         white_bg = torch.ones((renderer.H, renderer.W, 3), device=renderer.device)
-        rendered = renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0)
+        rendered, output_alpha = renderer.render_from_params(x, y, r, theta, v, c,
+                            return_alpha=True, I_bg=white_bg, sigma=0.0)
         
         # For alpha loss calculation, we need to generate masks if background doesn't exist
         if not exist_bg:
-            
-            alpha_loss = (cached_masks * target_binary_mask.unsqueeze(0)).sum(dim=0).mean()
-        
+            # TODO: 대협, 이제 cached_masks가 없어졌으니 코드 주석처리 할게. 다른방식으로 살리던지 해야 할 듯 
+            #alpha_loss = (cached_masks * target_binary_mask.unsqueeze(0)).sum(dim=0).mean()
+            print("TODO: alpha loss calculation")
+
         # Save rendered image directly from rendered tensor
         rendered_np = rendered.detach().cpu().numpy()
         rendered_np = (rendered_np * 255).astype(np.uint8)
         Image.fromarray(rendered_np).save(output_path)
-        # High-resolution export configuration (recommended only when you have raster primitives)
-        hires_enabled = config["postprocessing"].get("hires_export", False)
-        scale_factor = config["postprocessing"].get("hires_scale_factor", 4.0)
-        if hires_enabled:
-            # High-resolution MP4 export using streaming approach
-            warnings.warn("High-resolution export is not recommended for vector primitives. Use it only when you have raster primitives.")
-            hires_mp4_path = os.path.join(output_dir, f'output_{timestamp}_hires.mp4')
-            print(f"Generating high-resolution MP4 ({scale_factor}x scale)...")
-            renderer.render_export_mp4_hires(
-                x, y, r, theta, v, c,
-                video_path=hires_mp4_path,
-                scale_factor=scale_factor,
-                fps=60
-            )
-        else:
+
+        if config['postprocessing'].get('export_mp4', False):
             video_path = os.path.join(output_dir, f'output_{timestamp}.mp4')
-            renderer.render_export_mp4(cached_masks, v, c, video_path=video_path)
+            # Warning: this takes a long time. TODO: fix this
+            renderer.render_export_mp4(x, y, r, theta, v, c, video_path=video_path)
 
 # Compute metrics if requested
 if config['postprocessing'].get('compute_psnr', False):
@@ -627,10 +625,6 @@ if config['postprocessing'].get('compute_psnr', False):
             ssim_val = piq.ssim(rendered_t_f32, target_t_f32, data_range=1.0)
             vif_val = piq.vif_p(rendered_t_f32, target_t_f32, data_range=1.0)
             lpips_val = piq.LPIPS()(rendered_t_f32, target_t_f32)
-
-            # If no background, compute alpha loss
-            if not exist_bg:
-                print("Alpha loss (X 10^3): {:.4f}".format(alpha_loss.item()*1000.0))
             
             print(f"PSNR: {psnr_val.item():.2f} dB")
             print(f"SSIM: {ssim_val.item():.4f}")

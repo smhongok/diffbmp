@@ -20,6 +20,9 @@ import subprocess
 import glob
 import wandb
 
+DEBUG_MODE = False
+DEBUG_MODE_DETAIL = False
+
 class VectorRenderer:
     """
     A class for rendering vector graphics using differentiable primitives.
@@ -722,6 +725,12 @@ class VectorRenderer:
             c = c
             N = v.shape[0]
 
+            # Debug: Print input data ranges
+            print(f"📊 VectorRenderer Input data ranges:")
+            print(f"      v (opacities): [{v.min():.4f}, {v.max():.4f}]")
+            print(f"      c (colors): [{c.min():.4f}, {c.max():.4f}]")
+            print(f"      cached_masks: [{cached_masks.min():.4f}, {cached_masks.max():.4f}]")
+
             # 1. per-primitive alpha & color
             v_alpha = self.alpha_upper_bound * torch.sigmoid(v).view(N, 1, 1)
             a = v_alpha * cached_masks                     # (N, H, W)
@@ -765,6 +774,7 @@ class VectorRenderer:
             
             return final
     
+    # will soon be deprecated
     def render_export_mp4(
         self,
         cached_masks: torch.Tensor,  # (N, H, W)
@@ -1071,6 +1081,44 @@ class VectorRenderer:
                 
                 # Backward pass
                 loss.backward()
+
+                if DEBUG_MODE_DETAIL:
+                    print(f"\n🔍 Gradient Analysis (First 10 Primitives) - Iteration {epoch}")
+                    print("=" * 80)
+                    
+                    # Check if gradients exist
+                    if x.grad is not None:
+                        print("📊 X Gradients (First 10):")
+                        for i in range(min(10, len(x))):
+                            print(f"  Primitive {i}: {x.grad[i].item():.6f}")
+                    
+                    if y.grad is not None:
+                        print("📊 Y Gradients (First 10):")
+                        for i in range(min(10, len(y))):
+                            print(f"  Primitive {i}: {y.grad[i].item():.6f}")
+                    
+                    if r.grad is not None:
+                        print("📊 R Gradients (First 10):")
+                        for i in range(min(10, len(r))):
+                            print(f"  Primitive {i}: {r.grad[i].item():.6f}")
+                    
+                    if theta.grad is not None:
+                        print("📊 Theta Gradients (First 10):")
+                        for i in range(min(10, len(theta))):
+                            print(f"  Primitive {i}: {theta.grad[i].item():.6f}")
+                    
+                    if v.grad is not None:
+                        print("📊 V (Opacity) Gradients (First 10):")
+                        for i in range(min(10, len(v))):
+                            print(f"  Primitive {i}: {v.grad[i].item():.6f}")
+                    
+                    if c.grad is not None:
+                        print("📊 C (Color) Gradients (First 10):")
+                        for i in range(min(10, len(c))):
+                            print(f"  Primitive {i}: R={c.grad[i,0].item():.6f}, G={c.grad[i,1].item():.6f}, B={c.grad[i,2].item():.6f}")
+                    
+                    print("=" * 80)
+
                 optimizer.step()
 
                 # Clamp r to prevent NaN in grid_sample (r must be positive)
@@ -1080,13 +1128,22 @@ class VectorRenderer:
             # Update learning rate
             if scheduler is not None:
                 scheduler.step()
+
+            if DEBUG_MODE:
+                print(f"    📊 Input data ranges: iteration {epoch}")
+                print(f"      x: [{x.min():.4f}, {x.max():.4f}]")
+                print(f"      y: [{y.min():.4f}, {y.max():.4f}]")
+                print(f"      r: [{r.min():.4f}, {r.max():.4f}]")
+                print(f"      v: [{v.min():.4f}, {v.max():.4f}]")
+                print(f"      theta: [{theta.min():.4f}, {theta.max():.4f}]")
+                print(f"      c: [{c.min():.4f}, {c.max():.4f}]")
             
             # Log progress
             if iteration % 10 == 0 or iteration in save_image_intervals:
                 print(f"Iteration {iteration}: Loss = {loss.item():.6f}")
                 
                 # Save intermediate images
-                if iteration in save_image_intervals:
+                if DEBUG_MODE and iteration in save_image_intervals:
                     img_path = os.path.join(self.output_path, f"tile_iter_{iteration:04d}_{timestamp}.png")
                     self.save_image_tensor(rendered, img_path)
         
@@ -1133,6 +1190,8 @@ class VectorRenderer:
         # Save the image using PIL
         Image.fromarray(final_render_np).save(output_path)
        
+
+    # will soon be deprecated
     def render_export_mp4_hires(self,
                               x: torch.Tensor,
                               y: torch.Tensor,

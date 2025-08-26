@@ -46,6 +46,7 @@ wandb
 
 visualization_output
 simple_tile_renderer_test
+cuda_pytorch_comparison.png
 
 test_results.json
 
