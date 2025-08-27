@@ -47,7 +47,7 @@
     "hollow": false
   },
   "optimization": {
-    "use_fp16": true,
+    "use_fp16": false,
     "renderer_type": "mse",
     "num_iterations": 100,
     "batch_optimization": false,
@@ -123,7 +123,7 @@
       "scale_threshold": 12.0,
       "opacity_threshold": 0.7,
       "opacity_reduction_factor": 0.4,
-      "max_primitives_per_tile": 16,
+      "max_primitives_per_tile": 2,
       "apply_every_n_iterations": 20,
       "color_nerf": {
         "enabled": false,
@@ -151,7 +151,7 @@
     }
   },
   "postprocessing": {
-    "output_folder": "./outputs/simpson_jumping/adaptive_gradient_abs",
+    "output_folder": "./outputs/pp_abs_debug",
     "hires_export": false,
     "hires_scale_factor": 4.0,
     "compute_psnr": false,

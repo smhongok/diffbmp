@@ -4,6 +4,17 @@ import numpy as np
 from tqdm import tqdm
 from .mse_renderer import MseRenderer
 
+# =============================================================================
+# DEBUG CONFIGURATION FOR GRADIENT VISUALIZATION
+# =============================================================================
+# Set to True to enable gradient visualization during adaptive control
+ENABLE_GRADIENT_DEBUG_VISUALIZATION = True
+
+# Directory to save gradient visualization images
+GRADIENT_DEBUG_SAVE_DIR = "./outputs/debug_gradients_sequential"
+
+# =============================================================================
+
 
 class SequentialFrameRenderer(MseRenderer):
     """
@@ -163,9 +174,32 @@ class SequentialFrameRenderer(MseRenderer):
             if (adaptive_config.get('enabled', False) and 
                 i > 0 and i % apply_every_n == 0):
                 
-                # Apply adaptive control and get new leaf tensors
-                x, y, r, v, theta, c = self.apply_adaptive_control(
-                    x, y, r, v, theta, c, target, adaptive_config)
+                # Choose between debug visualization or normal adaptive control
+                if ENABLE_GRADIENT_DEBUG_VISUALIZATION:
+                    # Use debug version with gradient visualization
+                    import os
+                    from datetime import datetime
+                    
+                    # Create timestamped subdirectory for this iteration
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    iteration_save_dir = os.path.join(GRADIENT_DEBUG_SAVE_DIR, f"iter_{i:04d}_{timestamp}")
+                    
+                    print(f"\n[Debug Mode] Applying adaptive control with gradient visualization at iteration {i}")
+                    print(f"[Debug Mode] Saving visualizations to: {iteration_save_dir}")
+                    
+                    # Apply debug adaptive control with visualization
+                    (x, y, r, v, theta, c), tile_info = self.debug_adaptive_control_with_visualization(
+                        x, y, r, v, theta, c, target, adaptive_config, iteration_save_dir
+                    )
+                    
+                    # Log debug information
+                    total_selected = sum(len(tile['selected_indices']) for tile in tile_info)
+                    print(f"[Debug Mode] Iteration {i}: {total_selected} primitives selected across {len(tile_info)} tiles")
+                    
+                else:
+                    # Use normal adaptive control without visualization
+                    x, y, r, v, theta, c = self.apply_adaptive_control(
+                        x, y, r, v, theta, c, target, adaptive_config)
                 
                 # Update optimizer parameters with new tensors
                 optimizer.param_groups[0]['params'] = [x]
@@ -257,7 +291,7 @@ class SequentialFrameRenderer(MseRenderer):
         tile_width = canvas_width // tile_cols
         
         # Compute gradient magnitudes once for ranking (always computed now)
-        gradient_magnitudes = self._compute_per_primitive_gradient_magnitude(
+        gradient_magnitudes = self._compute_per_pixel_gradient_magnitude(
             x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted, target_image, adaptive_config
         )
         
@@ -585,7 +619,8 @@ class SequentialFrameRenderer(MseRenderer):
         pixel_losses = (rendered - target).pow(2).mean(dim=2)  # [H, W]
         
         # Create visualization canvas (start with rendered image)
-        vis_image = rendered.detach().cpu().numpy().copy()
+        # Convert to float32 to ensure matplotlib compatibility
+        vis_image = rendered.detach().cpu().float().numpy().copy()
         
         # Create gradient direction overlay
         gradient_overlay = np.zeros((H, W, 3), dtype=np.float32)
@@ -723,6 +758,215 @@ class SequentialFrameRenderer(MseRenderer):
         
         print(f"[Gradient Visualization] Completed visualization for {len(selected_indices)} primitives")
         return final_vis_tensor
+    
+    def visualize_gradient_directions_white_background(self,
+                                                       x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
+                                                       v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
+                                                       target: torch.Tensor,
+                                                       selected_indices: torch.Tensor,
+                                                       save_path: str = None) -> torch.Tensor:
+        """
+        Visualize per-pixel gradient directions for selected primitives on a white background.
+        
+        This method creates a cleaner visualization by showing gradient directions on a white
+        background instead of overlaying on the rendered image, making patterns easier to see.
+        
+        Args:
+            x, y, r, v, theta, c: Primitive parameters
+            target: Target image tensor [H, W, 3]
+            selected_indices: Indices of primitives to visualize [K]
+            save_path: Optional path to save the visualization
+            
+        Returns:
+            Visualization image tensor [H, W, 3] with gradient directions on white background
+        """
+        import numpy as np
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import hsv_to_rgb
+        
+        print(f"[White Background Gradient Visualization] Visualizing {len(selected_indices)} selected primitives")
+        
+        # Ensure x, y parameters require gradients
+        if not x.requires_grad:
+            x.requires_grad_(True)
+        if not y.requires_grad:
+            y.requires_grad_(True)
+        
+        # Render current state
+        rendered = self.render_from_params(x, y, r, v, theta, c)
+        H, W = rendered.shape[:2]
+        
+        # Compute pixel-wise loss (no reduction)
+        pixel_losses = (rendered - target).pow(2).mean(dim=2)  # [H, W]
+        
+        # Create white background canvas
+        vis_image = np.ones((H, W, 3), dtype=np.float32)  # White background
+        
+        # Create gradient direction overlay
+        gradient_overlay = np.zeros((H, W, 3), dtype=np.float32)
+        gradient_mask = np.zeros((H, W), dtype=bool)
+        
+        # Process each selected primitive
+        for idx, prim_idx in enumerate(selected_indices):
+            prim_idx = int(prim_idx.item()) if torch.is_tensor(prim_idx) else int(prim_idx)
+            
+            # Get primitive parameters
+            prim_x = float(x[prim_idx].item())
+            prim_y = float(y[prim_idx].item())
+            prim_r = float(r[prim_idx].item())
+            
+            # Define circular region (radius = 1.5 * r)
+            radius = 1.5 * prim_r
+            
+            print(f"[White Background Gradient Visualization] Processing primitive {prim_idx}: center=({prim_x:.1f}, {prim_y:.1f}), radius={radius:.1f}")
+            
+            # Find pixels within the circular region
+            y_coords, x_coords = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+            distances = np.sqrt((x_coords - prim_x)**2 + (y_coords - prim_y)**2)
+            circle_mask = distances <= radius
+            
+            # Get pixel coordinates within the circle
+            circle_pixels = np.where(circle_mask)
+            num_pixels = len(circle_pixels[0])
+            
+            if num_pixels == 0:
+                print(f"[White Background Gradient Visualization] No pixels found for primitive {prim_idx}")
+                continue
+                
+            print(f"[White Background Gradient Visualization] Processing {num_pixels} pixels for primitive {prim_idx}")
+            
+            # Compute gradients for pixels in this circle
+            gradient_directions = np.zeros((num_pixels, 2))  # [num_pixels, 2] for x,y gradients
+            
+            for pixel_idx, (i, j) in enumerate(zip(circle_pixels[0], circle_pixels[1])):
+                pixel_loss = pixel_losses[i, j]
+                
+                if pixel_loss.requires_grad:
+                    # Compute gradients w.r.t. x, y for this pixel
+                    grads = torch.autograd.grad(
+                        outputs=pixel_loss,
+                        inputs=[x, y],
+                        retain_graph=True,
+                        create_graph=False,
+                        allow_unused=True
+                    )
+                    
+                    # Extract gradients for the current primitive
+                    if grads[0] is not None and grads[1] is not None:
+                        grad_x = float(grads[0][prim_idx].item())
+                        grad_y = float(grads[1][prim_idx].item())
+                        gradient_directions[pixel_idx] = [grad_x, grad_y]
+            
+            # Compute magnitude statistics for this primitive to enable adaptive normalization
+            magnitudes = np.sqrt(gradient_directions[:, 0]**2 + gradient_directions[:, 1]**2)
+            non_zero_magnitudes = magnitudes[magnitudes > 1e-12]  # Very small threshold for numerical stability
+            
+            if len(non_zero_magnitudes) > 0:
+                # Adaptive normalization based on this primitive's gradient range
+                mag_min = np.min(non_zero_magnitudes)
+                mag_max = np.max(non_zero_magnitudes)
+                mag_median = np.median(non_zero_magnitudes)
+                
+                print(f"[White Background Gradient Visualization] Primitive {prim_idx} gradient stats: min={mag_min:.2e}, max={mag_max:.2e}, median={mag_median:.2e}")
+                
+                # Use logarithmic scaling to better visualize small gradients
+                log_min = np.log10(mag_min + 1e-12)
+                log_max = np.log10(mag_max + 1e-12)
+                log_range = log_max - log_min if log_max > log_min else 1.0
+                
+                # Convert gradient directions to colors and apply to white background
+                for pixel_idx, (i, j) in enumerate(zip(circle_pixels[0], circle_pixels[1])):
+                    grad_x, grad_y = gradient_directions[pixel_idx]
+                    
+                    # Compute gradient magnitude and direction
+                    magnitude = np.sqrt(grad_x**2 + grad_y**2)
+                    
+                    if magnitude > 1e-12:  # Much lower threshold for numerical stability only
+                        # Compute angle in radians, then convert to [0, 1] for hue
+                        angle = np.arctan2(grad_y, grad_x)  # [-π, π]
+                        hue = (angle + np.pi) / (2 * np.pi)  # [0, 1]
+                        
+                        # Enhanced saturation calculation using logarithmic scaling
+                        if log_range > 0:
+                            # Logarithmic normalization to better show small gradients
+                            log_magnitude = np.log10(magnitude + 1e-12)
+                            normalized_log_mag = (log_magnitude - log_min) / log_range
+                            saturation = np.clip(normalized_log_mag, 0.1, 1.0)  # Minimum 0.1 for visibility
+                        else:
+                            saturation = 0.5  # Default saturation when all magnitudes are similar
+                        
+                        # Adaptive value (brightness) based on magnitude relative to median
+                        if magnitude >= mag_median:
+                            value = 0.9  # High brightness for above-median gradients
+                        else:
+                            # Scale brightness for below-median gradients (0.4 to 0.8)
+                            relative_mag = magnitude / mag_median
+                            value = 0.4 + 0.4 * relative_mag
+                        
+                        # Convert HSV to RGB
+                        rgb_color = hsv_to_rgb([hue, saturation, value])
+                        
+                        # Set color directly on white background (no blending)
+                        vis_image[i, j] = rgb_color
+                        gradient_mask[i, j] = True
+                    else:
+                        # For truly zero gradients, use a very light gray to indicate the region
+                        vis_image[i, j] = [0.95, 0.95, 0.95]  # Very light gray
+                        gradient_mask[i, j] = True
+        
+        # Add primitive centers as black dots for better contrast on white background
+        for prim_idx in selected_indices:
+            prim_idx = int(prim_idx.item()) if torch.is_tensor(prim_idx) else int(prim_idx)
+            prim_x = int(x[prim_idx].item())
+            prim_y = int(y[prim_idx].item())
+            
+            # Draw a small black circle at primitive center
+            if 0 <= prim_x < W and 0 <= prim_y < H:
+                for dy in range(-3, 4):
+                    for dx in range(-3, 4):
+                        if dx*dx + dy*dy <= 4:  # Circle with radius 2
+                            nx, ny = prim_x + dx, prim_y + dy
+                            if 0 <= nx < W and 0 <= ny < H:
+                                vis_image[ny, nx] = [0.0, 0.0, 0.0]  # Black for better contrast
+        
+        # Convert back to tensor
+        final_vis_tensor = torch.from_numpy(vis_image).to(rendered.device)
+        
+        # Save visualization if path provided
+        if save_path:
+            plt.figure(figsize=(12, 8))
+            plt.imshow(vis_image)
+            plt.title(f'Gradient Direction Visualization (White Background) for {len(selected_indices)} Selected Primitives\n'
+                     f'Color represents gradient direction (hue = angle, saturation = magnitude)')
+            plt.axis('off')
+            
+            # Add colorbar for gradient directions
+            from matplotlib.patches import Circle
+            ax = plt.gca()
+            
+            # Create a small color wheel in the corner
+            wheel_center = (W * 0.9, H * 0.1)
+            wheel_radius = min(W, H) * 0.05
+            
+            angles = np.linspace(0, 2*np.pi, 360)
+            for i, angle in enumerate(angles):
+                hue = angle / (2 * np.pi)
+                color = hsv_to_rgb([hue, 1.0, 0.9])
+                
+                x_pos = wheel_center[0] + wheel_radius * np.cos(angle)
+                y_pos = wheel_center[1] + wheel_radius * np.sin(angle)
+                
+                circle = Circle((x_pos, y_pos), wheel_radius/20, color=color)
+                ax.add_patch(circle)
+            
+            plt.tight_layout()
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            print(f"[White Background Gradient Visualization] Saved visualization to {save_path}")
+        
+        print(f"[White Background Gradient Visualization] Completed visualization for {len(selected_indices)} primitives")
+        return final_vis_tensor
 
     def debug_adaptive_control_with_visualization(self,
                                                    x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
@@ -786,7 +1030,7 @@ class SequentialFrameRenderer(MseRenderer):
         tile_width = canvas_width // tile_cols
         
         # Compute gradient magnitudes for ranking
-        gradient_magnitudes = self._compute_per_primitive_gradient_magnitude(
+        gradient_magnitudes = self._compute_per_pixel_gradient_magnitude(
             x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted, target_image, adaptive_config
         )
         
@@ -833,11 +1077,22 @@ class SequentialFrameRenderer(MseRenderer):
                     # Visualize gradients for this tile's selected primitives
                     if len(problematic_indices) > 0:
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        vis_path = os.path.join(save_dir, f"gradient_vis_tile_{row}_{col}_{timestamp}.png")
                         
+
+                        """
+                        # Original visualization (overlay on rendered image)
+                        vis_path_overlay = os.path.join(save_dir, f"gradient_vis_overlay_tile_{row}_{col}_{timestamp}.png")
                         self.visualize_gradient_directions_for_selected_primitives(
                             x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
-                            target_image, problematic_indices, vis_path
+                            target_image, problematic_indices, vis_path_overlay
+                        )
+                        """
+
+                        # New white background visualization (cleaner view)
+                        vis_path_white = os.path.join(save_dir, f"gradient_vis_white_tile_{row}_{col}_{timestamp}.png")
+                        self.visualize_gradient_directions_white_background(
+                            x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
+                            target_image, problematic_indices, vis_path_white
                         )
                 
                 # Apply opacity reduction (same as original adaptive control)
@@ -850,11 +1105,21 @@ class SequentialFrameRenderer(MseRenderer):
         if len(all_selected_indices) > 0:
             all_selected_tensor = torch.tensor(all_selected_indices, device=x.device)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            overall_vis_path = os.path.join(save_dir, f"gradient_vis_all_selected_{timestamp}.png")
             
+            """
+            # Original visualization (overlay on rendered image)
+            overall_vis_path_overlay = os.path.join(save_dir, f"gradient_vis_overlay_all_selected_{timestamp}.png")
             self.visualize_gradient_directions_for_selected_primitives(
                 x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
-                target_image, all_selected_tensor, overall_vis_path
+                target_image, all_selected_tensor, overall_vis_path_overlay
+            )
+            """
+
+            # New white background visualization (cleaner view)
+            overall_vis_path_white = os.path.join(save_dir, f"gradient_vis_white_all_selected_{timestamp}.png")
+            self.visualize_gradient_directions_white_background(
+                x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
+                target_image, all_selected_tensor, overall_vis_path_white
             )
             
             print(f"[Debug Adaptive Control] Total selected primitives: {len(all_selected_indices)}")

@@ -990,7 +990,7 @@ class VectorRenderer:
         blur_sigma = opt_conf.get("blur_sigma", 1.0)
         
         # Create output directory for saving images if it doesn't exist
-        save_image_intervals = [1, 5, 10, 20, 50, 100]
+        save_image_intervals = []
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(self.output_path, exist_ok=True)
         
