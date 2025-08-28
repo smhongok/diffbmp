@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from typing import Tuple, List
 from .vector_renderer import VectorRenderer
+from util.utils import gaussian_blur
 
 DEBUG_MODE = False
 DEBUG_MODE_DETAIL = False
@@ -45,7 +46,7 @@ class SimpleTileRenderer(VectorRenderer):
     """
     
     def __init__(self, canvas_size: Tuple[int, int], S: torch.Tensor, 
-                 tile_size: int = 32, **kwargs):
+                 tile_size: int = 32, sigma: float = 0.0, **kwargs):
         """
         Initialize the tile renderer.
         
@@ -55,6 +56,7 @@ class SimpleTileRenderer(VectorRenderer):
             tile_size: Size of each tile (default: 32)
             **kwargs: Additional arguments passed to VectorRenderer
         """
+        print("="*10,"Initializing SimpleTileRenderer...","="*10)
         super().__init__(canvas_size, S, **kwargs)
         self.tile_size = tile_size
         
@@ -66,6 +68,22 @@ class SimpleTileRenderer(VectorRenderer):
         
         # Compute bounding boxes for each primitive in self.S
         self.primitive_bboxes = self._compute_primitive_bboxes()
+
+        # ===== Apply Gaussian Blur =====
+        print("="*10,"Applying Gaussiand Blur...","="*10)
+        print(f"Sigma {sigma}")
+        target_dtype = torch.float16 if self.use_fp16 else torch.float32
+
+        if sigma > 0.0:
+            bmp = self.S.clone().unsqueeze(0)       # -> [1, p, H, W] or [1, H, W]
+            bmp = gaussian_blur(bmp, sigma)
+            bmp_image = bmp.squeeze(0).to(dtype=target_dtype).contiguous()
+        else:
+            bmp_image = self.S.clone().to(dtype=target_dtype)
+
+        self.S_blurred = bmp_image
+
+        print("="*10,"Finished!","="*10)
 
     def _clamp_params_inplace(self, x, y, r):
         # VectorRenderer와 동일 정책: r ∈ [2, min(H,W)//4]
@@ -117,11 +135,11 @@ class SimpleTileRenderer(VectorRenderer):
             bboxes.append((min_u, max_u, min_v, max_v))
         
         return bboxes
-        
+
     def render_from_params(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
                            theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
                            return_alpha: bool = False, I_bg: torch.Tensor = None, 
-                           sigma: float = 0.0, lr_conf: dict = None) -> torch.Tensor:
+                           sigma: float = 0.0, lr_conf: dict = None, is_final: bool = False) -> torch.Tensor:
         """
         Memory-efficient tile-based rendering.
         
@@ -142,20 +160,20 @@ class SimpleTileRenderer(VectorRenderer):
         # Pre-compute global primitive template selection (before tile processing)
         
         # Ensure self.S has dimension 3 for consistent processing
-        if self.S.dim() == 2:  # Single template [H, W] -> [1, H, W]
-            self.S = self.S.unsqueeze(0)  # Add batch dimension
+        if self.S_blurred.dim() == 2:  # Single template [H, W] -> [1, H, W]
+            self.S_blurred = self.S_blurred.unsqueeze(0)  # Add batch dimension
             if DEBUG_MODE:
                 print("    🔧 Converted single template to batch format: [H, W] -> [1, H, W]")
-        
-        if self.S.dim() == 3:  # Multiple primitive templates [p, H, W]
-            p = self.S.size(0)
+
+        if self.S_blurred.dim() == 3:  # Multiple primitive templates [p, H, W]
+            p = self.S_blurred.size(0)
             global_bmp_sel = torch.arange(N, device=self.device, dtype=torch.long) % p
             global_bmp_sel = global_bmp_sel.flip(0)  # Same as original VectorRenderer
             if DEBUG_MODE:
                 print(f"    📊 Using {p} templates, global_bmp_sel shape: {global_bmp_sel.shape}")
         else:
             global_bmp_sel = None  # Single template case
-            print("    ⚠️ Unexpected self.S dimension, using None for global_bmp_sel")
+            print("    ⚠️ Unexpected self.S_blurred dimension, using None for global_bmp_sel")
         
         # Initialize output canvas
         if self.use_fp16:
@@ -170,10 +188,10 @@ class SimpleTileRenderer(VectorRenderer):
         use_parallel = total_tiles > 4 and torch.cuda.is_available()  # Parallel for larger tile counts
         
         if use_parallel:
-            output = self._process_tiles_parallel(x, y, r, theta, v, c, sigma, I_bg, global_bmp_sel, output, lr_conf)
+            output = self._process_tiles_parallel(x, y, r, theta, v, c, sigma, I_bg, global_bmp_sel, output, lr_conf, is_final=is_final)
         else:
-            output = self._process_tiles_sequential(x, y, r, theta, v, c, sigma, I_bg, global_bmp_sel, output, lr_conf)
-                
+            output = self._process_tiles_sequential(x, y, r, theta, v, c, sigma, I_bg, global_bmp_sel, output, lr_conf, is_final=is_final)
+        
         if return_alpha:
             # For simplicity, return dummy alpha for now
             alpha = torch.ones((self.H, self.W), device=self.device, dtype=dtype)
@@ -184,7 +202,8 @@ class SimpleTileRenderer(VectorRenderer):
     def _process_tiles_sequential(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                                  theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
                                  sigma: float, I_bg: torch.Tensor,
-                                 global_bmp_sel: torch.Tensor, output: torch.Tensor, lr_conf: dict) -> torch.Tensor:
+                                 global_bmp_sel: torch.Tensor, output: torch.Tensor, lr_conf: dict,
+                                 is_final: bool = False) -> torch.Tensor:
         """Sequential tile processing (original method)."""
         for tile_y in range(self.tiles_h):
             for tile_x in range(self.tiles_w):
@@ -207,7 +226,7 @@ class SimpleTileRenderer(VectorRenderer):
                 tile_result = self._render_tile(
                     x, y, r, theta, v, c, tile_primitive_indices,
                     x_start, x_end, y_start, y_end, sigma, I_bg,
-                    global_bmp_sel=global_bmp_sel
+                    global_bmp_sel=global_bmp_sel, is_final=is_final
                 )
                 
                 # Place result in output canvas
@@ -217,7 +236,7 @@ class SimpleTileRenderer(VectorRenderer):
     
     def _process_tiles_parallel(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                                theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
-                               sigma: float, I_bg: torch.Tensor, global_bmp_sel: torch.Tensor, output: torch.Tensor, lr_conf: dict) -> torch.Tensor:
+                               sigma: float, I_bg: torch.Tensor, global_bmp_sel: torch.Tensor, output: torch.Tensor, lr_conf: dict, is_final: bool = False) -> torch.Tensor:
         """True vectorized tile processing using PyTorch operations."""
         
         # Pre-compute all tile boundaries
@@ -252,7 +271,7 @@ class SimpleTileRenderer(VectorRenderer):
                 result = self._cuda_process_all_tiles(
                     x, y, r, theta, v, c, sigma, I_bg,
                     global_bmp_sel, primitive_tile_masks,
-                    x_starts, x_ends, y_starts, y_ends, lr_conf
+                    x_starts, x_ends, y_starts, y_ends, lr_conf, is_final=is_final
                 )
                 if result is not None:
                     return result
@@ -292,8 +311,8 @@ class SimpleTileRenderer(VectorRenderer):
                                sigma: float, I_bg: torch.Tensor,
                                global_bmp_sel: torch.Tensor, primitive_tile_masks: torch.Tensor,
                                x_starts: torch.Tensor, x_ends: torch.Tensor,
-                               y_starts: torch.Tensor, y_ends: torch.Tensor, lr_conf: dict) -> torch.Tensor:
-        
+                               y_starts: torch.Tensor, y_ends: torch.Tensor, lr_conf: dict, is_final: bool = False) -> torch.Tensor:
+
         try:
             # Prepare input tensors for CUDA kernel
             means2D = torch.stack([x, y], dim=1)  # (N, 2)
@@ -301,10 +320,41 @@ class SimpleTileRenderer(VectorRenderer):
             rotations = theta  # (N,)
             opacities = v  # (N,)
             colors = c  # (N, 3)
-            
-            # Get primitive templates from self.S
-            primitive_templates = self.S  # (T, H, W)
-            
+
+            # Get primitive templates based on is_final flag
+            if is_final:
+                primitive_templates = self.S  # Use original templates for final rendering
+                primitive_templates = primitive_templates.unsqueeze(0) if primitive_templates.dim() == 2 else primitive_templates
+                if DEBUG_MODE:
+                    print(f"    🎯 Final rendering: Using original templates with shape: {primitive_templates.shape}")
+                    print(f"    🔍 Debug - self.S.dim(): {self.S.dim()}")
+                    print(f"    🔍 Debug - self.S.shape: {self.S.shape}")
+                    print(f"    🔍 Debug - self.S.dtype: {self.S.dtype}")
+                    print(f"    🔍 Debug - self.S.device: {self.S.device}")
+                
+                # Free existing cuda_rasterizer and create new one for final rendering
+                if self.cuda_rasterizer is not None:
+                    print(f"    🔧 Freeing existing CUDA rasterizer for final rendering...")
+                    del self.cuda_rasterizer
+                    self.cuda_rasterizer = None
+                    torch.cuda.empty_cache()  # Clear GPU memory
+                
+                print(f"    🔧 Creating new TileRasterizer for final rendering with {len(radii)} primitives...")
+                self.cuda_rasterizer = TileRasterizer(
+                    self.H, self.W, self.tile_size, sigma, 
+                    self.alpha_upper_bound, 300, len(radii)
+                )
+            else:
+                primitive_templates = self.S_blurred  # Use blurred templates for optimization
+                
+                # Use existing cuda_rasterizer or create new one if needed
+                if self.cuda_rasterizer is None:
+                    print(f"    🔧 Creating new TileRasterizer for optimization with {len(radii)} primitives...")
+                    self.cuda_rasterizer = TileRasterizer(
+                        self.H, self.W, self.tile_size, sigma, 
+                        self.alpha_upper_bound, 300, len(radii)
+                    )
+
             if DEBUG_MODE:
                 print(f"    🎯 Calling CUDA rasterizer with {len(radii)} primitives, {self.H}x{self.W} image...")
             
@@ -330,13 +380,7 @@ class SimpleTileRenderer(VectorRenderer):
                 #     cuda_color = cuda_color.float()
                 #     cuda_alpha = cuda_alpha.float()
             else:
-                # Use TileRasterizer class-based version
-                if self.cuda_rasterizer is None:
-                    print(f"    🔧 Creating new TileRasterizer for {len(radii)} primitives...")
-                    self.cuda_rasterizer = TileRasterizer(
-                        self.H, self.W, self.tile_size, sigma, 
-                        self.alpha_upper_bound, 300, len(radii)
-                    )
+                # Use TileRasterizer class-based version (already created above)
                 
                 # Convert existing primitive_tile_masks to tile_primitive_mapping format
                 tile_primitive_mapping = self._convert_masks_to_mapping(
@@ -364,7 +408,7 @@ class SimpleTileRenderer(VectorRenderer):
                         lr_conf.get('gain_theta', 1.0),
                         lr_conf.get('gain_c', 1.0)
                     ], dtype=torch.float32, device=means2D.device)
-                
+                         
                 cuda_color, cuda_alpha = self.cuda_rasterizer(
                     means2D, radii, rotations, opacities, colors,
                     primitive_templates, global_bmp_sel,
@@ -777,7 +821,8 @@ class SimpleTileRenderer(VectorRenderer):
                      theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
                      primitive_indices: List[int], x_start: int, x_end: int,
                      y_start: int, y_end: int, sigma: float,
-                     I_bg: torch.Tensor, global_bmp_sel: torch.Tensor = None) -> torch.Tensor:
+                     I_bg: torch.Tensor, global_bmp_sel: torch.Tensor = None, 
+                     is_final: bool = False) -> torch.Tensor:
         """
         Render a single tile with only the selected primitives.
         
@@ -826,30 +871,30 @@ class SimpleTileRenderer(VectorRenderer):
                 opacities = tile_v.float()  # (N,) logits
                 colors = tile_c.float()  # (N, 3) logits
                 
-                # Get primitive templates for selected primitives
-                if global_bmp_sel is not None:
-                    selected_templates = global_bmp_sel[primitive_indices].float()  # (N, H, W)
+                # Get primitive templates for selected primitives based on is_final flag
+                if is_final:
+                    # Use original templates for final rendering
+                    if global_bmp_sel is not None:
+                        selected_templates = self.S[global_bmp_sel[primitive_indices]].float()  # (N, H, W)
+                    else:
+                        selected_templates = self.S[primitive_indices].float()  # (N, H, W)
                 else:
-                    # Use default templates
-                    selected_templates = self.S[primitive_indices].float()  # (N, H, W)
+                    # Use blurred templates for optimization
+                    if global_bmp_sel is not None:
+                        selected_templates = self.S_blurred[global_bmp_sel[primitive_indices]].float()  # (N, H, W)
+                    else:
+                        selected_templates = self.S_blurred[primitive_indices].float()  # (N, H, W)
                 
-                # Call CUDA rasterizer
-                cuda_color, cuda_alpha = cuda_rasterize_tiles(
-                    means2D, radii, rotations, opacities, colors,
-                    selected_templates, tile_h, tile_w, 
-                    min(tile_h, tile_w), sigma  # Use smaller dimension as tile_size
-                )
-                
-                # CUDA returns (H, W, 3) and (H, W)
-                comp_m = cuda_color
-                comp_a = cuda_alpha
+                # Note: This is fallback PyTorch implementation since cuda_rasterize_tiles is not available
+                # Will fall through to PyTorch implementation below
+                raise NotImplementedError("CUDA single tile rendering not implemented")
                 
             except Exception as e:
                 # Fallback to PyTorch
                 tile_masks = self._generate_tile_masks(
                     tile_x, tile_y, tile_r, tile_theta, tile_X, tile_Y, sigma,
                     global_primitive_indices=primitive_indices,
-                    global_bmp_sel=global_bmp_sel
+                    global_bmp_sel=global_bmp_sel, is_final=is_final
                 )
                 
                 # Convert logits to actual values
@@ -869,7 +914,7 @@ class SimpleTileRenderer(VectorRenderer):
             tile_masks = self._generate_tile_masks(
                 tile_x, tile_y, tile_r, tile_theta, tile_X, tile_Y, sigma,
                 global_primitive_indices=primitive_indices,
-                global_bmp_sel=global_bmp_sel
+                global_bmp_sel=global_bmp_sel, is_final=is_final
             )
             
             # Convert logits to actual values
@@ -897,7 +942,7 @@ class SimpleTileRenderer(VectorRenderer):
     def _generate_tile_masks(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                             theta: torch.Tensor, tile_X: torch.Tensor, tile_Y: torch.Tensor,
                             sigma: float, global_primitive_indices: List[int] = None,
-                            global_bmp_sel: torch.Tensor = None) -> torch.Tensor:
+                            global_bmp_sel: torch.Tensor = None, is_final: bool = False) -> torch.Tensor:
         """
         Generate masks for primitives within a tile using actual self.S primitives.
         Based on _batched_soft_rasterize logic but for tile regions only.

@@ -37,7 +37,8 @@ class VectorRenderer:
                  use_fp16: bool = False,
                  gamma: float = 1.0,
                  output_path: str = None,
-                 tile_size: int = 32):
+                 tile_size: int = 32,
+                 sigma: float = 0.0):
         """
         Initialize the vector renderer.
         

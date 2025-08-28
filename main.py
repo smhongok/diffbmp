@@ -216,7 +216,8 @@ renderer_kwargs = {
     "device": device,
     "use_fp16": use_fp16,
     "output_path": config["postprocessing"].get("output_folder", "./outputs/"),
-	"tile_size": opt_conf.get("tile_size", 32)
+	"tile_size": opt_conf.get("tile_size", 32),
+    "sigma": opt_conf.get("blur_sigma", 0.0),
 }
 
 renderer = renderer_class(**renderer_kwargs)
@@ -316,7 +317,7 @@ if sequential_config.get("enabled", False):
         
         # Render final frame for export
         with torch.no_grad():
-            rendered_frame = sequential_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0)
+            rendered_frame = sequential_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, is_final=True)
         
         # Store results for this frame
         current_params = {
@@ -404,7 +405,7 @@ if sequential_config.get("enabled", False):
             frame_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}.png')
             with torch.no_grad():
                 # Render frame directly using tile-based rendering
-                frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, sigma=0.0)
+                frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, sigma=0.0, is_final=True)
                 # Save rendered frame directly
                 frame_rendered_np = frame_rendered.detach().cpu().numpy()
                 frame_rendered_np = (frame_rendered_np * 255).astype(np.uint8)
@@ -531,8 +532,8 @@ if not sequential_config.get("enabled", False):
     with torch.no_grad():
         white_bg = torch.ones((renderer.H, renderer.W, 3), device=renderer.device)
         rendered, output_alpha = renderer.render_from_params(x, y, r, theta, v, c,
-                            return_alpha=True, I_bg=white_bg, sigma=0.0)
-        
+                            return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
+
         # For alpha loss calculation, we need to generate masks if background doesn't exist
         if not exist_bg:
             # TODO: 대협, 이제 cached_masks가 없어졌으니 코드 주석처리 할게. 다른방식으로 살리던지 해야 할 듯 
@@ -567,7 +568,7 @@ if config['postprocessing'].get('compute_psnr', False):
                 with torch.no_grad():
                     rendered_frame = renderer.render_from_params(
                         frame_result['x'], frame_result['y'], frame_result['r'], frame_result['theta'],
-                        frame_result['v'], frame_result['c'], sigma=0.0
+                        frame_result['v'], frame_result['c'], sigma=0.0, is_final=True
                     )
                 
                 # Convert to tensor format for metrics
