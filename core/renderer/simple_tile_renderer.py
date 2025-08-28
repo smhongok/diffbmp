@@ -46,7 +46,7 @@ class SimpleTileRenderer(VectorRenderer):
     """
     
     def __init__(self, canvas_size: Tuple[int, int], S: torch.Tensor, 
-                 tile_size: int = 32, sigma: float = 0.0, **kwargs):
+                 tile_size: int = 32, **kwargs):
         """
         Initialize the tile renderer.
         
