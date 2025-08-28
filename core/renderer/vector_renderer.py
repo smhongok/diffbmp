@@ -65,6 +65,26 @@ class VectorRenderer:
             self.S = S.to(dtype=torch.float16)
         else:
             self.S = S
+
+        # ===== Apply Gaussian Blur =====
+        print("="*10,"Applying Gaussiand Blur...","="*10)
+        if sigma <= 0.0:
+            print("Sigma <= 0.0, skipping Gaussian blur.")
+            self.S_blurred = None
+        else:
+            print(f"Apply Gaussian Blur with Sigma {sigma}")
+            target_dtype = torch.float16 if self.use_fp16 else torch.float32
+
+            if sigma > 0.0:
+                bmp = self.S.clone().unsqueeze(0)       # -> [1, p, H, W] or [1, H, W]
+                bmp = gaussian_blur(bmp, sigma)
+                bmp_image = bmp.squeeze(0).to(dtype=target_dtype).contiguous()
+            else:
+                bmp_image = self.S.clone().to(dtype=target_dtype)
+
+            self.S_blurred = bmp_image
+
+        print("="*10,"Finished!","="*10)
         
         # Pre-compute pixel coordinates
         self.X, self.Y = self._create_coordinate_grid()
