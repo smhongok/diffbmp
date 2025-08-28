@@ -71,17 +71,21 @@ class SimpleTileRenderer(VectorRenderer):
 
         # ===== Apply Gaussian Blur =====
         print("="*10,"Applying Gaussiand Blur...","="*10)
-        print(f"Sigma {sigma}")
-        target_dtype = torch.float16 if self.use_fp16 else torch.float32
-
-        if sigma > 0.0:
-            bmp = self.S.clone().unsqueeze(0)       # -> [1, p, H, W] or [1, H, W]
-            bmp = gaussian_blur(bmp, sigma)
-            bmp_image = bmp.squeeze(0).to(dtype=target_dtype).contiguous()
+        if sigma <= 0.0:
+            print("Sigma <= 0.0, skipping Gaussian blur.")
+            self.S_blurred = None
         else:
-            bmp_image = self.S.clone().to(dtype=target_dtype)
+            print(f"Apply Gaussian Blur with Sigma {sigma}")
+            target_dtype = torch.float16 if self.use_fp16 else torch.float32
 
-        self.S_blurred = bmp_image
+            if sigma > 0.0:
+                bmp = self.S.clone().unsqueeze(0)       # -> [1, p, H, W] or [1, H, W]
+                bmp = gaussian_blur(bmp, sigma)
+                bmp_image = bmp.squeeze(0).to(dtype=target_dtype).contiguous()
+            else:
+                bmp_image = self.S.clone().to(dtype=target_dtype)
+
+            self.S_blurred = bmp_image
 
         print("="*10,"Finished!","="*10)
 
@@ -159,21 +163,39 @@ class SimpleTileRenderer(VectorRenderer):
         N = x.shape[0]
         # Pre-compute global primitive template selection (before tile processing)
         
-        # Ensure self.S has dimension 3 for consistent processing
-        if self.S_blurred.dim() == 2:  # Single template [H, W] -> [1, H, W]
-            self.S_blurred = self.S_blurred.unsqueeze(0)  # Add batch dimension
-            if DEBUG_MODE:
-                print("    🔧 Converted single template to batch format: [H, W] -> [1, H, W]")
+        if self.S_blurred is not None:
+            # Ensure self.S_blurred has dimension 3 for consistent processing
+            if self.S_blurred.dim() == 2:  # Single template [H, W] -> [1, H, W]
+                self.S_blurred = self.S_blurred.unsqueeze(0)  # Add batch dimension
+                if DEBUG_MODE:
+                    print("    🔧 Converted single template to batch format: [H, W] -> [1, H, W]")
 
-        if self.S_blurred.dim() == 3:  # Multiple primitive templates [p, H, W]
-            p = self.S_blurred.size(0)
-            global_bmp_sel = torch.arange(N, device=self.device, dtype=torch.long) % p
-            global_bmp_sel = global_bmp_sel.flip(0)  # Same as original VectorRenderer
-            if DEBUG_MODE:
-                print(f"    📊 Using {p} templates, global_bmp_sel shape: {global_bmp_sel.shape}")
+            if self.S_blurred.dim() == 3:  # Multiple primitive templates [p, H, W]
+                p = self.S_blurred.size(0)
+                global_bmp_sel = torch.arange(N, device=self.device, dtype=torch.long) % p
+                global_bmp_sel = global_bmp_sel.flip(0)  # Same as original VectorRenderer
+                if DEBUG_MODE:
+                    print(f"    📊 Using {p} templates, global_bmp_sel shape: {global_bmp_sel.shape}")
+            else:
+                global_bmp_sel = None  # Single template case
+                print("    ⚠️ Unexpected self.S_blurred dimension, using None for global_bmp_sel")
+
+        # Ensure self.S has dimension 3 for consistent processing
         else:
-            global_bmp_sel = None  # Single template case
-            print("    ⚠️ Unexpected self.S_blurred dimension, using None for global_bmp_sel")
+            if self.S.dim() == 2:  # Single template [H, W] -> [1, H, W]
+                self.S = self.S.unsqueeze(0)  # Add batch dimension
+                if DEBUG_MODE:
+                    print("    🔧 Converted single template to batch format: [H, W] -> [1, H, W]")
+
+            if self.S.dim() == 3:  # Multiple primitive templates [p, H, W]
+                p = self.S.size(0)
+                global_bmp_sel = torch.arange(N, device=self.device, dtype=torch.long) % p
+                global_bmp_sel = global_bmp_sel.flip(0)  # Same as original VectorRenderer
+                if DEBUG_MODE:
+                    print(f"    📊 Using {p} templates, global_bmp_sel shape: {global_bmp_sel.shape}")
+            else:
+                global_bmp_sel = None  # Single template case
+                print("    ⚠️ Unexpected self.S dimension, using None for global_bmp_sel")
         
         # Initialize output canvas
         if self.use_fp16:
@@ -321,8 +343,31 @@ class SimpleTileRenderer(VectorRenderer):
             opacities = v  # (N,)
             colors = c  # (N, 3)
 
+
+            if self.S_blurred is None:
+                primitive_templates = self.S  # Use original templates for optimization
+
+                # Use existing cuda_rasterizer or create new one if needed
+                if self.cuda_rasterizer is None:
+                    print(f"    🔧 Creating new TileRasterizer for optimization with {len(radii)} primitives...")
+                    self.cuda_rasterizer = TileRasterizer(
+                        self.H, self.W, self.tile_size, sigma, 
+                        self.alpha_upper_bound, 300, len(radii)
+                    )
+
+            elif self.S_blurred is not None and not is_final:
+                primitive_templates = self.S_blurred  # Use blurred templates for optimization
+                
+                # Use existing cuda_rasterizer or create new one if needed
+                if self.cuda_rasterizer is None:
+                    print(f"    🔧 Creating new TileRasterizer for optimization with {len(radii)} primitives...")
+                    self.cuda_rasterizer = TileRasterizer(
+                        self.H, self.W, self.tile_size, sigma, 
+                        self.alpha_upper_bound, 300, len(radii)
+                    )
+
             # Get primitive templates based on is_final flag
-            if is_final:
+            else:
                 primitive_templates = self.S  # Use original templates for final rendering
                 primitive_templates = primitive_templates.unsqueeze(0) if primitive_templates.dim() == 2 else primitive_templates
                 if DEBUG_MODE:
@@ -344,16 +389,7 @@ class SimpleTileRenderer(VectorRenderer):
                     self.H, self.W, self.tile_size, sigma, 
                     self.alpha_upper_bound, 300, len(radii)
                 )
-            else:
-                primitive_templates = self.S_blurred  # Use blurred templates for optimization
-                
-                # Use existing cuda_rasterizer or create new one if needed
-                if self.cuda_rasterizer is None:
-                    print(f"    🔧 Creating new TileRasterizer for optimization with {len(radii)} primitives...")
-                    self.cuda_rasterizer = TileRasterizer(
-                        self.H, self.W, self.tile_size, sigma, 
-                        self.alpha_upper_bound, 300, len(radii)
-                    )
+
 
             if DEBUG_MODE:
                 print(f"    🎯 Calling CUDA rasterizer with {len(radii)} primitives, {self.H}x{self.W} image...")
@@ -872,7 +908,7 @@ class SimpleTileRenderer(VectorRenderer):
                 colors = tile_c.float()  # (N, 3) logits
                 
                 # Get primitive templates for selected primitives based on is_final flag
-                if is_final:
+                if is_final or self.S_blurred is None:
                     # Use original templates for final rendering
                     if global_bmp_sel is not None:
                         selected_templates = self.S[global_bmp_sel[primitive_indices]].float()  # (N, H, W)

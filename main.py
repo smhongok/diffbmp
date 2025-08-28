@@ -217,7 +217,7 @@ renderer_kwargs = {
     "use_fp16": use_fp16,
     "output_path": config["postprocessing"].get("output_folder", "./outputs/"),
 	"tile_size": opt_conf.get("tile_size", 32),
-    "sigma": opt_conf.get("blur_sigma", 0.0),
+    "sigma": opt_conf.get("blur_sigma", 0.0) if opt_conf.get("do_gaussian_blur", False) else 0.0,
 }
 
 renderer = renderer_class(**renderer_kwargs)
