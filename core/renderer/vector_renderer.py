@@ -920,7 +920,8 @@ class VectorRenderer:
     def initialize_parameters(self,
                             initializer: Any,
                             target_image: torch.Tensor,
-                            target_binary_mask=None) -> Tuple[torch.Tensor, ...]:
+                            target_binary_mask=None,
+                            return_pts: bool = False) -> Tuple[torch.Tensor, ...]:
         """
         Initialize parameters using the provided initializer.
         
@@ -934,11 +935,16 @@ class VectorRenderer:
         # We have to modify this method for better performance with none background images,
         # since we don't have to splat primitives on the background(which is transparent) at initialization.        
         if target_image.shape[2] == 4:
+            assert target_binary_mask is not None, "target_binary_mask must be provided for RGBA target_image"
             target_image = target_image[:, :, :3]  # Ignore alpha channel
 
         # Initialize from target image
-        x, y, r, v, theta, c = initializer.initialize(target_image, target_binary_mask = target_binary_mask)
-        
+        if return_pts:
+            x, y, r, v, theta, c, adjusted_pts = initializer.initialize(target_image, target_binary_mask=target_binary_mask, return_pts=True)
+
+        else:
+            x, y, r, v, theta, c = initializer.initialize(target_image, target_binary_mask=target_binary_mask)
+            adjusted_pts = None
         # Convert to leaf tensors for optimization
         x = x.detach().clone().requires_grad_(True)
         y = y.detach().clone().requires_grad_(True)
@@ -946,9 +952,9 @@ class VectorRenderer:
         v = v.detach().clone().requires_grad_(True)
         theta = theta.detach().clone().requires_grad_(True)
         c = c.detach().clone().requires_grad_(True)
-        
-        return x, y, r, v, theta, c
-    
+
+        return x, y, r, v, theta, c, adjusted_pts
+
     def optimize_parameters(self,
                       x: torch.Tensor,
                       y: torch.Tensor,
@@ -959,8 +965,7 @@ class VectorRenderer:
                       target_image: torch.Tensor,
                       opt_conf: Dict[str, Any],
                       target_binary_mask: Optional[torch.Tensor] = None,
-                      target_dist_mask: Optional[torch.Tensor] = None
-                      ) -> Tuple[torch.Tensor, ...]:
+                      adjusted_pts: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, ...]:
         """Optimize rendering parameters to match target image."""
         N = x.shape[0]
         self.sample_size = max(1, int(0.2 * N))  # 20% of primitives
@@ -969,7 +974,7 @@ class VectorRenderer:
 
         # Use whole optimization (batch optimization removed as it's never used)
         return self._optimize_parameters_whole(
-            x, y, r, v, theta, c, target_image, opt_conf, target_binary_mask, target_dist_mask
+            x, y, r, v, theta, c, target_image, opt_conf, target_binary_mask, adjusted_pts
         )
 
     def _optimize_parameters_whole(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,

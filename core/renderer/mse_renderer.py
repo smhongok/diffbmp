@@ -20,7 +20,9 @@ class MseRenderer(VectorRenderer):
                     v: torch.Tensor,
                     theta: torch.Tensor,
                     c: torch.Tensor,
-                    rendered_alpha: torch.Tensor = None) -> torch.Tensor:
+                    rendered_alpha: torch.Tensor = None,
+                    loss_w_conf = None,
+                    epoch = None) -> torch.Tensor:
         """
         Compute MSE loss between rendered and target images.
         
@@ -39,7 +41,16 @@ class MseRenderer(VectorRenderer):
         # and include both RGB and alpha channel in the loss calculation
         if target.shape[2] == 4:
             assert rendered_alpha is not None, "Rendered alpha channel must be provided when target has an alpha channel."
-            
+            assert loss_w_conf is not None, "Loss weights must be provided when target has an alpha channel."
+
+            color_loss_weight = loss_w_conf.get('color_loss_weight', 1.0)
+            alpha_loss_weight = loss_w_conf.get('alpha_loss_weight', 1.0)
+            # if epoch is not None and epoch > 50:
+            #     alpha_loss_weight /= 2
+
+            # if epoch is not None and epoch > 70:
+            #     alpha_loss_weight /= 4
+
             # Handle rendered_alpha shape: could be (H, W) or (H, W, 1)
             if rendered_alpha.dim() == 3 and rendered_alpha.shape[2] == 1:
                 rendered_alpha = rendered_alpha.squeeze(-1)  # (H, W, 1) -> (H, W)
@@ -78,10 +89,18 @@ class MseRenderer(VectorRenderer):
                 rendered_combined = torch.cat([rendered_masked, rendered_alpha_masked.unsqueeze(-1)], dim=-1)  # (N_valid, 4)
                 target_combined = torch.cat([target_rgb_masked, target_alpha_masked.unsqueeze(-1)], dim=-1)    # (N_valid, 4)
                 
-                return F.mse_loss(rendered_combined, target_combined)
+                color_loss = F.mse_loss(rendered_combined, target_combined)
             else:
                 # If no valid pixels, return zero loss
-                return torch.tensor(0.0, device=rendered.device, requires_grad=True)
+                color_loss = torch.tensor(0.0, device=rendered.device, requires_grad=True)
+            
+            alpha_loss = F.mse_loss(rendered_alpha, target_alpha)
+
+            print(f"color loss : {color_loss.item()}")
+            print(f"alpha loss : {alpha_loss.item()}")
+
+            return color_loss_weight*color_loss + alpha_loss_weight*alpha_loss
+
         else:
             # Original behavior for 3-channel targets
             # Ensure tensors are in consistent precision
@@ -95,8 +114,7 @@ class MseRenderer(VectorRenderer):
                 target = target.float()
 
 
-            return F.mse_loss(rendered, target)
-    
+            return F.mse_loss(rendered, target)    
 
     
     

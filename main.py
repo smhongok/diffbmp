@@ -347,14 +347,15 @@ else:
 
     # Generate distance masks if requested
     target_binary_mask = None # 1 at backgorund, 0 at foreground
-    target_dist_mask = None # The distance based mask default : Skeleton - Aware Distance Transform
 
     if not exist_bg:
-        target_binary_mask = torch.from_numpy(target_binary_mask_np[:,:]>0).to(device) 
-        target_dist_mask = target_masks.SADT_L2(target_binary_mask_np, device)
+        target_binary_mask = torch.from_numpy(target_binary_mask_np[:,:]>0).to(device)
+        x, y, r, v, theta, c, adjusted_pts = renderer.initialize_parameters(initializer, I_target, target_binary_mask, return_pts = True)
 
-    x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target, target_binary_mask)
-    
+    else:
+        x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target, target_binary_mask)
+        adjusted_pts = None
+
     bmp_image_tensor = svg_loader.load_alpha_bitmap()
     
     # Optimize parameters
@@ -363,7 +364,7 @@ else:
         I_target, 
         opt_conf=opt_conf,
         target_binary_mask=target_binary_mask,
-        target_dist_mask=target_dist_mask,
+        adjusted_pts=adjusted_pts
     )
 
 if not exist_bg:
