@@ -974,7 +974,10 @@ class VectorRenderer:
         theta = theta.detach().clone().requires_grad_(True)
         c = c.detach().clone().requires_grad_(True)
 
-        return x, y, r, v, theta, c, adjusted_pts
+        if return_pts:
+            return x, y, r, v, theta, c, adjusted_pts
+
+        return x, y, r, v, theta, c
 
     def optimize_parameters(self,
                       x: torch.Tensor,

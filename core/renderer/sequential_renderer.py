@@ -3,16 +3,19 @@ import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
 from .mse_renderer import MseRenderer
+from .simple_tile_renderer import SimpleTileRenderer
 
 
-class SequentialFrameRenderer(MseRenderer):
+class SequentialFrameRenderer(SimpleTileRenderer):
     """
     Specialized renderer for subsequent frames in sequential optimization.
     Inherits from MseRenderer but uses warmup scheduling for loss.
     """
     
     def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None, tile_size=32):
-        super().__init__(canvas_size, S, alpha_upper_bound, device, use_fp16, gamma, output_path, tile_size)
+        super().__init__(canvas_size=canvas_size, S=S, tile_size=tile_size, 
+                         alpha_upper_bound=alpha_upper_bound, device=device, 
+                         use_fp16=use_fp16, gamma=gamma, output_path=output_path)
     
     def compute_loss_with_warmup(self, 
                                rendered: torch.Tensor, 
