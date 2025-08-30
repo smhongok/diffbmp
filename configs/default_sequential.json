@@ -5,7 +5,7 @@
     "FM_halftone": false,
     "transform": "none",
     "img_path": [
-      "images/gif/pororo_monkey_crop_first2.gif"
+      "images/gif/green_jumper.gif"
     ],
     "bg_threshold": 250,
     "do_equalize": false,
@@ -148,7 +148,7 @@
     }
   },
   "postprocessing": {
-    "output_folder": "./outputs/simpson_jumping/NODETACH_adaptive_commit1",
+    "output_folder": "./outputs/cuda/green_jumper/",
     "hires_export": false,
     "hires_scale_factor": 4.0,
     "compute_psnr": false,
