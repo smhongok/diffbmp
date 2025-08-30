@@ -1012,11 +1012,6 @@ class SimpleTileRenderer(VectorRenderer):
 
             color_loss_weight = loss_w_conf.get('color_loss_weight', 1.0)
             alpha_loss_weight = loss_w_conf.get('alpha_loss_weight', 1.0)
-            # if epoch is not None and epoch > 50:
-            #     alpha_loss_weight /= 2
-
-            # if epoch is not None and epoch > 70:
-            #     alpha_loss_weight /= 4
 
             # Handle rendered_alpha shape: could be (H, W) or (H, W, 1)
             if rendered_alpha.dim() == 3 and rendered_alpha.shape[2] == 1:
