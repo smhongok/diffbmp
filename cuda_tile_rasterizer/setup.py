@@ -1,4 +1,3 @@
-
 import os
 from setuptools import setup
 from torch.utils.cpp_extension import CUDAExtension, BuildExtension
@@ -18,6 +17,7 @@ setup(
                 'cuda_kernels/tile_common.cu',
                 'cuda_kernels/tile_forward.cu',
                 'cuda_kernels/tile_backward.cu',
+                'cuda_kernels/pixel_gradient.cu',  # Add our per-pixel gradient CUDA kernel
             ],
             include_dirs=[
                 '.',

@@ -151,7 +151,7 @@
     }
   },
   "postprocessing": {
-    "output_folder": "./outputs/cuda/green_jumper/",
+    "output_folder": "./outputs/non_cuda/green_jumper/",
     "hires_export": false,
     "hires_scale_factor": 4.0,
     "compute_psnr": false,

@@ -17,6 +17,12 @@ ENABLE_NON_PROBLEMATIC_PRIMITIVE_GRADIENT_VISUALIZATION = False
 GRADIENT_DEBUG_SAVE_DIR = "./outputs/debug_gradients_sequential"
 
 # =============================================================================
+# CUDA CONFIGURATION FOR GRADIENT COMPUTATION
+# =============================================================================
+# Set to True to use CUDA implementation for gradient computation, False to use Python implementation
+USE_CUDA_GRADIENT_COMPUTATION = False
+
+# =============================================================================
 
 
 class SequentialFrameRenderer(SimpleTileRenderer):
@@ -788,7 +794,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         """
         Compute per-pixel gradient magnitude based on absolute x,y gradients.
         Inspired by AbsGS research - measures how much each primitive's position affects the total loss.
-        Uses fixed-count pixel sampling per tile for performance optimization.
+        Uses CUDA kernel for parallel processing of all pixels.
         
         Args:
             x, y, r, v, theta, c: Primitive parameters with gradients
@@ -796,43 +802,123 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             adaptive_config: Configuration dict containing tile and sampling parameters
             
         Returns:
-            Tensor of gradient magnitudes per pixel [H, W]
+            Tensor of gradient magnitudes per primitive [N]
         """
         # Ensure x, y parameters require gradients
         if not x.requires_grad:
             x.requires_grad_(True)
         if not y.requires_grad:
             y.requires_grad_(True)
+    
+        # Get configuration parameters
+        if adaptive_config is None:
+            adaptive_config = {}
+        tile_rows = adaptive_config.get('tile_rows', 4)
+        tile_cols = adaptive_config.get('tile_cols', 4)
+    
+        # Get gradient sampling configuration
+        gradient_config = adaptive_config.get('gradient_ranking', {})
+        pixels_per_tile = gradient_config.get('pixels_per_tile', 16)
+    
+        H, W = target.shape[:2]
+    
+        # Check if CUDA gradient computation is enabled
+        if not USE_CUDA_GRADIENT_COMPUTATION:
+            print("[Gradient Computation] CUDA disabled, using Python implementation")
+            return self._compute_per_pixel_gradient_magnitude_python(x, y, r, v, theta, c, target, adaptive_config)
+    
+        print(f"[CUDA Gradient Computation] Processing {tile_rows}x{tile_cols} tiles with {pixels_per_tile} pixels per tile")
+    
+        try:
+            # Import CUDA tile rasterizer
+            import cuda_tile_rasterizer
         
+            # Prepare parameters for CUDA kernel
+            means2D = torch.stack([x, y], dim=1).contiguous()  # [N, 2]
+        
+            # Get primitive templates and selection indices
+            primitive_templates = self.primitive_templates if hasattr(self, 'primitive_templates') else torch.zeros((1, 32, 32), device=x.device)
+            global_bmp_sel = self.global_bmp_sel if hasattr(self, 'global_bmp_sel') else torch.zeros(x.shape[0], dtype=torch.int32, device=x.device)
+        
+            # Ensure target is in correct format [H, W, 3]
+            if target.dim() == 3 and target.shape[2] == 3:
+                target_cuda = target.contiguous()
+            else:
+                target_cuda = target.unsqueeze(-1).repeat(1, 1, 3).contiguous()
+        
+            # Call CUDA kernel for parallel gradient computation
+            gradient_magnitudes = cuda_tile_rasterizer.compute_per_pixel_gradients(
+                means2D,                    # [N, 2] - primitive positions
+                r,                          # [N] - primitive radii  
+                theta,                      # [N] - primitive rotations
+                v,                          # [N] - primitive opacities (logits)
+                c,                          # [N, 3] - primitive colors
+                primitive_templates,        # [T, Ht, Wt] - template masks
+                global_bmp_sel,            # [N] - template selection indices
+                target_cuda,               # [H, W, 3] - target image
+                pixels_per_tile            # Number of pixels to sample per tile
+            )
+        
+            print(f"[CUDA Gradient Computation] Successfully computed gradients for {gradient_magnitudes.shape[0]} primitives")
+            print(f"[CUDA Gradient Computation] Gradient statistics: min={gradient_magnitudes.min().item():.6f}, max={gradient_magnitudes.max().item():.6f}, mean={gradient_magnitudes.mean().item():.6f}")
+        
+            return gradient_magnitudes
+        
+        except ImportError:
+            print("[Gradient Computation] CUDA tile rasterizer not available, falling back to Python implementation")
+            # Fallback to original Python implementation
+            return self._compute_per_pixel_gradient_magnitude_python(x, y, r, v, theta, c, target, adaptive_config)
+    
+        except Exception as e:
+            print(f"[Gradient Computation] CUDA implementation failed: {e}, falling back to Python implementation")
+            # Fallback to original Python implementation  
+            return self._compute_per_pixel_gradient_magnitude_python(x, y, r, v, theta, c, target, adaptive_config)
+
+    def _compute_per_pixel_gradient_magnitude_python(self,
+                                                x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
+                                                v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
+                                                target: torch.Tensor,
+                                                adaptive_config: dict = None) -> torch.Tensor:
+        """
+        Original Python implementation as fallback.
+        Compute per-pixel gradient magnitude based on absolute x,y gradients.
+        Uses fixed-count pixel sampling per tile for performance optimization.
+        """
+        # Ensure x, y parameters require gradients
+        if not x.requires_grad:
+            x.requires_grad_(True)
+        if not y.requires_grad:
+            y.requires_grad_(True)
+    
         # Render current state
         rendered = self.render_from_params(x, y, r, v, theta, c)
-        
+    
         # Pixel-wise loss (reduction 없음)
         pixel_losses = (rendered - target).pow(2).mean(dim=2)  # [H, W]
         H, W = pixel_losses.shape
-        
+    
         # Get tile configuration (same as apply_adaptive_control)
         if adaptive_config is None:
             adaptive_config = {}
         tile_rows = adaptive_config.get('tile_rows', 4)
         tile_cols = adaptive_config.get('tile_cols', 4)
-        
+    
         # Get gradient sampling configuration
         gradient_config = adaptive_config.get('gradient_ranking', {})
         pixels_per_tile = gradient_config.get('pixels_per_tile', 16)
-        
+    
         # Calculate tile dimensions (same as apply_adaptive_control)
         tile_height = H // tile_rows
         tile_width = W // tile_cols
-        
+    
         # Initialize gradient magnitude accumulator
         gradient_magnitudes = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
-        
+    
         total_pixels_processed = 0
         total_pixels_available = H * W
-        
-        print(f"[Gradient Computation] Processing {tile_rows}x{tile_cols} tiles with {pixels_per_tile} pixels per tile")
-        
+    
+        print(f"[Python Gradient Computation] Processing {tile_rows}x{tile_cols} tiles with {pixels_per_tile} pixels per tile")
+    
         # Process each tile
         for row in range(tile_rows):
             for col in range(tile_cols):
@@ -841,17 +927,17 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 y_max = (row + 1) * tile_height
                 x_min = col * tile_width
                 x_max = (col + 1) * tile_width
-                
+    
                 # Get all pixel coordinates in this tile
                 tile_pixels = []
                 for i in range(y_min, min(y_max, H)):
                     for j in range(x_min, min(x_max, W)):
                         tile_pixels.append((i, j))
-                
+    
                 # Sample fixed number of pixels within this tile
                 num_tile_pixels = len(tile_pixels)
                 num_sample_pixels = min(pixels_per_tile, num_tile_pixels)  # Don't exceed available pixels
-                
+    
                 if num_tile_pixels > 0 and num_sample_pixels > 0:
                     # Random sampling within this tile
                     if num_sample_pixels < num_tile_pixels:
@@ -860,11 +946,11 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                     else:
                         # Use all pixels if requested count >= available pixels
                         sampled_pixels = tile_pixels
-                    
+    
                     # Process sampled pixels in this tile
                     for i, j in sampled_pixels:
                         pixel_loss = pixel_losses[i, j]
-                        
+    
                         # Compute gradients w.r.t. x, y for this pixel
                         if pixel_loss.requires_grad:
                             grads = torch.autograd.grad(
@@ -874,24 +960,23 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                                 create_graph=False,
                                 allow_unused=True
                             )
-                            
+    
                             # Sum absolute gradients for x and y per primitive (AbsGS style)
                             if grads[0] is not None:  # x gradients [N]
                                 gradient_magnitudes += torch.abs(grads[0])
                             if grads[1] is not None:  # y gradients [N]
                                 gradient_magnitudes += torch.abs(grads[1])
-                    
-                    total_pixels_processed += len(sampled_pixels)
-        
+    
+                total_pixels_processed += len(sampled_pixels)
+    
         # Scale by actual sampling ratio to approximate full image gradient
         actual_sample_ratio = total_pixels_processed / total_pixels_available if total_pixels_available > 0 else 1.0
         gradient_magnitudes = gradient_magnitudes / actual_sample_ratio
-        
-        print(f"[Gradient Computation] Processed {total_pixels_processed}/{total_pixels_available} pixels ({actual_sample_ratio*100:.1f}%)")
-        
+    
+        print(f"[Python Gradient Computation] Processed {total_pixels_processed}/{total_pixels_available} pixels ({actual_sample_ratio:.2%})")
+    
         return gradient_magnitudes
 
-    
     def visualize_gradient_directions_white_background(self,
                                                    x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                                                    v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
@@ -983,21 +1068,21 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 pixel_loss = pixel_losses[i, j]
                 
                 if pixel_loss.requires_grad:
-                    # Compute gradients w.r.t. x, y for this pixel
-                    grads = torch.autograd.grad(
-                        outputs=pixel_loss,
-                        inputs=[x, y],
-                        retain_graph=True,
-                        create_graph=False,
-                        allow_unused=True
-                    )
+                            # Compute gradients w.r.t. x, y for this pixel
+                            grads = torch.autograd.grad(
+                                outputs=pixel_loss,
+                                inputs=[x, y],
+                                retain_graph=True,
+                                create_graph=False,
+                                allow_unused=True
+                            )
+                            
+                            # Extract gradients for the current primitive
+                            if grads[0] is not None and grads[1] is not None:
+                                grad_x = float(grads[0][prim_idx].item())
+                                grad_y = float(grads[1][prim_idx].item())
+                                gradient_directions[pixel_idx] = [grad_x, grad_y]
                     
-                    # Extract gradients for the current primitive
-                    if grads[0] is not None and grads[1] is not None:
-                        grad_x = float(grads[0][prim_idx].item())
-                        grad_y = float(grads[1][prim_idx].item())
-                        gradient_directions[pixel_idx] = [grad_x, grad_y]
-            
             # Compute magnitude statistics for this primitive to enable adaptive normalization
             magnitudes = np.sqrt(gradient_directions[:, 0]**2 + gradient_directions[:, 1]**2)
             non_zero_magnitudes = magnitudes[magnitudes > 1e-12]  # Very small threshold for numerical stability
