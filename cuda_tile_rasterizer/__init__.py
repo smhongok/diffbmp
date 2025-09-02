@@ -103,6 +103,12 @@ class TileRasterizerFunction(Function):
     def backward(ctx, grad_out_color, grad_out_alpha):
         means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, lr_conf = ctx.saved_tensors
         
+        # Debug: Check if alpha gradient is None
+        if DEBUG_MODE:
+            print(f"Alpha gradient is None: {grad_out_alpha is None}")
+            if grad_out_alpha is not None:
+                print(f"Alpha gradient shape: {grad_out_alpha.shape}, mean: {grad_out_alpha.mean().item()}")
+            
         # Create learning rate tensor from config
         lr_config = torch.tensor([
             lr_conf[0].item(),

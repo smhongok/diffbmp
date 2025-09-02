@@ -29,7 +29,7 @@
         "convert_to_svg": false,
         "svg_hollow": false,
         "output_width": 128
-    },  
+    },
     "initialization": {
         "initializer": "structure_aware",
         "N": [2000],
@@ -45,12 +45,13 @@
         "pruning_enabled": true,
         "level": 2,
         "multi_level": false,
-        "hollow": false
+        "hollow": false,
+        "distance_factor": 0.7
     },
     "optimization": {
         "use_fp16": false,
         "renderer_type": "tile",
-        "num_iterations": 100,
+        "num_iterations": 300,
         "batch_optimization": false,
         "batch_size": 256,
         "learning_rate": {
@@ -58,14 +59,20 @@
             "gain_x": 10.0,
             "gain_y": 10.0,
             "gain_r": 10.0,
-            "gain_v": 1.5,
+            "gain_v": 3,
             "gain_theta": 1.0,
             "gain_c": 1.0
         },
         "loss_weights": {
-            "recon_loss_weight": 1.0,
-            "binary_alpha_loss_weight": 10.0,
-            "distance_alpha_loss_weight": 10.0
+            "color_loss_weight": 1.0,
+            "alpha_loss_weight": 2.0
+        },
+        "pruning":{
+            "do_pruning" : true,
+            "prune_iterations" : 10,
+            "no_prune_last_iterations" : 50,
+            "no_prune_warmup_iterations" : 200,
+            "prune_threshold" : 0.3
         },
         "do_decay": true,
         "decay_rate": 0.99,
@@ -88,7 +95,7 @@
         },
         "freq_gamma":1.0,
         "do_dwa": true,
-        "save_epoch": false,
+        "save_epoch": true,
         "log_gradients": false
     },
     "postprocessing": {

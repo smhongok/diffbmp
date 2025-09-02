@@ -16,7 +16,7 @@ class StructureAwareInitializer(BaseInitializer):
     def __init__(self, init_opt:Dict[str, Any]):
         super().__init__(init_opt)
 
-    def initialize(self, I_target, target_binary_mask = None, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
+    def initialize(self, I_target, target_binary_mask = None, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None, return_pts: bool = False):
         """
         Specialization for SVG input to match the API expected in main_svg.py
         """
@@ -167,8 +167,11 @@ class StructureAwareInitializer(BaseInitializer):
         end_time = time.time()
         formatted_time = str(timedelta(seconds=int(end_time - start_time)))
         print(f"[initialize]total_cost_time: {formatted_time}")
+
+        if not return_pts:
+            return x, y, r, v, theta, c
         
-        return x, y, r, v, theta, c
+        return x, y, r, v, theta, c, adjusted_pts
     
     def visualize_initialization_points(self, I_np, densified_pts, point_levels, adjusted_pts):
         """
