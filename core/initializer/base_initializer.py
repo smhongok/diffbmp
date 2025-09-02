@@ -319,7 +319,11 @@ class BaseInitializer(ABC):
         x = self._rand_leaf((N,), x_init, x_init + W, device)
         y = self._rand_leaf((N,), y_init, y_init + H, device)
 
-        r_min, r_max = self.radii_min, 0.5 * min(H, W)
+        r_min = self.radii_min
+        if self.radii_max is not None:
+            r_max = self.radii_max
+        else:
+            r_max = 0.5 * min(H, W)
         r = self._rand_leaf((N,), r_min, r_max, device)
 
         v = self._rand_leaf((N,),self.v_init_bias - 0.5, self.v_init_bias + 0.5, device)

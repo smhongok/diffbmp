@@ -106,7 +106,10 @@ class StructureAwareInitializer(BaseInitializer):
         
         # Determine radius based on level - coarser level (smaller value) gets larger radius
         # The formula: r = max_radius * (1 - level/max_level) + min_radius
-        max_radius = min(H, W) / 4
+        if self.radii_max is not None:
+            max_radius = self.radii_max
+        else:
+            max_radius = min(H, W) / 4
         min_radius = self.radii_min
         
         # Calculate distance transform from Canny edges
