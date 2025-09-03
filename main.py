@@ -409,7 +409,8 @@ if sequential_config.get("enabled", False):
             from util.psd_exporter import PSDExporter
             
             psd_path = output_path.replace('.png', '.psd')
-            exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound)
+            psd_scale_factor = config.get('postprocessing', {}).get('psd_scale_factor', 1.0)
+            exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
             
             # Get primitive templates (use original S, not blurred)
             primitive_templates = renderer.S
@@ -418,7 +419,8 @@ if sequential_config.get("enabled", False):
                 
             # Add each primitive as a layer (in reverse order for correct layering)
             N = len(x)
-            for i in reversed(range(N)):
+            print(f"Exporting {N} primitives to PSD...")
+            for i in tqdm(reversed(range(N)), total=N, desc="Creating PSD layers"):
                 # Get template for this primitive
                 if primitive_templates.shape[0] > 1:
                     template_idx = (N-i-1) % primitive_templates.shape[0]
@@ -435,11 +437,6 @@ if sequential_config.get("enabled", False):
                 
             # Export PSD file
             exporter.export_psd(psd_path)
-            
-            # Also export individual layers for debugging
-            import os
-            layer_dir = os.path.splitext(psd_path)[0] + "_layers"
-            exporter.export_individual_layers(layer_dir)
         
         # Still render final PNG for preview/compatibility using tile-based rendering
         frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, sigma=0.0, is_final=True)
@@ -578,7 +575,8 @@ if not sequential_config.get("enabled", False):
             from util.psd_exporter import PSDExporter
             
             psd_path = output_path.replace('.png', '.psd')
-            exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound)
+            psd_scale_factor = config.get('postprocessing', {}).get('psd_scale_factor', 1.0)
+            exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
             
             # Get primitive templates (use original S, not blurred)
             primitive_templates = renderer.S
@@ -587,7 +585,8 @@ if not sequential_config.get("enabled", False):
                 
             # Add each primitive as a layer (in reverse order for correct layering)
             N = len(x)
-            for i in reversed(range(N)):
+            print(f"Exporting {N} primitives to PSD...")
+            for i in tqdm(reversed(range(N)), total=N, desc="Creating PSD layers"):
                 # Get template for this primitive
                 if primitive_templates.shape[0] > 1:
                     template_idx = (N-i-1) % primitive_templates.shape[0]
@@ -604,11 +603,6 @@ if not sequential_config.get("enabled", False):
                 
             # Export PSD file
             exporter.export_psd(psd_path)
-            
-            # Also export individual layers for debugging
-            import os
-            layer_dir = os.path.splitext(psd_path)[0] + "_layers"
-            exporter.export_individual_layers(layer_dir)
         
         # Still render final PNG for preview/compatibility
         rendered, output_alpha = renderer.render_from_params(x, y, r, theta, v, c,

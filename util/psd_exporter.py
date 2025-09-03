@@ -9,13 +9,19 @@ class PSDExporter:
     """Exports individual transformed primitives as PSD layers using psd-tools."""
     
     def __init__(self, canvas_width: int, canvas_height: int,
-                 alpha_upper_bound: float = 1.0):
+                 alpha_upper_bound: float = 1.0, scale_factor: float = 1.0):
         self.canvas_width = canvas_width
         self.canvas_height = canvas_height
         self.alpha_upper_bound = alpha_upper_bound
+        self.scale_factor = scale_factor
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        # Create new PSD document with transparent background
-        self.psd = PSDImage.new('RGBA', (canvas_width, canvas_height), color=(0, 0, 0, 0))
+        
+        # Calculate scaled dimensions for high-resolution export
+        self.export_width = int(canvas_width * scale_factor)
+        self.export_height = int(canvas_height * scale_factor)
+        
+        # Create new PSD document with scaled dimensions
+        self.psd = PSDImage.new('RGBA', (self.export_width, self.export_height), color=(0, 0, 0, 0))
         
     def add_layer_from_primitive(self, primitive_template: torch.Tensor, 
                                x: float, y: float, r: float, theta: float,
@@ -34,7 +40,7 @@ class PSDExporter:
         """
         layer_name = name or f"primitive_{len(self.psd)}"
         
-        # Apply geometric transformations to template
+        # Apply geometric transformations to template with scaling
         transformed_template = self._apply_transformations(primitive_template, x, y, r, theta)
         
         # Convert transformed template to PIL Image with color and alpha
@@ -53,8 +59,8 @@ class PSDExporter:
         # Ensure template is on the correct device
         template = template.to(self.device)
         
-        # Create pixel coordinate grids exactly like VectorRenderer._create_coordinate_grid
-        H, W = self.canvas_height, self.canvas_width
+        # Create pixel coordinate grids with scaling applied
+        H, W = self.export_height, self.export_width
         X, Y = torch.meshgrid(
             torch.arange(W, device=self.device, dtype=torch.float32),
             torch.arange(H, device=self.device, dtype=torch.float32),
@@ -63,11 +69,11 @@ class PSDExporter:
         X = X.unsqueeze(0)  # (1, H, W)
         Y = Y.unsqueeze(0)  # (1, H, W)
         
-        # Convert single primitive parameters to batch format (B=1)
-        x_tensor = torch.tensor([x], device=self.device, dtype=torch.float32)
-        y_tensor = torch.tensor([y], device=self.device, dtype=torch.float32)
-        r_tensor = torch.tensor([r], device=self.device, dtype=torch.float32)
-        theta_tensor = torch.tensor([theta], device=self.device, dtype=torch.float32)
+        # Convert single primitive parameters to batch format (B=1) with scaling applied
+        x_tensor = torch.tensor([x * self.scale_factor], device=self.device, dtype=torch.float32)
+        y_tensor = torch.tensor([y * self.scale_factor], device=self.device, dtype=torch.float32)
+        r_tensor = torch.tensor([r * self.scale_factor], device=self.device, dtype=torch.float32)
+        theta_tensor = torch.tensor([theta], device=self.device, dtype=torch.float32)  # rotation unchanged
         
         # Expand coordinates and parameters exactly like _batched_soft_rasterize
         B = 1
@@ -128,19 +134,3 @@ class PSDExporter:
         self.psd.save(filepath)
         print(f"✅ Exported PSD with {len(self.psd)} layers to {filepath}")
         
-    def export_individual_layers(self, output_dir: str):
-        """Export each layer as individual PNG files for debugging."""
-        import os
-        os.makedirs(output_dir, exist_ok=True)
-        
-        for i, layer in enumerate(self.psd):
-            if hasattr(layer, 'topil'):
-                layer_path = os.path.join(output_dir, f"{layer.name}.png")
-                try:
-                    layer_img = layer.topil()
-                    if layer_img:
-                        layer_img.save(layer_path)
-                except Exception as e:
-                    print(f"Warning: Could not export layer {layer.name}: {e}")
-                    
-        print(f"✅ Exported individual layers to {output_dir}/")
