@@ -1,6 +1,6 @@
 {
     "preprocessing": {
-        "final_width": [2040],
+        "final_width": [1020],
         "trim": false,
         "FM_halftone": false,
         "transform": "none",
@@ -91,6 +91,6 @@
         "linewidth": 3.0,
         "compute_psnr": true,
         "export_psd": true,
-        "psd_scale_factor": 4.0
+        "psd_scale_factor": 2.0
     }
 } 

@@ -85,6 +85,8 @@
     },
     "postprocessing": {
         "linewidth": 3.0,
-        "compute_psnr": true
+        "compute_psnr": true,
+        "export_psd": true,
+        "psd_scale_factor": 2.0
     }
 } 
