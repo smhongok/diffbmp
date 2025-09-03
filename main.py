@@ -428,8 +428,8 @@ if sequential_config.get("enabled", False):
                 else:
                     template = primitive_templates[0]
                     
-                # Add layer to PSD
-                exporter.add_layer_from_primitive(
+                # Add cropped layer to PSD for smaller file size
+                exporter.add_layer_from_primitive_cropped(
                     template, x[i].item(), y[i].item(), r[i].item(), 
                     theta[i].item(), v[i].item(), c[i], 
                     name=f"primitive_{i:03d}"
@@ -594,8 +594,8 @@ if not sequential_config.get("enabled", False):
                 else:
                     template = primitive_templates[0]
                     
-                # Add layer to PSD
-                exporter.add_layer_from_primitive(
+                # Add cropped layer to PSD for smaller file size
+                exporter.add_layer_from_primitive_cropped(
                     template, x[i].item(), y[i].item(), r[i].item(), 
                     theta[i].item(), v[i].item(), c[i], 
                     name=f"primitive_{i:03d}"

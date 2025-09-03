@@ -52,6 +52,37 @@ class PSDExporter:
         # Add layer to PSD
         self.psd.append(layer)
         
+    def add_layer_from_primitive_cropped(self, primitive_template: torch.Tensor, 
+                                       x: float, y: float, r: float, theta: float,
+                                       v: float, c: torch.Tensor, name: str = None):
+        """
+        Add a layer by creating a cropped PIL image from primitive template with transformations applied.
+        This reduces PSD file size by only including the actual content area of each layer.
+        
+        Args:
+            primitive_template: (H, W) primitive template
+            x, y: Position
+            r: Scale
+            theta: Rotation
+            v: Visibility logit
+            c: (3,) RGB color logits
+            name: Layer name
+        """
+        layer_name = name or f"primitive_{len(self.psd)}"
+        
+        # Apply geometric transformations to template with scaling
+        transformed_template = self._apply_transformations(primitive_template, x, y, r, theta)
+        
+        # Convert transformed template to cropped PIL Image with bounds
+        pil_image, bounds = self._template_to_pil_with_bounds(transformed_template, c, v)
+        left, top, right, bottom = bounds
+        
+        # Create PixelLayer from cropped PIL image with correct positioning
+        layer = PixelLayer.frompil(pil_image, self.psd, layer_name, top=top, left=left)
+        
+        # Add layer to PSD
+        self.psd.append(layer)
+        
     def _apply_transformations(self, template: torch.Tensor, x: float, y: float, r: float, theta: float) -> torch.Tensor:
         """Apply geometric transformations using exactly the same logic as _batched_soft_rasterize."""
         import torch.nn.functional as F
@@ -102,6 +133,48 @@ class PSDExporter:
         # Return single-channel mask
         return sampled.squeeze(1).squeeze(0)  # (H, W)
         
+    def _template_to_pil_with_bounds(self, template: torch.Tensor, c: torch.Tensor, v: float) -> tuple[Image.Image, tuple[int, int, int, int]]:
+        """Convert primitive template to PIL RGBA image with color and alpha, cropped to content bounds."""
+        # Convert to numpy
+        template_np = template.detach().cpu().numpy()
+        h, w = template_np.shape
+        
+        # Apply color (sigmoid activation)
+        rgb = torch.sigmoid(c).detach().cpu().numpy()
+        visibility = self.alpha_upper_bound * (1 / (1 + np.exp(-v))).item()
+        
+        # Create RGBA array
+        rgba = np.zeros((h, w, 4), dtype=np.uint8)
+        
+        # Set RGB channels with template as mask
+        for i in range(3):
+            rgba[:, :, i] = ((template_np>0).astype(np.float32) * rgb[i] * 255).astype(np.uint8)
+            
+        # Set alpha channel (template acts as alpha mask, modulated by visibility)
+        rgba[:, :, 3] = (template_np * visibility * 255).astype(np.uint8)
+        
+        # Find bounding box of non-transparent pixels
+        alpha_mask = rgba[:, :, 3] > 0
+        if not alpha_mask.any():
+            # If completely transparent, return minimal 1x1 image
+            return Image.fromarray(np.zeros((1, 1, 4), dtype=np.uint8), 'RGBA'), (0, 0, 1, 1)
+        
+        # Find bounds
+        rows = np.any(alpha_mask, axis=1)
+        cols = np.any(alpha_mask, axis=0)
+        top, bottom = np.where(rows)[0][[0, -1]]
+        left, right = np.where(cols)[0][[0, -1]]
+        
+        # Add 1 to bottom and right for inclusive bounds
+        bottom += 1
+        right += 1
+        
+        # Crop the image to content bounds
+        cropped_rgba = rgba[top:bottom, left:right]
+        cropped_image = Image.fromarray(cropped_rgba, 'RGBA')
+        
+        return cropped_image, (left, top, right, bottom)
+    
     def _template_to_pil(self, template: torch.Tensor, c: torch.Tensor, v: float) -> Image.Image:
         """Convert primitive template to PIL RGBA image with color and alpha."""
         # Convert to numpy
