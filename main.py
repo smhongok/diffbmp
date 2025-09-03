@@ -205,6 +205,7 @@ if use_fp16:
 else:
     bmp_tensor = bmp_tensor.to(dtype=torch.float32)
     
+
 H = preprocessor.final_height
 W = preprocessor.final_width
 
@@ -400,17 +401,53 @@ if sequential_config.get("enabled", False):
         theta_frame = frame_result['theta']
         c_frame = frame_result['c']
         
-        # Save individual frame if requested
-        export_config = sequential_config.get("export", {})
-        if export_config.get("export_frames", True):
-            frame_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}.png')
-            with torch.no_grad():
-                # Render frame directly using tile-based rendering
-                frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, sigma=0.0, is_final=True)
-                # Save rendered frame directly
-                frame_rendered_np = frame_rendered.detach().cpu().numpy()
-                frame_rendered_np = (frame_rendered_np * 255).astype(np.uint8)
-                Image.fromarray(frame_rendered_np).save(frame_path)
+        # Check if PSD export is requested
+        psd_export = config.get('postprocessing', {}).get('export_psd', False)
+        
+        if psd_export:
+            # Export PSD layers using util/psd_exporter.py
+            from util.psd_exporter import PSDExporter
+            
+            psd_path = output_path.replace('.png', '.psd')
+            exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound)
+            
+            # Get primitive templates (use original S, not blurred)
+            primitive_templates = renderer.S
+            if primitive_templates.dim() == 2:
+                primitive_templates = primitive_templates.unsqueeze(0)
+                
+            # Add each primitive as a layer (in reverse order for correct layering)
+            N = len(x)
+            for i in reversed(range(N)):
+                # Get template for this primitive
+                if primitive_templates.shape[0] > 1:
+                    template_idx = (N-i-1) % primitive_templates.shape[0]
+                    template = primitive_templates[template_idx]
+                else:
+                    template = primitive_templates[0]
+                    
+                # Add layer to PSD
+                exporter.add_layer_from_primitive(
+                    template, x[i].item(), y[i].item(), r[i].item(), 
+                    theta[i].item(), v[i].item(), c[i], 
+                    name=f"primitive_{i:03d}"
+                )
+                
+            # Export PSD file
+            exporter.export_psd(psd_path)
+            
+            # Also export individual layers for debugging
+            import os
+            layer_dir = os.path.splitext(psd_path)[0] + "_layers"
+            exporter.export_individual_layers(layer_dir)
+        
+        # Still render final PNG for preview/compatibility using tile-based rendering
+        frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, sigma=0.0, is_final=True)
+        # Save rendered frame directly
+        frame_rendered_np = frame_rendered.detach().cpu().numpy()
+        frame_rendered_np = (frame_rendered_np * 255).astype(np.uint8)
+        frame_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}.png')
+        Image.fromarray(frame_rendered_np).save(frame_path)
         
         # Store rendered frame for GIF/MP4 export
         frame_np = rendered_frame.cpu().numpy()
@@ -532,6 +569,48 @@ if not sequential_config.get("enabled", False):
     # Single image final rendering and export (original behavior)
     with torch.no_grad():
         white_bg = torch.ones((renderer.H, renderer.W, 3), device=renderer.device)
+        
+        # Check if PSD export is requested
+        psd_export = config.get('postprocessing', {}).get('export_psd', False)
+        
+        if psd_export:
+            # Export PSD layers using util/psd_exporter.py
+            from util.psd_exporter import PSDExporter
+            
+            psd_path = output_path.replace('.png', '.psd')
+            exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound)
+            
+            # Get primitive templates (use original S, not blurred)
+            primitive_templates = renderer.S
+            if primitive_templates.dim() == 2:
+                primitive_templates = primitive_templates.unsqueeze(0)
+                
+            # Add each primitive as a layer (in reverse order for correct layering)
+            N = len(x)
+            for i in reversed(range(N)):
+                # Get template for this primitive
+                if primitive_templates.shape[0] > 1:
+                    template_idx = (N-i-1) % primitive_templates.shape[0]
+                    template = primitive_templates[template_idx]
+                else:
+                    template = primitive_templates[0]
+                    
+                # Add layer to PSD
+                exporter.add_layer_from_primitive(
+                    template, x[i].item(), y[i].item(), r[i].item(), 
+                    theta[i].item(), v[i].item(), c[i], 
+                    name=f"primitive_{i:03d}"
+                )
+                
+            # Export PSD file
+            exporter.export_psd(psd_path)
+            
+            # Also export individual layers for debugging
+            import os
+            layer_dir = os.path.splitext(psd_path)[0] + "_layers"
+            exporter.export_individual_layers(layer_dir)
+        
+        # Still render final PNG for preview/compatibility
         rendered, output_alpha = renderer.render_from_params(x, y, r, theta, v, c,
                             return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
 
