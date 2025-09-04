@@ -4,6 +4,7 @@ from typing import List, Tuple, Optional
 from PIL import Image
 from psd_tools import PSDImage
 from psd_tools.api.layers import PixelLayer
+import time
 
 class PSDExporter:
     """Exports individual transformed primitives as PSD layers using psd-tools."""
@@ -20,183 +21,230 @@ class PSDExporter:
         self.export_width = int(canvas_width * scale_factor)
         self.export_height = int(canvas_height * scale_factor)
         
+        # Pre-compute coordinate grids for performance optimization
+        self._precompute_coordinate_grids()
+        
         # Create new PSD document with scaled dimensions
         self.psd = PSDImage.new('RGBA', (self.export_width, self.export_height), color=(0, 0, 0, 0))
         
-    def add_layer_from_primitive(self, primitive_template: torch.Tensor, 
-                               x: float, y: float, r: float, theta: float,
-                               v: float, c: torch.Tensor, name: str = None):
+        
+    def add_layers_batch_optimized(self, primitive_templates: torch.Tensor,
+                                  x_tensor: torch.Tensor, y_tensor: torch.Tensor, r_tensor: torch.Tensor,
+                                  theta_tensor: torch.Tensor, v_tensor: torch.Tensor, c_tensor: torch.Tensor,
+                                  reverse_order: bool = True):
         """
-        Add a layer by creating a PIL image from primitive template with transformations applied.
+        Add multiple layers using batched F.grid_sample for maximum efficiency.
+        Handles all data preparation internally for cleaner main.py code.
         
         Args:
-            primitive_template: (H, W) primitive template
-            x, y: Position
-            r: Scale
-            theta: Rotation
-            v: Visibility logit
-            c: (3,) RGB color logits
-            name: Layer name
+            primitive_templates: (p, H, W) or (H, W) primitive templates from renderer.S
+            x_tensor, y_tensor, r_tensor, theta_tensor: (N,) primitive parameter tensors
+            v_tensor: (N,) visibility logit tensor
+            c_tensor: (N, 3) RGB color logit tensor
+            reverse_order: Whether to reverse layer order for correct layering (default: True)
         """
-        layer_name = name or f"primitive_{len(self.psd)}"
+        N = len(x_tensor)
         
-        # Apply geometric transformations to template with scaling
-        transformed_template = self._apply_transformations(primitive_template, x, y, r, theta)
+        # Handle primitive templates preparation
+        if primitive_templates.dim() == 2:
+            primitive_templates = primitive_templates.unsqueeze(0)
+            
+        # Prepare data in reverse order for correct layering if requested
+        if reverse_order:
+            indices = torch.tensor(list(reversed(range(N))), device=x_tensor.device)
+            x_tensor = x_tensor[indices]
+            y_tensor = y_tensor[indices]
+            r_tensor = r_tensor[indices]
+            theta_tensor = theta_tensor[indices]
+            v_tensor = v_tensor[indices]
+            c_tensor = c_tensor[indices]
+            names = [f"primitive_{i:04d}" for i in indices.cpu().numpy()]
+        else:
+            names = [f"primitive_{i:04d}" for i in range(N)]
+            
+        print(f"Creating {N} layers using batched F.grid_sample...")
+        start_total = time.time()
         
-        # Convert transformed template to PIL Image with color and alpha
-        pil_image = self._template_to_pil(transformed_template, c, v)
+        # Step 1: Apply batched transformations to all primitives at once
+        print("📊 Step 1: Batched transformations...")
+        start_batch = time.time()
+        transformed_templates = self._apply_transformations_batch(
+            primitive_templates, x_tensor, y_tensor, r_tensor, theta_tensor
+        )
+        batch_time = time.time() - start_batch
+        print(f"   ⏱️  Batch transformations: {batch_time:.3f}s ({batch_time/N*1000:.2f}ms per primitive)")
         
-        # Create PixelLayer from PIL image
-        layer = PixelLayer.frompil(pil_image, self.psd, layer_name)
+        # Step 2: Batch PIL conversion and layer creation
+        print("📊 Step 2: Batch PIL conversion and layer creation...")
+        start_pil = time.time()
         
-        # Add layer to PSD
-        self.psd.append(layer)
+        # Batch convert all templates to numpy
+        start_numpy = time.time()
+        pil_images, bounds_list = self._batch_templates_to_pil_with_bounds(
+            transformed_templates, c_tensor, v_tensor
+        )
+        numpy_time = time.time() - start_numpy
+        print(f"      🔧 Batch numpy conversion: {numpy_time:.3f}s ({numpy_time/N*1000:.2f}ms per primitive)")
         
-    def add_layer_from_primitive_cropped(self, primitive_template: torch.Tensor, 
-                                       x: float, y: float, r: float, theta: float,
-                                       v: float, c: torch.Tensor, name: str = None):
-        """
-        Add a layer by creating a cropped PIL image from primitive template with transformations applied.
-        This reduces PSD file size by only including the actual content area of each layer.
+        # Create layers sequentially (this part is hard to parallelize due to PSD structure)
+        start_layers = time.time()
+        for i in range(N):
+            left, top, right, bottom = bounds_list[i]
+            layer = PixelLayer.frompil(pil_images[i], self.psd, names[i], top=top, left=left)
+            self.psd.append(layer)
+        layers_time = time.time() - start_layers
+        print(f"      🔧 Layer creation: {layers_time:.3f}s ({layers_time/N*1000:.2f}ms per primitive)")
         
-        Args:
-            primitive_template: (H, W) primitive template
-            x, y: Position
-            r: Scale
-            theta: Rotation
-            v: Visibility logit
-            c: (3,) RGB color logits
-            name: Layer name
-        """
-        layer_name = name or f"primitive_{len(self.psd)}"
+        pil_time = time.time() - start_pil
+        print(f"   ⏱️  Total PIL + layer creation: {pil_time:.3f}s ({pil_time/N*1000:.2f}ms per primitive)")
         
-        # Apply geometric transformations to template with scaling
-        transformed_template = self._apply_transformations(primitive_template, x, y, r, theta)
+        total_time = time.time() - start_total
+        print(f"✅ Total time: {total_time:.3f}s")
+        print(f"   🔄 Breakdown: Batch={batch_time/total_time*100:.1f}%, PIL+Layer={pil_time/total_time*100:.1f}%")
+
         
-        # Convert transformed template to cropped PIL Image with bounds
-        pil_image, bounds = self._template_to_pil_with_bounds(transformed_template, c, v)
-        left, top, right, bottom = bounds
-        
-        # Create PixelLayer from cropped PIL image with correct positioning
-        layer = PixelLayer.frompil(pil_image, self.psd, layer_name, top=top, left=left)
-        
-        # Add layer to PSD
-        self.psd.append(layer)
-        
-    def _apply_transformations(self, template: torch.Tensor, x: float, y: float, r: float, theta: float) -> torch.Tensor:
-        """Apply geometric transformations using exactly the same logic as _batched_soft_rasterize."""
+    def _apply_transformations_batch(self, primitive_templates: torch.Tensor,
+                                   x_tensor: torch.Tensor, y_tensor: torch.Tensor, r_tensor: torch.Tensor, 
+                                   theta_tensor: torch.Tensor) -> torch.Tensor:
+        """Apply geometric transformations to multiple primitives at once using batched F.grid_sample."""
         import torch.nn.functional as F
         
-        # Ensure template is on the correct device
-        template = template.to(self.device)
-        
-        # Create pixel coordinate grids with scaling applied
+        N = len(x_tensor)
         H, W = self.export_height, self.export_width
+        
+        # Handle template selection
+        if primitive_templates.dim() == 2:
+            # Single template for all primitives
+            templates = primitive_templates.unsqueeze(0).expand(N, -1, -1)
+        else:
+            # Multiple templates - cycle through them
+            p = primitive_templates.shape[0]
+            template_indices = torch.arange(N, device=self.device) % p
+            templates = primitive_templates[template_indices]
+        
+        # Apply scaling to parameters (tensors already on correct device)
+        x_tensors = x_tensor * self.scale_factor
+        y_tensors = y_tensor * self.scale_factor
+        r_tensors = r_tensor * self.scale_factor
+        theta_tensors = theta_tensor  # rotation unchanged
+        
+        # Expand parameters for batch processing (N, H, W)
+        x_exp = x_tensors.view(N, 1, 1).expand(N, H, W)
+        y_exp = y_tensors.view(N, 1, 1).expand(N, H, W)
+        r_exp = r_tensors.view(N, 1, 1).expand(N, H, W)
+        
+        # Expand coordinate grids for batch (N, H, W)
+        X_batch = self.X_exp.expand(N, H, W)
+        Y_batch = self.Y_exp.expand(N, H, W)
+        
+        # Normalize and rotate positions for all primitives
+        pos = torch.stack([X_batch - x_exp, Y_batch - y_exp], dim=1) / r_exp.unsqueeze(1)
+        
+        # Batch rotation matrices (N, 2, 2)
+        cos_t = torch.cos(theta_tensors)
+        sin_t = torch.sin(theta_tensors)
+        R_inv = torch.zeros(N, 2, 2, device=self.device)
+        R_inv[:, 0, 0] = cos_t; R_inv[:, 0, 1] = sin_t
+        R_inv[:, 1, 0] = -sin_t; R_inv[:, 1, 1] = cos_t
+        
+        uv = torch.einsum('bij,bjhw->bihw', R_inv, pos)
+        grid = uv.permute(0, 2, 3, 1)  # (N, H, W, 2)
+        
+        # Prepare templates for batched grid_sample (N, 1, template_H, template_W)
+        templates_4d = templates.unsqueeze(1)
+        
+        # Batched grid sample - this is the key optimization!
+        sampled = F.grid_sample(templates_4d, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
+        
+        # Return (N, H, W)
+        return sampled.squeeze(1)
+        
+    def _batch_templates_to_pil_with_bounds(self, templates: torch.Tensor, c_tensor: torch.Tensor, 
+                                          v_tensor: torch.Tensor) -> tuple[List[Image.Image], List[tuple[int, int, int, int]]]:
+        """
+        Batch convert multiple templates to PIL images with bounds using vectorized operations.
+        
+        Args:
+            templates: (N, H, W) transformed templates
+            c_tensor: (N, 3) RGB color tensor
+            v_tensor: (N,) visibility logit tensor
+            
+        Returns:
+            List of PIL Images and list of bounds tuples
+        """
+        N, H, W = templates.shape
+        
+        # Convert all templates to numpy at once
+        templates_np = templates.detach().cpu().numpy()  # (N, H, W)
+        
+        # Convert colors and visibility to numpy (already batched)
+        rgb_batch = torch.sigmoid(c_tensor).detach().cpu().numpy()  # (N, 3)
+        v_array = v_tensor.detach().cpu().numpy()  # (N,)
+        visibility_batch = self.alpha_upper_bound * (1 / (1 + np.exp(-v_array)))  # (N,)
+        
+        # Create batch RGBA array (N, H, W, 4)
+        rgba_batch = np.zeros((N, H, W, 4), dtype=np.uint8)
+        
+        # Vectorized RGB channel assignment
+        template_mask = templates_np > 0  # (N, H, W)
+        for i in range(3):
+            rgba_batch[:, :, :, i] = (template_mask * rgb_batch[:, i:i+1, None] * 255).astype(np.uint8)
+        
+        # Vectorized alpha channel assignment
+        rgba_batch[:, :, :, 3] = (templates_np * visibility_batch[:, None, None] * 255).astype(np.uint8)
+        
+        # Batch bounding box calculation
+        pil_images = []
+        bounds_list = []
+        
+        for i in range(N):
+            rgba = rgba_batch[i]
+            alpha_mask = rgba[:, :, 3] > 0
+            
+            if not alpha_mask.any():
+                # Completely transparent
+                pil_images.append(Image.fromarray(np.zeros((1, 1, 4), dtype=np.uint8), 'RGBA'))
+                bounds_list.append((0, 0, 1, 1))
+                continue
+            
+            # Find bounds
+            rows = np.any(alpha_mask, axis=1)
+            cols = np.any(alpha_mask, axis=0)
+            top, bottom = np.where(rows)[0][[0, -1]]
+            left, right = np.where(cols)[0][[0, -1]]
+            
+            # Add 1 to bottom and right for inclusive bounds
+            bottom += 1
+            right += 1
+            
+            # Crop and create PIL image
+            cropped_rgba = rgba[top:bottom, left:right]
+            pil_images.append(Image.fromarray(cropped_rgba, 'RGBA'))
+            bounds_list.append((left, top, right, bottom))
+        
+        return pil_images, bounds_list
+        
+    def _precompute_coordinate_grids(self):
+        """Pre-compute coordinate grids and expansions to avoid redundant calculations."""
+        H, W = self.export_height, self.export_width
+        
+        # Create pixel coordinate grids
         X, Y = torch.meshgrid(
             torch.arange(W, device=self.device, dtype=torch.float32),
             torch.arange(H, device=self.device, dtype=torch.float32),
             indexing='xy'
         )
-        X = X.unsqueeze(0)  # (1, H, W)
-        Y = Y.unsqueeze(0)  # (1, H, W)
         
-        # Convert single primitive parameters to batch format (B=1) with scaling applied
-        x_tensor = torch.tensor([x * self.scale_factor], device=self.device, dtype=torch.float32)
-        y_tensor = torch.tensor([y * self.scale_factor], device=self.device, dtype=torch.float32)
-        r_tensor = torch.tensor([r * self.scale_factor], device=self.device, dtype=torch.float32)
-        theta_tensor = torch.tensor([theta], device=self.device, dtype=torch.float32)  # rotation unchanged
+        # Store base grids
+        self.X = X.unsqueeze(0)  # (1, H, W)
+        self.Y = Y.unsqueeze(0)  # (1, H, W)
         
-        # Expand coordinates and parameters exactly like _batched_soft_rasterize
-        B = 1
-        X_exp = X.expand(B, H, W)
-        Y_exp = Y.expand(B, H, W)
-        x_exp = x_tensor.view(B, 1, 1).expand(B, H, W)
-        y_exp = y_tensor.view(B, 1, 1).expand(B, H, W)
-        r_exp = r_tensor.view(B, 1, 1).expand(B, H, W)
+        # Pre-compute expanded grids for B=1 (since we always process one primitive at a time)
+        self.X_exp = self.X.expand(1, H, W)
+        self.Y_exp = self.Y.expand(1, H, W)
         
-        # Normalize and rotate positions - EXACT same logic as _batched_soft_rasterize
-        pos = torch.stack([X_exp - x_exp, Y_exp - y_exp], dim=1) / r_exp.unsqueeze(1)
-        cos_t = torch.cos(theta_tensor)
-        sin_t = torch.sin(theta_tensor)
-        R_inv = torch.zeros(B, 2, 2, device=self.device)
-        R_inv[:, 0, 0] = cos_t; R_inv[:, 0, 1] = sin_t
-        R_inv[:, 1, 0] = -sin_t; R_inv[:, 1, 1] = cos_t
-        uv = torch.einsum('bij,bjhw->bihw', R_inv, pos)
-        grid = uv.permute(0, 2, 3, 1)  # (B, H, W, 2)
         
-        # Prepare template for grid_sample - single primitive template
-        bmp_exp = template.unsqueeze(0).unsqueeze(0).expand(B, 1, -1, -1).contiguous()
-        
-        # Sample masks via grid_sample - EXACT same as _batched_soft_rasterize
-        sampled = F.grid_sample(bmp_exp, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
-        
-        # Return single-channel mask
-        return sampled.squeeze(1).squeeze(0)  # (H, W)
-        
-    def _template_to_pil_with_bounds(self, template: torch.Tensor, c: torch.Tensor, v: float) -> tuple[Image.Image, tuple[int, int, int, int]]:
-        """Convert primitive template to PIL RGBA image with color and alpha, cropped to content bounds."""
-        # Convert to numpy
-        template_np = template.detach().cpu().numpy()
-        h, w = template_np.shape
-        
-        # Apply color (sigmoid activation)
-        rgb = torch.sigmoid(c).detach().cpu().numpy()
-        visibility = self.alpha_upper_bound * (1 / (1 + np.exp(-v))).item()
-        
-        # Create RGBA array
-        rgba = np.zeros((h, w, 4), dtype=np.uint8)
-        
-        # Set RGB channels with template as mask
-        for i in range(3):
-            rgba[:, :, i] = ((template_np>0).astype(np.float32) * rgb[i] * 255).astype(np.uint8)
-            
-        # Set alpha channel (template acts as alpha mask, modulated by visibility)
-        rgba[:, :, 3] = (template_np * visibility * 255).astype(np.uint8)
-        
-        # Find bounding box of non-transparent pixels
-        alpha_mask = rgba[:, :, 3] > 0
-        if not alpha_mask.any():
-            # If completely transparent, return minimal 1x1 image
-            return Image.fromarray(np.zeros((1, 1, 4), dtype=np.uint8), 'RGBA'), (0, 0, 1, 1)
-        
-        # Find bounds
-        rows = np.any(alpha_mask, axis=1)
-        cols = np.any(alpha_mask, axis=0)
-        top, bottom = np.where(rows)[0][[0, -1]]
-        left, right = np.where(cols)[0][[0, -1]]
-        
-        # Add 1 to bottom and right for inclusive bounds
-        bottom += 1
-        right += 1
-        
-        # Crop the image to content bounds
-        cropped_rgba = rgba[top:bottom, left:right]
-        cropped_image = Image.fromarray(cropped_rgba, 'RGBA')
-        
-        return cropped_image, (left, top, right, bottom)
     
-    def _template_to_pil(self, template: torch.Tensor, c: torch.Tensor, v: float) -> Image.Image:
-        """Convert primitive template to PIL RGBA image with color and alpha."""
-        # Convert to numpy
-        template_np = template.detach().cpu().numpy()
-        h, w = template_np.shape
-        
-        # Apply color (sigmoid activation)
-        rgb = torch.sigmoid(c).detach().cpu().numpy()
-        visibility = self.alpha_upper_bound * (1 / (1 + np.exp(-v))).item()
-        
-        # Create RGBA array
-        rgba = np.zeros((h, w, 4), dtype=np.uint8)
-        
-        # Set RGB channels with template as mask
-        for i in range(3):
-            rgba[:, :, i] = ((template_np>0).astype(np.float32) * rgb[i] * 255).astype(np.uint8)
-            
-        # Set alpha channel (template acts as alpha mask, modulated by visibility)
-        rgba[:, :, 3] = (template_np * visibility * 255).astype(np.uint8)
-        
-        # Convert to PIL Image
-        return Image.fromarray(rgba, 'RGBA')
         
     def export_psd(self, filepath: str):
         """Export as PSD file."""

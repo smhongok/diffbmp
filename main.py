@@ -405,35 +405,17 @@ if sequential_config.get("enabled", False):
         psd_export = config.get('postprocessing', {}).get('export_psd', False)
         
         if psd_export:
-            # Export PSD layers using util/psd_exporter.py
+            # Export PSD layers using util/psd_exporter.py with batched processing
             from util.psd_exporter import PSDExporter
             
             psd_path = output_path.replace('.png', '.psd')
             psd_scale_factor = config.get('postprocessing', {}).get('psd_scale_factor', 1.0)
             exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
             
-            # Get primitive templates (use original S, not blurred)
-            primitive_templates = renderer.S
-            if primitive_templates.dim() == 2:
-                primitive_templates = primitive_templates.unsqueeze(0)
-                
-            # Add each primitive as a layer (in reverse order for correct layering)
-            N = len(x)
-            print(f"Exporting {N} primitives to PSD...")
-            for i in tqdm(reversed(range(N)), total=N, desc="Creating PSD layers"):
-                # Get template for this primitive
-                if primitive_templates.shape[0] > 1:
-                    template_idx = (N-i-1) % primitive_templates.shape[0]
-                    template = primitive_templates[template_idx]
-                else:
-                    template = primitive_templates[0]
-                    
-                # Add cropped layer to PSD for smaller file size
-                exporter.add_layer_from_primitive_cropped(
-                    template, x[i].item(), y[i].item(), r[i].item(), 
-                    theta[i].item(), v[i].item(), c[i], 
-                    name=f"primitive_{i:03d}"
-                )
+            # Use batched processing - all data preparation handled internally
+            exporter.add_layers_batch_optimized(
+                renderer.S, x, y, r, theta, v, c
+            )
                 
             # Export PSD file
             exporter.export_psd(psd_path)
@@ -571,35 +553,17 @@ if not sequential_config.get("enabled", False):
         psd_export = config.get('postprocessing', {}).get('export_psd', False)
         
         if psd_export:
-            # Export PSD layers using util/psd_exporter.py
+            # Export PSD layers using util/psd_exporter.py with batched processing
             from util.psd_exporter import PSDExporter
             
             psd_path = output_path.replace('.png', '.psd')
             psd_scale_factor = config.get('postprocessing', {}).get('psd_scale_factor', 1.0)
             exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
             
-            # Get primitive templates (use original S, not blurred)
-            primitive_templates = renderer.S
-            if primitive_templates.dim() == 2:
-                primitive_templates = primitive_templates.unsqueeze(0)
-                
-            # Add each primitive as a layer (in reverse order for correct layering)
-            N = len(x)
-            print(f"Exporting {N} primitives to PSD...")
-            for i in tqdm(reversed(range(N)), total=N, desc="Creating PSD layers"):
-                # Get template for this primitive
-                if primitive_templates.shape[0] > 1:
-                    template_idx = (N-i-1) % primitive_templates.shape[0]
-                    template = primitive_templates[template_idx]
-                else:
-                    template = primitive_templates[0]
-                    
-                # Add cropped layer to PSD for smaller file size
-                exporter.add_layer_from_primitive_cropped(
-                    template, x[i].item(), y[i].item(), r[i].item(), 
-                    theta[i].item(), v[i].item(), c[i], 
-                    name=f"primitive_{i:03d}"
-                )
+            # Use batched processing - all data preparation handled internally
+            exporter.add_layers_batch_optimized(
+                renderer.S, x, y, r, theta, v, c
+            )
                 
             # Export PSD file
             exporter.export_psd(psd_path)
