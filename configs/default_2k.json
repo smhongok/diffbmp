@@ -1,6 +1,6 @@
 {
     "preprocessing": {
-        "final_width": [2040],
+        "final_width": [1020],
         "trim": false,
         "FM_halftone": false,
         "transform": "none",
@@ -31,7 +31,7 @@
     },
     "initialization": {
         "initializer": "structure_aware",
-        "N": [10000],
+        "N": [2000],
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
@@ -89,6 +89,8 @@
     "postprocessing": {
         "output_folder": "outputs/",
         "linewidth": 3.0,
-        "compute_psnr": true
+        "compute_psnr": true,
+        "export_psd": true,
+        "psd_scale_factor": 2.0
     }
 } 

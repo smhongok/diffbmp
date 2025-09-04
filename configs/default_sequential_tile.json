@@ -156,7 +156,9 @@
         "save_svg": false,
         "save_params": true,
         "save_intermediate": false,
-        "intermediate_interval": 10
+        "intermediate_interval": 10,
+        "export_psd": true,
+        "psd_scale_factor": 2.0
     },
     "logging": {
         "log_interval": 10,

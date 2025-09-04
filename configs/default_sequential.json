@@ -152,7 +152,9 @@
     "hires_export": false,
     "hires_scale_factor": 4.0,
     "compute_psnr": false,
-    "linewidth": 3.0
+    "linewidth": 3.0,
+    "export_psd": true,
+    "psd_scale_factor": 2.0
   },
   "seed": 42
 }
