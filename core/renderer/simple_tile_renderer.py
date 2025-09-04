@@ -25,19 +25,9 @@ try:
     from cuda_tile_rasterizer import TileRasterizer
     CUDA_AVAILABLE = True
     print("CUDA tile rasterizer loaded successfully!")
-    
-    # Try to import FP16 version
-    try:
-        from cuda_tile_rasterizer_fp16 import rasterize_tiles_fp16 as cuda_rasterize_tiles_fp16
-        CUDA_FP16_AVAILABLE = True
-        print("CUDA tile rasterizer FP16 loaded successfully!")
-    except ImportError as e:
-        CUDA_FP16_AVAILABLE = False 
-        print(f"CUDA tile rasterizer FP16 not available: {e}")
-        
+            
 except ImportError as e:
     CUDA_AVAILABLE = False
-    CUDA_FP16_AVAILABLE = False
     print(f"CUDA tile rasterizer not available, using PyTorch fallback: {e}")
 
 
@@ -343,7 +333,8 @@ class SimpleTileRenderer(VectorRenderer):
                     print(f"    🔧 Creating new TileRasterizer for optimization with {len(radii)} primitives...")
                     self.cuda_rasterizer = TileRasterizer(
                         self.H, self.W, self.tile_size, sigma, 
-                        self.alpha_upper_bound, 300, len(radii)
+                        self.alpha_upper_bound, 300, len(radii),
+                        use_fp16=self.use_fp16
                     )
 
             elif self.S_blurred is not None and not is_final:
@@ -354,7 +345,8 @@ class SimpleTileRenderer(VectorRenderer):
                     print(f"    🔧 Creating new TileRasterizer for optimization with {len(radii)} primitives...")
                     self.cuda_rasterizer = TileRasterizer(
                         self.H, self.W, self.tile_size, sigma, 
-                        self.alpha_upper_bound, 300, len(radii)
+                        self.alpha_upper_bound, 300, len(radii),
+                        use_fp16=self.use_fp16
                     )
 
             # Get primitive templates based on is_final flag
@@ -378,70 +370,51 @@ class SimpleTileRenderer(VectorRenderer):
                 print(f"    🔧 Creating new TileRasterizer for final rendering with {len(radii)} primitives...")
                 self.cuda_rasterizer = TileRasterizer(
                     self.H, self.W, self.tile_size, sigma, 
-                    self.alpha_upper_bound, 300, len(radii)
+                    self.alpha_upper_bound, 300, len(radii),
+                    use_fp16=self.use_fp16
                 )
 
 
             if DEBUG_MODE:
                 print(f"    🎯 Calling CUDA rasterizer with {len(radii)} primitives, {self.H}x{self.W} image...")
             
+
+            # Convert existing primitive_tile_masks to tile_primitive_mapping format
+            tile_primitive_mapping = self._convert_masks_to_mapping(
+                primitive_tile_masks, x_starts, x_ends, y_starts, y_ends
+            )
+            
+            if lr_conf is None:
+                lr_config_tensor = torch.tensor([
+                    0.1,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0
+                ], dtype=torch.float32, device=means2D.device)
+            else:
+                # Convert lr_conf dict to tensor
+                lr_config_tensor = torch.tensor([
+                    lr_conf.get('default', 0.1),
+                    lr_conf.get('gain_x', 1.0),
+                    lr_conf.get('gain_y', 1.0),
+                    lr_conf.get('gain_r', 1.0),
+                    lr_conf.get('gain_v', 1.0),
+                    lr_conf.get('gain_theta', 1.0),
+                    lr_conf.get('gain_c', 1.0)
+                ], dtype=torch.float16 if self.use_fp16 else torch.float32, device=means2D.device)
+                
             # Call CUDA rasterizer for all tiles at once
             # Use FP16 version if available and use_fp16 is True
-            if self.use_fp16 and CUDA_FP16_AVAILABLE:
-                # Convert inputs to FP16
-                # means2D_fp16 = means2D.half()
-                # radii_fp16 = radii.half()
-                # rotations_fp16 = rotations.half()
-                # opacities_fp16 = opacities.half()
-                # colors_fp16 = colors.half()
-                # primitive_templates_fp16 = primitive_templates.half()
-                
-                cuda_color, cuda_alpha = cuda_rasterize_tiles_fp16(
-                    means2D, radii, rotations, opacities, colors,
-                    primitive_templates, self.H, self.W, 
-                    self.tile_size, sigma
-                )
-                
-                # # Convert back to original dtype
-                # if means2D.dtype == torch.float32:
-                #     cuda_color = cuda_color.float()
-                #     cuda_alpha = cuda_alpha.float()
-            else:
-                # Use TileRasterizer class-based version (already created above)
-                
-                # Convert existing primitive_tile_masks to tile_primitive_mapping format
-                tile_primitive_mapping = self._convert_masks_to_mapping(
-                    primitive_tile_masks, x_starts, x_ends, y_starts, y_ends
-                )
-                
-                if lr_conf is None:
-                    lr_config_tensor = torch.tensor([
-                        0.1,
-                        1.0,
-                        1.0,
-                        1.0,
-                        1.0,
-                        1.0,
-                        1.0
-                    ], dtype=torch.float32, device=means2D.device)
-                else:
-                    # Convert lr_conf dict to tensor
-                    lr_config_tensor = torch.tensor([
-                        lr_conf.get('default', 0.1),
-                        lr_conf.get('gain_x', 1.0),
-                        lr_conf.get('gain_y', 1.0),
-                        lr_conf.get('gain_r', 1.0),
-                        lr_conf.get('gain_v', 1.0),
-                        lr_conf.get('gain_theta', 1.0),
-                        lr_conf.get('gain_c', 1.0)
-                    ], dtype=torch.float32, device=means2D.device)
-                         
-                cuda_color, cuda_alpha = self.cuda_rasterizer(
-                    means2D, radii, rotations, opacities, colors,
-                    primitive_templates, global_bmp_sel,
-                    lr_config_tensor, tile_primitive_mapping
-                )
-
+            # Use TileRasterizer class-based version (already created above)
+            cuda_color, cuda_alpha = self.cuda_rasterizer(
+                means2D, radii, rotations, opacities, colors,
+                primitive_templates, global_bmp_sel,
+                lr_config_tensor, tile_primitive_mapping
+            )
+            
             if DEBUG_MODE:
                 print("    ✅ CUDA rasterizer call completed!")
                 print(f"    📊 Output data ranges:")
@@ -709,24 +682,13 @@ class SimpleTileRenderer(VectorRenderer):
                     loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c, 
                             rendered_alpha = rendered_alpha,
                             loss_w_conf=opt_conf.get("loss_weights", None))
-                
-                # # Debug: Check if rendered tensor requires grad and has grad_fn
-                # if iteration % 10 == 0:
-                #     print(f"  Debug - rendered.requires_grad: {rendered.requires_grad}")
-                #     print(f"  Debug - rendered.grad_fn: {rendered.grad_fn}")
-                #     print(f"  Debug - x.requires_grad: {x.requires_grad}")
-                #     print(f"  Debug - loss.requires_grad: {loss.requires_grad}")
-                #     print(f"  Debug - loss.grad_fn: {loss.grad_fn}")
-
+                    
+                # Scale the loss and call backward
+                #scaler.scale(loss).backward()
+                #scaler.step(optimizer)
+                #scaler.update()
                 loss.backward()
-
                 optimizer.step()
-
-                # # Debug: Check gradients after backward
-                # if iteration % 10 == 0:
-                #     print(f"  Debug - x.grad: {x.grad.abs().mean().item() if x.grad is not None else 'None'}")
-                #     print(f"  Debug - y.grad: {y.grad.abs().mean().item() if y.grad is not None else 'None'}")
-                #     print(f"  Debug - r.grad: {r.grad.abs().mean().item() if r.grad is not None else 'None'}")
 
             else:
                 if is_no_bg_mode:
@@ -809,7 +771,7 @@ class SimpleTileRenderer(VectorRenderer):
                 print(f"      c: [{c.min():.4f}, {c.max():.4f}]")
             
             # Log progress
-            if iteration % 10 == 0 or iteration in save_image_intervals:
+            if iteration % 10 == 0 or iteration in save_image_intervals or iteration < 3:
                 print(f"Iteration {iteration}: Loss = {loss.item():.6f}")
                 
                 # Save intermediate images

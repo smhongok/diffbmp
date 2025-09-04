@@ -38,7 +38,7 @@ def gaussian_blur(input_tensor: torch.Tensor, sigma: float) -> torch.Tensor:
 
     # Build 1-D Gaussian kernel
     kernel_size = int(2 * round(3 * sigma) + 1)
-    ax = torch.arange(kernel_size, dtype=torch.float32, device=input_tensor.device) - kernel_size // 2
+    ax = torch.arange(kernel_size, dtype=input_tensor.dtype, device=input_tensor.device) - kernel_size // 2
     kernel1d = torch.exp(-0.5 * (ax / sigma) ** 2)
     kernel1d = kernel1d / kernel1d.sum()
 

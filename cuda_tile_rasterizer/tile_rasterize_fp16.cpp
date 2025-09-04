@@ -1,11 +1,617 @@
 #include <cuda_runtime.h>
-#include <cuda_fp16.h>
+#include <cuda.h>
 #include <torch/extension.h>
+#include <cuda_fp16.h>
+#include "tile_rasterize_fp16.h"
 #include "cuda_kernels/tile_forward_fp16.h"
 #include "cuda_kernels/tile_backward_fp16.h"
+#include "cuda_kernels/tile_common_fp16.h"
 
 #define DEBUG_CUDA_KERNELS_FP16 0
 
+// Global instance for Python binding
+std::shared_ptr<TileRasterizerFP16> global_tile_rasterizer_fp16 = nullptr;
+
+// TileRasterizerFP16 class implementation
+TileRasterizerFP16::TileRasterizerFP16(int image_h, int image_w, int tile_sz, __half sig, __half alpha_ub, int max_prims, int num_prims) 
+    : image_height(image_h), image_width(image_w), tile_size(tile_sz), sigma(sig), 
+      alpha_upper_bound(alpha_ub), max_prims_per_pixel(max_prims), num_primitives(num_prims),
+      memory_allocated(false) {
+
+    pixel_alphas = nullptr;
+    pixel_colors_r = nullptr;
+    pixel_colors_g = nullptr;
+    pixel_colors_b = nullptr;
+    pixel_T_values = nullptr;
+    pixel_prim_counts = nullptr;
+    sigma_inv = nullptr;
+    grad_sigma = nullptr;
+    d_tile_offsets = nullptr;
+    d_tile_indices = nullptr;
+    tile_offsets_size = 0;
+    tile_indices_size = 0;
+    
+    // Initialize gradient pointers to nullptr
+    out_color = nullptr;
+    out_alpha = nullptr;
+    grad_means2D = nullptr;
+    grad_radii = nullptr;
+    grad_rotations = nullptr;
+    grad_opacities = nullptr;
+    grad_colors = nullptr;
+    
+    allocateMemory();
+}
+
+TileRasterizerFP16::~TileRasterizerFP16() {
+    freeMemory();
+}
+
+void TileRasterizerFP16::allocateMemory() {
+    if (memory_allocated) return;
+    
+    int total_pixels = image_height * image_width;
+    int total_alpha_size = total_pixels * max_prims_per_pixel;
+    
+    cudaError_t err;
+    
+    err = cudaMalloc(&pixel_alphas, total_alpha_size * sizeof(__half));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate pixel_alphas: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    err = cudaMalloc(&pixel_colors_r, total_alpha_size * sizeof(__half));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate pixel_colors_r: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    err = cudaMalloc(&pixel_colors_g, total_alpha_size * sizeof(__half));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate pixel_colors_g: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    err = cudaMalloc(&pixel_colors_b, total_alpha_size * sizeof(__half));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate pixel_colors_b: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    err = cudaMalloc(&pixel_T_values, total_alpha_size * sizeof(__half));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate pixel_T_values: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    err = cudaMalloc(&pixel_prim_counts, total_pixels * sizeof(int));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate pixel_prim_counts: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    err = cudaMalloc(&sigma_inv, num_primitives * 4 * sizeof(__half));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate sigma_inv: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    err = cudaMalloc(&grad_sigma, num_primitives * 4 * sizeof(__half));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate grad_sigma: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    
+    // Allocate tile arrays for backward pass
+    int num_tiles = ((image_width + tile_size - 1) / tile_size) * ((image_height + tile_size - 1) / tile_size);
+    tile_offsets_size = num_tiles + 1;
+    tile_indices_size = num_tiles * num_primitives;  // Each tile can have all primitives
+    
+    // Allocate device arrays
+    err = cudaMalloc(&d_tile_offsets, tile_offsets_size * sizeof(int));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate d_tile_offsets: %s\n", cudaGetErrorString(err));        
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    
+    err = cudaMalloc(&d_tile_indices, tile_indices_size * sizeof(int));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate d_tile_indices: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+
+    err = cudaMalloc(&out_color, total_pixels * 3 * sizeof(__half));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate out_color: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    err = cudaMalloc(&out_alpha, total_pixels * sizeof(__half));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate out_alpha: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }    
+    err = cudaMalloc(&grad_means2D, num_primitives * 2 * sizeof(__half));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate grad_means2D: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    err = cudaMalloc(&grad_radii, num_primitives * sizeof(__half));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate grad_radii: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    err = cudaMalloc(&grad_rotations, num_primitives * sizeof(__half));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate grad_rotations: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    err = cudaMalloc(&grad_opacities, num_primitives * sizeof(__half));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate grad_opacities: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    err = cudaMalloc(&grad_colors, num_primitives * 3 * sizeof(__half));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate grad_colors: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
+    
+    // Initialize arrays to zero
+    cudaMemset(pixel_alphas, 0, total_alpha_size * sizeof(__half));
+    cudaMemset(pixel_colors_r, 0, total_alpha_size * sizeof(__half));
+    cudaMemset(pixel_colors_g, 0, total_alpha_size * sizeof(__half));
+    cudaMemset(pixel_colors_b, 0, total_alpha_size * sizeof(__half));
+    cudaMemset(pixel_T_values, 0, total_alpha_size * sizeof(__half));
+    cudaMemset(pixel_prim_counts, 0, total_pixels * sizeof(int));
+    cudaMemset(sigma_inv, 0, num_primitives * 4 * sizeof(__half));
+    cudaMemset(grad_sigma, 0, num_primitives * 4 * sizeof(__half));
+    
+    // Initialize tile arrays to zero
+    cudaMemset(d_tile_offsets, 0, tile_offsets_size * sizeof(int));
+    cudaMemset(d_tile_indices, 0, tile_indices_size * sizeof(int));
+    
+    printf("TileRasterizerFP16: Tile arrays initialized - offsets_size=%d, indices_size=%d\n", tile_offsets_size, tile_indices_size);
+    
+    // For forward pass, we need to initialize tile offsets properly
+    // Each tile should have all primitives initially
+    int* h_tile_offsets_init = new int[tile_offsets_size];
+    int* h_tile_indices_init = new int[tile_indices_size];
+    
+    // Initialize tile offsets: each tile gets all primitives
+    for (int i = 0; i < tile_offsets_size; i++) {
+        h_tile_offsets_init[i] = i * num_primitives;
+    }
+    
+    // Initialize tile indices: each tile gets primitives 0 to num_primitives-1
+    for (int tile = 0; tile < num_tiles; tile++) {
+        for (int prim = 0; prim < num_primitives; prim++) {
+            h_tile_indices_init[tile * num_primitives + prim] = prim;
+        }
+    }
+    
+    // Copy to device
+    cudaMemcpy(d_tile_offsets, h_tile_offsets_init, tile_offsets_size * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_tile_indices, h_tile_indices_init, tile_indices_size * sizeof(int), cudaMemcpyHostToDevice);
+    
+    printf("TileRasterizerFP16: Tile arrays populated - num_tiles=%d, num_primitives=%d\n", num_tiles, num_primitives);
+    
+    // Clean up temporary arrays
+    delete[] h_tile_offsets_init;
+    delete[] h_tile_indices_init;
+    
+    cudaMemset(out_color, 0, total_pixels * 3 * sizeof(__half));
+    cudaMemset(out_alpha, 0, total_pixels * sizeof(__half));
+    cudaMemset(grad_means2D, 0, num_primitives * 2 * sizeof(__half));
+    cudaMemset(grad_radii, 0, num_primitives * sizeof(__half));
+    cudaMemset(grad_rotations, 0, num_primitives * sizeof(__half));
+    cudaMemset(grad_opacities, 0, num_primitives * sizeof(__half));
+    cudaMemset(grad_colors, 0, num_primitives * 3 * sizeof(__half));
+    printf("Gradient tensors allocated: means2D=%d, radii=%d, rotations=%d, opacities=%d, colors=%d\n", num_primitives * 2, num_primitives, num_primitives, num_primitives, num_primitives * 3);    
+    
+    memory_allocated = true;
+    printf("TileRasterizerFP16 memory allocated successfully\n");
+}
+
+void TileRasterizerFP16::freeMemory() {
+    if (!memory_allocated) return;
+    
+    printf("TileRasterizerFP16: Freeing memory...\n");
+    
+    // Free memory with null checks
+    if (pixel_alphas) {
+        cudaFree(pixel_alphas);
+        pixel_alphas = nullptr;
+    }
+    if (pixel_colors_r) {
+        cudaFree(pixel_colors_r);
+        pixel_colors_r = nullptr;
+    }
+    if (pixel_colors_g) {
+        cudaFree(pixel_colors_g);
+        pixel_colors_g = nullptr;
+    }
+    if (pixel_colors_b) {
+        cudaFree(pixel_colors_b);
+        pixel_colors_b = nullptr;
+    }
+    if (pixel_T_values) {
+        cudaFree(pixel_T_values);
+        pixel_T_values = nullptr;
+    }
+    if (pixel_prim_counts) {
+        cudaFree(pixel_prim_counts);
+        pixel_prim_counts = nullptr;
+    }
+    if (sigma_inv) {
+        cudaFree(sigma_inv);
+        sigma_inv = nullptr;
+    }
+    if (grad_sigma) {
+        cudaFree(grad_sigma);
+        grad_sigma = nullptr;
+    }
+    
+    // Free tile arrays
+    if (d_tile_offsets) {
+        cudaFree(d_tile_offsets);
+        d_tile_offsets = nullptr;
+    }
+    if (d_tile_indices) {
+        cudaFree(d_tile_indices);
+        d_tile_indices = nullptr;
+    }
+
+    if (out_color) {
+        cudaFree(out_color);
+        out_color = nullptr;
+    }
+    if (out_alpha) {
+        cudaFree(out_alpha);
+        out_alpha = nullptr;
+    }
+    if (grad_means2D) {
+        cudaFree(grad_means2D);
+        grad_means2D = nullptr;
+    }
+    if (grad_radii) {
+        cudaFree(grad_radii);
+        grad_radii = nullptr;
+    }
+    if (grad_rotations) {
+        cudaFree(grad_rotations);
+        grad_rotations = nullptr;
+    }
+    if (grad_opacities) {
+        cudaFree(grad_opacities);
+        grad_opacities = nullptr;
+    }
+    if (grad_colors) {
+        cudaFree(grad_colors);
+        grad_colors = nullptr;
+    }
+    
+    // Reset tile array sizes
+    tile_offsets_size = 0;
+    tile_indices_size = 0;
+    
+    // Mark memory as not allocated
+    memory_allocated = false;
+    
+    printf("TileRasterizerFP16: Memory freed successfully\n");
+}
+
+std::tuple<torch::Tensor, torch::Tensor> TileRasterizerFP16::forward(
+    torch::Tensor means2D,
+    torch::Tensor radii,
+    torch::Tensor rotations,
+    torch::Tensor opacities,
+    torch::Tensor colors,
+    torch::Tensor primitive_templates,
+    torch::Tensor global_bmp_sel,
+    torch::Tensor tile_primitive_mapping) {
+    
+    // Check if memory is allocated
+    if (!memory_allocated) {
+        throw std::runtime_error("TileRasterizerFP16 memory not allocated");
+    }
+    
+    // Check for null pointers
+    if (!pixel_alphas || !pixel_colors_r || !pixel_colors_g || !pixel_colors_b || 
+        !pixel_T_values || !pixel_prim_counts || !sigma_inv || !grad_sigma) {
+        throw std::runtime_error("TileRasterizerFP16 has null pointers");
+    }
+    
+    const int num_primitives = radii.size(0);
+    
+    // Apply dynamic tile-primitive mapping if provided
+    if (tile_primitive_mapping.defined()) {
+        // Extract tile offsets and indices from mapping
+        // tile_primitive_mapping is a 1D tensor containing concatenated data
+        // Format: [tile_offsets_size, tile_indices_size, tile_offsets..., tile_indices...]
+        int tile_offsets_size_from_tensor = tile_primitive_mapping[0].item<int>();
+        int tile_indices_size_from_tensor = tile_primitive_mapping[1].item<int>();
+        
+        // Extract tile_offsets and tile_indices from the 1D tensor using narrow
+        auto tile_offsets = tile_primitive_mapping.narrow(0, 2, tile_offsets_size_from_tensor);
+        auto tile_indices = tile_primitive_mapping.narrow(0, 2 + tile_offsets_size_from_tensor, tile_indices_size_from_tensor);
+        
+        // Copy new tile mapping to device
+        cudaMemcpy(d_tile_offsets, tile_offsets.data_ptr<int>(), 
+                   tile_offsets_size_from_tensor * sizeof(int), cudaMemcpyDeviceToDevice);
+        cudaMemcpy(d_tile_indices, tile_indices.data_ptr<int>(), 
+                   tile_indices_size_from_tensor * sizeof(int), cudaMemcpyDeviceToDevice);
+        
+        // Update sizes
+        tile_offsets_size = tile_offsets_size_from_tensor;
+        tile_indices_size = tile_indices_size_from_tensor;
+
+#if DEBUG_CUDA_KERNELS_FP16
+        
+        printf("TileRasterizerFP16::forward: Applied dynamic tile mapping - offsets_size=%d, indices_size=%d\n", tile_offsets_size, tile_indices_size);
+        
+        // Detailed tile mapping validation
+        printf("TileRasterizerFP16::forward: Tile mapping validation:\n");
+        printf("  - Total tiles: %d\n", tile_offsets_size - 1);
+        printf("  - Total primitive indices: %d\n", tile_indices_size);
+        
+        // Print first few tile offsets for validation
+        printf("  - First 5 tile offsets: ");
+        for (int i = 0; i < std::min(5, tile_offsets_size); i++) {
+            printf("%d ", tile_offsets[i].item<int>());
+        }
+        printf("\n");
+        
+        // Print last few tile offsets for validation
+        if (tile_offsets_size > 5) {
+            printf("  - Last 5 tile offsets: ");
+            for (int i = std::max(0, tile_offsets_size - 5); i < tile_offsets_size; i++) {
+                printf("%d ", tile_offsets[i].item<int>());
+            }
+            printf("\n");
+        }
+        
+        // Print first few primitive indices for validation
+        printf("  - First 10 primitive indices: ");
+        for (int i = 0; i < std::min(10, tile_indices_size); i++) {
+            printf("%d ", tile_indices[i].item<int>());
+        }
+        printf("\n");
+        
+        // Calculate and print primitive distribution per tile
+        printf("  - Primitive distribution per tile:\n");
+        for (int tile_idx = 0; tile_idx < std::min(10, tile_offsets_size - 1); tile_idx++) {
+            int start_idx = tile_offsets[tile_idx].item<int>();
+            int end_idx = tile_offsets[tile_idx + 1].item<int>();
+            int num_prims = end_idx - start_idx;
+            printf("    Tile %d: %d primitives (indices %d-%d)\n", tile_idx, num_prims, start_idx, end_idx - 1);
+        }
+        
+        for (int tile_idx = tile_offsets_size - 4; tile_idx < tile_offsets_size - 1; tile_idx++) {
+            int start_idx = tile_offsets[tile_idx].item<int>();
+            int end_idx = tile_offsets[tile_idx + 1].item<int>();
+            int num_prims = end_idx - start_idx;
+            printf("    Tile %d: %d primitives (indices %d-%d)\n", tile_idx, num_prims, start_idx, end_idx - 1);
+        }
+        
+        printf("    ... (showing first 10 tiles with last 3 tiles only)\n");
+        
+        // Verify total primitive count matches
+        int total_mapped_prims = tile_offsets[tile_offsets_size - 1].item<int>();
+        printf("  - Total mapped primitives: %d (should match indices_size: %d)\n", total_mapped_prims, tile_indices_size);
+        
+        if (total_mapped_prims != tile_indices_size) {
+            printf("  ⚠️ WARNING: Total mapped primitives (%d) != indices_size (%d)\n", total_mapped_prims, tile_indices_size);
+        }
+        
+        printf("TileRasterizerFP16::forward: Tile mapping validation completed.\n");
+#endif
+    }
+    
+#if DEBUG_CUDA_KERNELS_FP16
+    printf("TileRasterizerFP16::forward: %d primitives, %dx%d image, tile_size=%d\n", num_primitives, image_width, image_height, tile_size);
+#endif
+    
+    // Create configuration structures
+    TileConfigFP16 tile_config(image_height, image_width, tile_size, sigma, alpha_upper_bound);
+    PrimitiveConfigFP16 prim_config(num_primitives, primitive_templates.size(0), 
+                               primitive_templates.size(1), primitive_templates.size(2), 
+                               max_prims_per_pixel);
+        
+    // Clear global memory arrays for this forward pass
+    int total_pixels = image_height * image_width;
+    int total_alpha_size = total_pixels * max_prims_per_pixel;
+    cudaMemset(pixel_alphas, 0, total_alpha_size * sizeof(__half));
+    cudaMemset(pixel_colors_r, 0, total_alpha_size * sizeof(__half));
+    cudaMemset(pixel_colors_g, 0, total_alpha_size * sizeof(__half));
+    cudaMemset(pixel_colors_b, 0, total_alpha_size * sizeof(__half));
+    cudaMemset(pixel_T_values, 0, total_alpha_size * sizeof(__half));
+    cudaMemset(pixel_prim_counts, 0, total_pixels * sizeof(int));
+    cudaMemset(sigma_inv, 0, num_primitives * 4 * sizeof(__half));
+    cudaMemset(grad_sigma, 0, num_primitives * 4 * sizeof(__half));
+
+    cudaMemset(out_color, 0, total_pixels * 3 * sizeof(__half));
+    cudaMemset(out_alpha, 0, total_pixels * sizeof(__half));
+    
+    // Launch CUDA forward kernel
+    CudaRasterizeTilesForwardKernelFP16(
+        InputTensorsFP16(
+            reinterpret_cast<const __half*>(means2D.data_ptr()),
+            reinterpret_cast<const __half*>(radii.data_ptr()),
+            reinterpret_cast<const __half*>(rotations.data_ptr()),
+            reinterpret_cast<const __half*>(opacities.data_ptr()),
+            reinterpret_cast<const __half*>(colors.data_ptr()),
+            reinterpret_cast<const __half*>(primitive_templates.data_ptr()),
+            global_bmp_sel.data_ptr<int>()
+        ),
+        OutputTensorsFP16(
+            out_color,
+            out_alpha,
+            grad_means2D,
+            grad_radii,
+            grad_rotations,
+            grad_opacities,
+            grad_colors
+        ),
+        GlobalBuffersFP16(
+            pixel_alphas, pixel_colors_r, pixel_colors_g, pixel_colors_b, 
+            pixel_T_values, pixel_prim_counts, sigma_inv, grad_sigma,
+            d_tile_offsets, d_tile_indices, tile_offsets_size, tile_indices_size
+        ),
+        tile_config,
+        prim_config
+    );
+    
+    // Create CUDA tensors directly (no CPU copy needed)
+    auto out_color_tensor = torch::zeros({image_height, image_width, 3}, torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCUDA));
+    auto out_alpha_tensor = torch::zeros({image_height, image_width}, torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCUDA));
+    
+    // Copy from GPU memory to CUDA tensors
+    cudaError_t err;
+    err = cudaMemcpy(out_color_tensor.data_ptr<at::Half>(), out_color, 
+                     total_pixels * 3 * sizeof(__half), cudaMemcpyDeviceToDevice);
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to copy out_color to CUDA tensor: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory copy failed");
+    }
+    
+    err = cudaMemcpy(out_alpha_tensor.data_ptr<at::Half>(), out_alpha, 
+                     total_pixels * sizeof(__half), cudaMemcpyDeviceToDevice);
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to copy out_alpha to CUDA tensor: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory copy failed");
+    }
+    
+#if DEBUG_CUDA_KERNELS_FP16
+    printf("TileRasterizerFP16::forward: CUDA tensors created successfully\n");
+#endif
+    
+    return std::make_tuple(out_color_tensor, out_alpha_tensor);
+}
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> TileRasterizerFP16::backward(
+    torch::Tensor grad_out_color,
+    torch::Tensor grad_out_alpha,
+    torch::Tensor means2D,
+    torch::Tensor radii,
+    torch::Tensor rotations,
+    torch::Tensor opacities,
+    torch::Tensor colors,
+    torch::Tensor primitive_templates,
+    torch::Tensor global_bmp_sel,
+    torch::Tensor lr_config) {
+    
+    // Check if memory is allocated
+    if (!memory_allocated) {
+        throw std::runtime_error("TileRasterizerFP16 memory not allocated");
+    }
+    
+    // Check for null pointers
+    if (!pixel_alphas || !pixel_colors_r || !pixel_colors_g || !pixel_colors_b || 
+        !pixel_T_values || !pixel_prim_counts || !sigma_inv || !grad_sigma) {
+        throw std::runtime_error("TileRasterizerFP16 has null pointers");
+    }
+    
+    const int num_primitives = radii.size(0);
+    
+    // Create configuration structures
+    TileConfigFP16 tile_config(image_height, image_width, tile_size, sigma, alpha_upper_bound);
+    PrimitiveConfigFP16 prim_config(num_primitives, primitive_templates.size(0), 
+                               primitive_templates.size(1), primitive_templates.size(2), 
+                               max_prims_per_pixel);
+
+    cudaMemset(grad_means2D, 0,  num_primitives* 2 * sizeof(__half));
+    cudaMemset(grad_radii, 0,  num_primitives * sizeof(__half));
+    cudaMemset(grad_rotations, 0,  num_primitives * sizeof(__half));
+    cudaMemset(grad_opacities, 0,  num_primitives * sizeof(__half));
+    cudaMemset(grad_colors, 0,  num_primitives * 3 * sizeof(__half));
+    
+    // Launch CUDA backward kernel using the stored global memory
+    CudaRasterizeTilesBackwardKernelFP16(
+        reinterpret_cast<const __half*>(grad_out_color.data_ptr()),
+        reinterpret_cast<const __half*>(grad_out_alpha.data_ptr()),
+        InputTensorsFP16(
+            reinterpret_cast<const __half*>(means2D.data_ptr()),
+            reinterpret_cast<const __half*>(radii.data_ptr()),
+            reinterpret_cast<const __half*>(rotations.data_ptr()),
+            reinterpret_cast<const __half*>(opacities.data_ptr()),
+            reinterpret_cast<const __half*>(colors.data_ptr()),
+            reinterpret_cast<const __half*>(primitive_templates.data_ptr()),
+            global_bmp_sel.data_ptr<int>()
+        ),
+        OutputTensorsFP16(
+            out_color,
+            out_alpha,
+            grad_means2D,
+            grad_radii,
+            grad_rotations,
+            grad_opacities,
+            grad_colors
+        ),
+        GlobalBuffersFP16(
+            pixel_alphas, pixel_colors_r, pixel_colors_g, pixel_colors_b, 
+            pixel_T_values, pixel_prim_counts, sigma_inv, grad_sigma,
+            d_tile_offsets, d_tile_indices, tile_offsets_size, tile_indices_size
+        ),
+        tile_config,
+        prim_config,
+        LearningRateConfigFP16(
+            __float2half(lr_config[0].item<float>()), // default_lr
+            __float2half(lr_config[1].item<float>()), // gain_x
+            __float2half(lr_config[2].item<float>()), // gain_y
+            __float2half(lr_config[3].item<float>()), // gain_r
+            __float2half(lr_config[4].item<float>()), // gain_v
+            __float2half(lr_config[5].item<float>()), // gain_theta
+            __float2half(lr_config[6].item<float>())  // gain_c
+        )
+    );
+    
+    // Create tensors from CPU memory
+    // Create CUDA tensors directly (no CPU copy needed)
+    auto grad_means2D_tensor = torch::zeros({num_primitives, 2}, torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCUDA));
+    auto grad_radii_tensor = torch::zeros({num_primitives}, torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCUDA));
+    auto grad_rotations_tensor = torch::zeros({num_primitives}, torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCUDA));
+    auto grad_opacities_tensor = torch::zeros({num_primitives}, torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCUDA));
+    auto grad_colors_tensor = torch::zeros({num_primitives, 3}, torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCUDA));
+
+    // Copy from GPU memory to CUDA tensors
+    cudaError_t err;
+    err = cudaMemcpy(grad_means2D_tensor.data_ptr<at::Half>(), grad_means2D, 
+                     num_primitives * 2 * sizeof(__half), cudaMemcpyDeviceToDevice);
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to copy grad_means2D to CUDA tensor: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory copy failed");
+    }
+    
+    err = cudaMemcpy(grad_radii_tensor.data_ptr<at::Half>(), grad_radii, 
+                     num_primitives * sizeof(__half), cudaMemcpyDeviceToDevice);
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to copy grad_radii to CUDA tensor: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory copy failed");
+    }
+    
+    err = cudaMemcpy(grad_rotations_tensor.data_ptr<at::Half>(), grad_rotations, 
+                     num_primitives * sizeof(__half), cudaMemcpyDeviceToDevice);
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to copy grad_rotations to CUDA tensor: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory copy failed");
+    }
+    
+    err = cudaMemcpy(grad_opacities_tensor.data_ptr<at::Half>(), grad_opacities, 
+                     num_primitives * sizeof(__half), cudaMemcpyDeviceToDevice);
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to copy grad_opacities to CUDA tensor: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory copy failed");
+    }
+    
+    err = cudaMemcpy(grad_colors_tensor.data_ptr<at::Half>(), grad_colors, 
+                     num_primitives * 3 * sizeof(__half), cudaMemcpyDeviceToDevice);
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to copy grad_colors to CUDA tensor: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory copy failed");
+    }
+
+#if DEBUG_CUDA_KERNELS_FP16
+    printf("TileRasterizerFP16::backward: Tensors created successfully\n");
+#endif
+    
+    return std::make_tuple(grad_means2D_tensor, grad_radii_tensor, grad_rotations_tensor, grad_opacities_tensor, grad_colors_tensor);
+}
+
+// Wrapper functions for backward compatibility
 std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForwardFP16(
     torch::Tensor means2D,
     torch::Tensor radii,
@@ -13,102 +619,44 @@ std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForwardFP16(
     torch::Tensor opacities,
     torch::Tensor colors,
     torch::Tensor primitive_templates,
+    torch::Tensor global_bmp_sel,
+    torch::Tensor tile_primitive_mapping,
     int image_height,
     int image_width,
     int tile_size,
     float sigma) {
     
-    const int num_primitives = means2D.size(0);
-    const int num_tiles_x = (image_width + tile_size - 1) / tile_size;
-    const int num_tiles_y = (image_height + tile_size - 1) / tile_size;
-    const int total_tiles = num_tiles_x * num_tiles_y;
+    const int num_primitives = radii.size(0);
     
+    // Create configuration structures
+    TileConfigFP16 tile_config(image_height, image_width, tile_size, __float2half(sigma), __float2half(1.0f));
+    PrimitiveConfigFP16 prim_config(num_primitives, primitive_templates.size(0), 
+                               primitive_templates.size(1), primitive_templates.size(2), 500);
+
     // Debug: Print input tensor info
 #if DEBUG_CUDA_KERNELS_FP16
     printf("C++ Wrapper FP16: num_primitives=%d, image_size=%dx%d, tile_size=%d, total_tiles=%d\n",
-           num_primitives, image_width, image_height, tile_size, total_tiles);
-    printf("C++ Wrapper FP16: means2D shape=%s, primitive_templates shape=%s\n",
-           means2D.sizes().vec().data(), primitive_templates.sizes().vec().data());
+           num_primitives, image_width, image_height, tile_size, tile_config.total_tiles);
 #endif
-    
-    // Create output tensors in FP16
-    auto options = torch::TensorOptions().dtype(torch::kFloat16).device(means2D.device());
-    torch::Tensor out_color = torch::zeros({image_height, image_width, 3}, options);
-    torch::Tensor out_alpha = torch::zeros({image_height, image_width}, options);
-    
-    // Launch CUDA kernel with alpha_upper_bound=0.5 (match PyTorch default)
+    // Create or reuse global rasterizer instance
+    if (!global_tile_rasterizer_fp16 || 
+        global_tile_rasterizer_fp16->image_height != image_height ||
+        global_tile_rasterizer_fp16->image_width != image_width ||
+        global_tile_rasterizer_fp16->tile_size != tile_size ||
+        global_tile_rasterizer_fp16->num_primitives != num_primitives) {
+        
 #if DEBUG_CUDA_KERNELS_FP16
-    printf("C++ Wrapper FP16: Launching CUDA kernel...\n");
+        printf("Creating new TileRasterizerFP16: %dx%d, tile_size=%d, num_prims=%d\n", image_width, image_height, tile_size, num_primitives);
 #endif
-    // Allocate global memory for transmit_over compositing
-    int max_prims_per_pixel = 256;  // Maximum primitives per pixel
-    int total_pixels = image_height * image_width;
-    int total_alpha_size = total_pixels * max_prims_per_pixel;
-    int total_color_size = total_pixels * max_prims_per_pixel;
-    
-    __half* pixel_alphas;
-    __half* pixel_colors_r;
-    __half* pixel_colors_g;
-    __half* pixel_colors_b;
-    int* pixel_prim_counts;
-    
-    cudaMalloc(&pixel_alphas, total_alpha_size * sizeof(__half));
-    cudaMalloc(&pixel_colors_r, total_color_size * sizeof(__half));
-    cudaMalloc(&pixel_colors_g, total_color_size * sizeof(__half));
-    cudaMalloc(&pixel_colors_b, total_color_size * sizeof(__half));
-    cudaMalloc(&pixel_prim_counts, total_pixels * sizeof(int));
-    
-    // Initialize arrays to zero
-    cudaMemset(pixel_alphas, 0, total_alpha_size * sizeof(__half));
-    cudaMemset(pixel_colors_r, 0, total_color_size * sizeof(__half));
-    cudaMemset(pixel_colors_g, 0, total_color_size * sizeof(__half));
-    cudaMemset(pixel_colors_b, 0, total_color_size * sizeof(__half));
-    cudaMemset(pixel_prim_counts, 0, total_pixels * sizeof(int));
-    
-    CudaRasterizeTilesForwardKernelFP16(
-        reinterpret_cast<const __half*>(means2D.data_ptr()),
-        reinterpret_cast<const __half*>(radii.data_ptr()),
-        reinterpret_cast<const __half*>(rotations.data_ptr()),
-        reinterpret_cast<const __half*>(opacities.data_ptr()),
-        reinterpret_cast<const __half*>(colors.data_ptr()),
-        reinterpret_cast<const __half*>(primitive_templates.data_ptr()),
-        reinterpret_cast<__half*>(out_color.data_ptr()),
-        reinterpret_cast<__half*>(out_alpha.data_ptr()),
-        // Global memory arrays for transmit_over compositing
-        pixel_alphas,      // [image_height * image_width * max_prims_per_pixel]
-        pixel_colors_r,    // [image_height * image_width * max_prims_per_pixel]
-        pixel_colors_g,    // [image_height * image_width * max_prims_per_pixel]
-        pixel_colors_b,    // [image_height * image_width * max_prims_per_pixel]
-        pixel_prim_counts, // [image_height * image_width]
-        max_prims_per_pixel,
-        num_primitives,
-        primitive_templates.size(0), // num_templates
-        primitive_templates.size(1), // template_height
-        primitive_templates.size(2), // template_width
-        image_height,
-        image_width,
-        tile_size,
-        __float2half(sigma),
-        __float2half(0.5f), // alpha_upper_bound (match PyTorch default)
-        total_tiles
-    );
-    
-    // Free allocated memory
-    cudaFree(pixel_alphas);
-    cudaFree(pixel_colors_r);
-    cudaFree(pixel_colors_g);
-    cudaFree(pixel_colors_b);
-    cudaFree(pixel_prim_counts);
+        
+        global_tile_rasterizer_fp16 = std::make_shared<TileRasterizerFP16>(image_height, image_width, tile_size, __float2half(sigma), __float2half(1.0f), 500, num_primitives);
+        
 #if DEBUG_CUDA_KERNELS_FP16
-    printf("C++ Wrapper FP16: CUDA kernel completed\n");
-
-    // Debug: Print output tensor info
-    printf("C++ Wrapper FP16: Output color range=[%.4f,%.4f], alpha range=[%.4f,%.4f]\n",
-           out_color.min().item<float>(), out_color.max().item<float>(),
-           out_alpha.min().item<float>(), out_alpha.max().item<float>());
+        printf("TileRasterizerFP16 created successfully\n");
 #endif
+    }
     
-    return std::make_tuple(out_color, out_alpha);
+    return global_tile_rasterizer_fp16->forward(means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, tile_primitive_mapping);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> CudaRasterizeTilesBackwardFP16(
@@ -120,47 +668,18 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     torch::Tensor opacities,
     torch::Tensor colors,
     torch::Tensor primitive_templates,
+    torch::Tensor global_bmp_sel,  // [num_primitives] - template selection indices
+    torch::Tensor lr_config_tensor,
     int image_height,
     int image_width,
     int tile_size,
     float sigma) {
     
-    const int num_primitives = means2D.size(0);
-    const int total_tiles = ((image_width + tile_size - 1) / tile_size) * 
-                           ((image_height + tile_size - 1) / tile_size);
+    // Use the same global rasterizer instance that was used in forward pass
+    if (!global_tile_rasterizer_fp16) {
+        throw std::runtime_error("Backward pass called without forward pass");
+    }
     
-    // Create gradient tensors
-    auto options = torch::TensorOptions().dtype(torch::kFloat16).device(means2D.device());
-    torch::Tensor grad_means2D = torch::zeros_like(means2D);
-    torch::Tensor grad_radii = torch::zeros_like(radii);
-    torch::Tensor grad_rotations = torch::zeros_like(rotations);
-    torch::Tensor grad_opacities = torch::zeros_like(opacities);
-    torch::Tensor grad_colors = torch::zeros_like(colors);
-    
-    // Launch CUDA backward kernel
-    CudaRasterizeTilesBackwardKernelFP16(
-        reinterpret_cast<const __half*>(grad_out_color.data_ptr()),
-        reinterpret_cast<const __half*>(grad_out_alpha.data_ptr()),
-        reinterpret_cast<const __half*>(means2D.data_ptr()),
-        reinterpret_cast<const __half*>(radii.data_ptr()),
-        reinterpret_cast<const __half*>(rotations.data_ptr()),
-        reinterpret_cast<const __half*>(opacities.data_ptr()),
-        reinterpret_cast<const __half*>(colors.data_ptr()),
-        reinterpret_cast<const __half*>(primitive_templates.data_ptr()),
-        reinterpret_cast<__half*>(grad_means2D.data_ptr()),
-        reinterpret_cast<__half*>(grad_radii.data_ptr()),
-        reinterpret_cast<__half*>(grad_rotations.data_ptr()),
-        reinterpret_cast<__half*>(grad_opacities.data_ptr()),
-        reinterpret_cast<__half*>(grad_colors.data_ptr()),
-        num_primitives,
-        primitive_templates.size(1), // template_height
-        primitive_templates.size(2), // template_width
-        image_height,
-        image_width,
-        tile_size,
-        __float2half(sigma),
-        total_tiles
-    );
-    
-    return std::make_tuple(grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors);
+    return global_tile_rasterizer_fp16->backward(grad_out_color, grad_out_alpha, means2D, radii, rotations, 
+                                           opacities, colors, primitive_templates, global_bmp_sel, lr_config_tensor);
 }

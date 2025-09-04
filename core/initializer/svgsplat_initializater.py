@@ -145,26 +145,24 @@ class StructureAwareInitializer(BaseInitializer):
         # This preserves the natural ordering where coarser level points come first
 
         # -------------------- Convert to tensors -------------------- #
-        x = torch.tensor(adjusted_pts[:, 0], dtype=torch.float32,
-                         device=device, requires_grad=True)
-        y = torch.tensor(adjusted_pts[:, 1], dtype=torch.float32,
-                         device=device, requires_grad=True)
-
-        r = torch.tensor(r_np, dtype=torch.float32,
-                         device=device, requires_grad=True)
+        # Leave FP32 even if renderer is in FP16 mode. Parse in cuda
+        #dtype = torch.float16 if renderer and hasattr(renderer, 'use_fp16') and renderer.use_fp16 else torch.float32
+        dtype = torch.float32
+        
+        x = torch.tensor(adjusted_pts[:, 0], dtype=dtype, device=device, requires_grad=True)
+        y = torch.tensor(adjusted_pts[:, 1], dtype=dtype, device=device, requires_grad=True)
+        r = torch.tensor(r_np, dtype=dtype, device=device, requires_grad=True)
 
         # -------------------- Initialize opacity v_i = v_0 -------- #
-        v = torch.full((num_points,), -2.0, device=device)
+        v = torch.full((num_points,), -2.0, dtype=dtype, device=device).requires_grad_(True)
         
         # -------------------- Initialize opacity (layer consistent) -------- #
         #rank = torch.linspace(0.0, 1.0, steps=num_points, device=device)     # 0(bottom)→1(top)
         #v = (self.v_init_bias - 0.5 + self.v_init_slope * rank).clone().detach()
         #v += torch.empty_like(v).normal_(mean=0.0, std=0.05)
-        v.requires_grad_(True)
 
-        theta = torch.rand(num_points, device=device, requires_grad=True) * 2 * np.pi
-        c = torch.tensor(c_init, dtype=torch.float32,
-                         device=device, requires_grad=True)
+        theta = torch.rand(num_points, dtype=dtype, device=device, requires_grad=True) * 2 * np.pi
+        c = torch.tensor(c_init, dtype=dtype, device=device, requires_grad=True)
         print("len(x): ", len(x))
         
         end_time = time.time()

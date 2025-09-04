@@ -568,10 +568,15 @@ if not sequential_config.get("enabled", False):
             # Export PSD file
             exporter.export_psd(psd_path)
         
-        # Still render final PNG for preview/compatibility
-        rendered, output_alpha = renderer.render_from_params(x, y, r, theta, v, c,
-                            return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
-
+        # Convert parameters to FP16 for final rendering if using FP16 renderer
+        if renderer.use_fp16:
+            from torch.amp import autocast
+            with autocast('cuda'):
+                rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
+        else:
+            # Still render final PNG for preview/compatibility
+            rendered, output_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
+                
         # For alpha loss calculation, we need to generate masks if background doesn't exist
         if not exist_bg:
             # TODO: 대협, 이제 cached_masks가 없어졌으니 코드 주석처리 할게. 다른방식으로 살리던지 해야 할 듯 
