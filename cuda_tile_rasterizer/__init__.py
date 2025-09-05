@@ -271,5 +271,31 @@ def rasterize_tiles(means2D, radii, rotations, opacities, colors,
 #         means2D, radii, rotations, opacities, colors, primitive_templates,
 #         image_height, image_width, tile_size, sigma)
 
+def compute_per_pixel_gradients(means2D, radii, rotations, opacities, colors, 
+                               primitive_templates, global_bmp_sel, target_image, pixels_per_tile):
+    """
+    Compute per-pixel gradient magnitudes for primitives.
+    
+    Args:
+        means2D: (N, 2) tensor of primitive centers
+        radii: (N,) tensor of primitive radii
+        rotations: (N,) tensor of primitive rotations
+        opacities: (N,) tensor of primitive opacities (logits)
+        colors: (N, 3) tensor of primitive colors
+        primitive_templates: (num_templates, H, W) tensor of primitive templates
+        global_bmp_sel: (N,) tensor of template selection indices
+        target_image: (H, W, 3) target image for gradient computation
+        pixels_per_tile: number of pixels to sample per tile
+        
+    Returns:
+        gradient_magnitudes: (H, W) tensor of per-pixel gradient magnitudes
+    """
+    if not CUDA_AVAILABLE:
+        raise RuntimeError("CUDA not available")
+    return _C.compute_per_pixel_gradients(
+        means2D, radii, rotations, opacities, colors,
+        primitive_templates, global_bmp_sel, target_image, pixels_per_tile
+    )
+
 # __all__ = ['rasterize_tiles', 'rasterize_tiles_fp16', 'CUDA_AVAILABLE', 'CUDA_FP16_AVAILABLE']
-__all__ = ['rasterize_tiles', 'TileRasterizer', 'TileRasterizerFunction', 'CudaTileRasterizeFunction', 'CUDA_AVAILABLE']
+__all__ = ['rasterize_tiles', 'TileRasterizer', 'TileRasterizerFunction', 'CudaTileRasterizeFunction', 'compute_per_pixel_gradients', 'CUDA_AVAILABLE']
