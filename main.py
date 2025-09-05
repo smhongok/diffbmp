@@ -573,20 +573,20 @@ if not sequential_config.get("enabled", False):
             from torch.amp import autocast
             with autocast('cuda'):
                 rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
+                
+                # Save rendered image directly from rendered tensor 
+                rendered_np = rendered.detach().cpu().numpy()
+                rendered_np = (rendered_np * 255).astype(np.uint8)
+                Image.fromarray(rendered_np).save(output_path)
+
         else:
             # Still render final PNG for preview/compatibility
             rendered, output_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
-                
-        # For alpha loss calculation, we need to generate masks if background doesn't exist
-        if not exist_bg:
-            # TODO: 대협, 이제 cached_masks가 없어졌으니 코드 주석처리 할게. 다른방식으로 살리던지 해야 할 듯 
-            #alpha_loss = (cached_masks * target_binary_mask.unsqueeze(0)).sum(dim=0).mean()
-            print("TODO: alpha loss calculation")
 
-        # Save rendered image directly from rendered tensor
-        rendered_np = rendered.detach().cpu().numpy()
-        rendered_np = (rendered_np * 255).astype(np.uint8)
-        Image.fromarray(rendered_np).save(output_path)
+            # Save rendered image directly from rendered tensor 
+            rendered_np = rendered.detach().cpu().numpy()
+            rendered_np = (rendered_np * 255).astype(np.uint8)
+            Image.fromarray(rendered_np).save(output_path)
 
         if config['postprocessing'].get('export_mp4', False):
             video_path = os.path.join(output_dir, f'output_{timestamp}.mp4')

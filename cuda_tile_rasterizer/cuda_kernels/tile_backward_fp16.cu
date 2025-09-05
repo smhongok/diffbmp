@@ -95,7 +95,7 @@ __device__ inline void backward_over_one_pixel_fp16(
             const __half ndx = __hmul(dx, inv_r);
             const __half ndy = __hmul(dy, inv_r);
             const __half u =  __hadd(__hmul(c, ndx), __hmul(s, ndy));
-            const __half v = __hsub(__hmul(__hneg(s), ndx), __hmul(c, ndy));
+            const __half v = __hadd(__hmul(__hneg(s), ndx), __hmul(c, ndy));
             const __half tex_x = __hmul(__hmul(__hadd(u, __float2half(1.0f)), __float2half(0.5f)), __float2half(prim_config.template_width  - 1));
             const __half tex_y = __hmul(__hmul(__hadd(v, __float2half(1.0f)), __float2half(0.5f)), __float2half(prim_config.template_height - 1));
 
@@ -162,7 +162,7 @@ __device__ inline void backward_over_one_pixel_fp16(
         const __half ndx = __hmul(dx, inv_r);
         const __half ndy = __hmul(dy, inv_r);
         const __half u =  __hadd(__hmul(c, ndx), __hmul(s, ndy));
-        const __half v = __hsub(__hmul(__hneg(s), ndx), __hmul(c, ndy));
+        const __half v = __hadd(__hmul(__hneg(s), ndx), __hmul(c, ndy));
         const __half tex_x = __hmul(__hmul(__hadd(u, __float2half(1.0f)), __float2half(0.5f)), __float2half(prim_config.template_width  - 1));
         const __half tex_y = __hmul(__hmul(__hadd(v, __float2half(1.0f)), __float2half(0.5f)), __float2half(prim_config.template_height - 1));
 
