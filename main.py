@@ -664,6 +664,10 @@ if config['postprocessing'].get('compute_psnr', False):
             # Compute metrics
             rendered_t_f32 = rendered_t.float()
             target_t_f32 = target_t.float()
+            
+            # Clip values to [0, 1] range to avoid PSNR calculation errors
+            rendered_t_f32 = torch.clamp(rendered_t_f32, 0.0, 1.0)
+            target_t_f32 = torch.clamp(target_t_f32, 0.0, 1.0)
 
             psnr_val = piq.psnr(rendered_t_f32, target_t_f32, data_range=1.0)
             ssim_val = piq.ssim(rendered_t_f32, target_t_f32, data_range=1.0)
