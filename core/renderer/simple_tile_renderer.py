@@ -684,11 +684,11 @@ class SimpleTileRenderer(VectorRenderer):
                             loss_w_conf=opt_conf.get("loss_weights", None))
                     
                 # Scale the loss and call backward
-                #scaler.scale(loss).backward()
-                #scaler.step(optimizer)
-                #scaler.update()
-                loss.backward()
-                optimizer.step()
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                #loss.backward()
+                #optimizer.step()
 
             else:
                 if is_no_bg_mode:
