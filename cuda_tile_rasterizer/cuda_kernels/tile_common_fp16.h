@@ -151,17 +151,6 @@ __device__ __forceinline__ __half clampf_fp16(__half x, __half min_val, __half m
     return __float2half(fmaxf(min_f, fminf(max_f, x_f)));
 }
 
-__device__ __forceinline__ half2 mul_fp16(const half2x2& a, const half2& b) {
-    float a00_f = __half2float(a.a00), a01_f = __half2float(a.a01);
-    float a10_f = __half2float(a.a10), a11_f = __half2float(a.a11);
-    float bx_f = __half2float(b.x), by_f = __half2float(b.y);
-    
-    float result_x = a00_f * bx_f + a01_f * by_f;
-    float result_y = a10_f * bx_f + a11_f * by_f;
-    
-    return make_half2(__float2half(result_x), __float2half(result_y));
-}
-
 // --------- Atomic operations ----------
 // __device__ __forceinline__ void atomicAdd2_fp16(__half* g, __half x, __half y) {
 //     atomicAdd(g, x);
@@ -181,6 +170,17 @@ __device__ __forceinline__ half2 mul_fp16(const half2x2& a, const half2& b) {
 //     atomicAdd(g + 3, m11);
 // }
 
+// __device__ __forceinline__ half2 mul_fp16(const half2x2& a, const half2& b) {
+//     float a00_f = __half2float(a.a00), a01_f = __half2float(a.a01);
+//     float a10_f = __half2float(a.a10), a11_f = __half2float(a.a11);
+//     float bx_f = __half2float(b.x), by_f = __half2float(b.y);
+    
+//     float result_x = a00_f * bx_f + a01_f * by_f;
+//     float result_y = a10_f * bx_f + a11_f * by_f;
+    
+//     return make_half2(__float2half(result_x), __float2half(result_y));
+// }
+
 // ---- FP16 atomic helpers (device-only) ----
 #ifdef __CUDACC__  // Hide from host compiler (g++)
 DEV void atomicAdd2_fp16(__half* g, __half x, __half y) {
@@ -197,6 +197,16 @@ DEV void atomicAddM2_fp16(__half* g, __half m00, __half m01, __half m10, __half 
     atomicAdd(&g[1], m01);
     atomicAdd(&g[2], m10);
     atomicAdd(&g[3], m11);
+}
+DEV half2 mul_fp16(const half2x2& a, const half2& b) {
+    float a00_f = __half2float(a.a00), a01_f = __half2float(a.a01);
+    float a10_f = __half2float(a.a10), a11_f = __half2float(a.a11);
+    float bx_f = __half2float(b.x), by_f = __half2float(b.y);
+    
+    float result_x = a00_f * bx_f + a01_f * by_f;
+    float result_y = a10_f * bx_f + a11_f * by_f;
+    
+    return make_half2(__float2half(result_x), __float2half(result_y));
 }
 #endif
 
