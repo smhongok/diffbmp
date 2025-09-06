@@ -60,7 +60,7 @@ __device__ inline void backward_over_one_pixel_fp16(
         if (template_idx >= 0 && template_idx < prim_config.num_templates) {
             const __half template_width = __float2half((float)prim_config.template_width);
             const __half template_height = __float2half((float)prim_config.template_height);
-            const __half max_dim = __hdiv(__float2half(fmaxf(__half2float(template_width), __half2float(template_height))), __float2half(2.0f));
+            const __half max_dim = __float2half(fmaxf(__half2float(template_width), __half2float(template_height)));
             const __half scale_factor = __hdiv(r, __hmul(max_dim, __float2half(0.5f)));
             
             const __half half_width = __hmul(__hmul(template_width, __float2half(0.5f)), scale_factor);
@@ -70,7 +70,7 @@ __device__ inline void backward_over_one_pixel_fp16(
                 continue;
             }
         } else {
-            if (__hgt(__hadd(__hmul(dx, dx), __hmul(dy, dy)), __hmul(r, r))) {
+            if (__hgt(__hfma(dy, dy, __hmul(dx, dx)), __hmul(r, r))) {
                 continue;
             }
         }
@@ -94,10 +94,10 @@ __device__ inline void backward_over_one_pixel_fp16(
             const __half c = __float2half(cosf(__half2float(phi))), s = __float2half(sinf(__half2float(phi)));
             const __half ndx = __hmul(dx, inv_r);
             const __half ndy = __hmul(dy, inv_r);
-            const __half u =  __hadd(__hmul(c, ndx), __hmul(s, ndy));
-            const __half v = __hadd(__hmul(__hneg(s), ndx), __hmul(c, ndy));
-            const __half tex_x = __hmul(__hmul(__hadd(u, __float2half(1.0f)), __float2half(0.5f)), __float2half(prim_config.template_width  - 1));
-            const __half tex_y = __hmul(__hmul(__hadd(v, __float2half(1.0f)), __float2half(0.5f)), __float2half(prim_config.template_height - 1));
+            const __half u =  __hfma(s, ndy, __hmul(c, ndx));
+            const __half v = __hfma(c, ndy, __hmul(__hneg(s), ndx));
+            const __half tex_x = __hmul(__hfma(u, __float2half(0.5f), __float2half(0.5f)), __float2half(prim_config.template_width  - 1));
+            const __half tex_y = __hmul(__hfma(v, __float2half(0.5f), __float2half(0.5f)), __float2half(prim_config.template_height - 1));
 
             const __half* tex = &inputs.primitive_templates[
                 template_idx * prim_config.template_height * prim_config.template_width];
@@ -120,9 +120,10 @@ __device__ inline void backward_over_one_pixel_fp16(
             const __half crm= buffers.pixel_colors_r[midx];
             const __half cgm= buffers.pixel_colors_g[midx];
             const __half cbm= buffers.pixel_colors_b[midx];
-            Sx = __hadd(Sx, __hmul(__hmul(crm, am), Tm));
-            Sy = __hadd(Sy, __hmul(__hmul(cgm, am), Tm));
-            Sz = __hadd(Sz, __hmul(__hmul(cbm, am), Tm));
+            // Fused multiply-add in half to reduce rounding
+            Sx = __hfma(__hmul(crm, am), Tm, Sx);
+            Sy = __hfma(__hmul(cgm, am), Tm, Sy);
+            Sz = __hfma(__hmul(cbm, am), Tm, Sz);
             B  = __hmul(B, __hmax(__hsub(__float2half(1.0f), am), __float2half(0.0f)));
         }
 
@@ -132,9 +133,11 @@ __device__ inline void backward_over_one_pixel_fp16(
             const __half sr = sigmoidf_safe_fp16(inputs.colors[3*n+0]);
             const __half sg = sigmoidf_safe_fp16(inputs.colors[3*n+1]);
             const __half sb = sigmoidf_safe_fp16(inputs.colors[3*n+2]);
-            const __half dcr = __hmul(gCx, __hmul(a_k, T_k));
-            const __half dcg = __hmul(gCy, __hmul(a_k, T_k));
-            const __half dcb = __hmul(gCz, __hmul(a_k, T_k));
+            // Use FMA for gC * (a_k * T_k)
+            const __half aT = __hmul(a_k, T_k);
+            const __half dcr = __hmul(gCx, aT);
+            const __half dcg = __hmul(gCy, aT);
+            const __half dcb = __hmul(gCz, aT);
             atomicAdd(&outputs.grad_colors[3*n+0], __hmul(dcr, __hmul(sr, __hsub(__float2half(1.0f), sr))));
             atomicAdd(&outputs.grad_colors[3*n+1], __hmul(dcg, __hmul(sg, __hsub(__float2half(1.0f), sg))));
             atomicAdd(&outputs.grad_colors[3*n+2], __hmul(dcb, __hmul(sb, __hsub(__float2half(1.0f), sb))));
@@ -146,8 +149,11 @@ __device__ inline void backward_over_one_pixel_fp16(
         const __half dCda_x = __hsub(__hmul(T_k, cr), __hmul(Sx, inv1m));
         const __half dCda_y = __hsub(__hmul(T_k, cg), __hmul(Sy, inv1m));
         const __half dCda_z = __hsub(__hmul(T_k, cb), __hmul(Sz, inv1m));
-        __half dLdalpha = __hadd(__hadd(__hmul(gCx, dCda_x), __hmul(gCy, dCda_y)), __hmul(gCz, dCda_z));
-        dLdalpha = __hadd(dLdalpha, __hmul(gA, __hmul(T_k, B)));
+        // Accumulate dLdalpha with fused adds
+        __half dLdalpha = __hfma(gCx, dCda_x, __float2half(0.0f));
+        dLdalpha = __hfma(gCy, dCda_y, dLdalpha);
+        dLdalpha = __hfma(gCz, dCda_z, dLdalpha);
+        dLdalpha = __hfma(gA, __hmul(T_k, B), dLdalpha);
 
         // (3) α = α_max * sigmoid(v_op) * mask(u,v)
         //     opacities are LOGITS  → dα/dv = α_max * mask * σ(v)*(1-σ(v))
@@ -161,10 +167,10 @@ __device__ inline void backward_over_one_pixel_fp16(
         const __half c = __float2half(cosf(__half2float(phi))), s = __float2half(sinf(__half2float(phi)));
         const __half ndx = __hmul(dx, inv_r);
         const __half ndy = __hmul(dy, inv_r);
-        const __half u =  __hadd(__hmul(c, ndx), __hmul(s, ndy));
-        const __half v = __hadd(__hmul(__hneg(s), ndx), __hmul(c, ndy));
-        const __half tex_x = __hmul(__hmul(__hadd(u, __float2half(1.0f)), __float2half(0.5f)), __float2half(prim_config.template_width  - 1));
-        const __half tex_y = __hmul(__hmul(__hadd(v, __float2half(1.0f)), __float2half(0.5f)), __float2half(prim_config.template_height - 1));
+        const __half u =  __hfma(s, ndy, __hmul(c, ndx));
+        const __half v = __hfma(c, ndy, __hmul(__hneg(s), ndx));
+        const __half tex_x = __hmul(__hfma(u, __float2half(0.5f), __float2half(0.5f)), __float2half(prim_config.template_width  - 1));
+        const __half tex_y = __hmul(__hfma(v, __float2half(0.5f), __float2half(0.5f)), __float2half(prim_config.template_height - 1));
 
         if (template_idx >= 0 && template_idx < prim_config.num_templates) {
             const __half* tex = &inputs.primitive_templates[
@@ -204,13 +210,13 @@ __device__ inline void backward_over_one_pixel_fp16(
             const __half du_dmx = __hneg(__hmul(c, inv_r)),  du_dmy = __hneg(__hmul(s, inv_r));
             const __half dv_dmx =  __hmul(s, inv_r),  dv_dmy = __hneg(__hmul(c, inv_r));
             const __half du_dr  = __hneg(__hmul(u, inv_r)),  dv_dr  = __hneg(__hmul(v, inv_r));
-            const __half du_dphi= __hadd(__hmul(__hneg(s), ndx), __hmul(c, ndy));
+            const __half du_dphi= __hfma(c, ndy, __hmul(__hneg(s), ndx));
             const __half dv_dphi= __hsub(__hmul(__hneg(c), ndx), __hmul(s, ndy));
-            
-            atomicAdd(&outputs.grad_means2D[2*n+0], __hadd(__hmul(dL_du, du_dmx), __hmul(dL_dv, dv_dmx)));
-            atomicAdd(&outputs.grad_means2D[2*n+1], __hadd(__hmul(dL_du, du_dmy), __hmul(dL_dv, dv_dmy)));
-            atomicAdd(&outputs.grad_radii[n],       __hadd(__hmul(dL_du, du_dr),  __hmul(dL_dv, dv_dr)));
-            atomicAdd(&outputs.grad_rotations[n],   __hadd(__hmul(dL_du, du_dphi), __hmul(dL_dv, dv_dphi)));
+
+            atomicAdd(&outputs.grad_means2D[2*n+0], __hfma(dL_dv, dv_dmx, __hmul(dL_du, du_dmx)));
+            atomicAdd(&outputs.grad_means2D[2*n+1], __hfma(dL_dv, dv_dmy, __hmul(dL_du, du_dmy)));
+            atomicAdd(&outputs.grad_radii[n],       __hfma(dL_dv, dv_dr,  __hmul(dL_du, du_dr)));
+            atomicAdd(&outputs.grad_rotations[n],   __hfma(dL_dv, dv_dphi, __hmul(dL_du, du_dphi)));
         }
 
         // advance local k just like forward push order

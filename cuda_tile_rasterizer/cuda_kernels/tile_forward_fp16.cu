@@ -136,7 +136,7 @@ __global__ void tile_rasterize_forward_kernel_fp16(
             }
         } else {
             // Fallback to circular check for invalid template index
-            if (__hgt(__hadd(__hmul(dx, dx), __hmul(dy, dy)), __hmul(r, r))) {
+            if (__hgt(__hfma(dy, dy, __hmul(dx, dx)), __hmul(r, r))) {
                 continue;  // not pushed, keep local_k unchanged
             }
         }
@@ -161,11 +161,11 @@ __global__ void tile_rasterize_forward_kernel_fp16(
             const __half c = __float2half(cosf(__half2float(phi))), s = __float2half(sinf(__half2float(phi)));
             const __half ndx = __hmul(dx, r_inv);
             const __half ndy = __hmul(dy, r_inv);
-            const __half u =  __hadd(__hmul(c, ndx), __hmul(s, ndy));                        // [-?,?]
-            const __half v = __hadd(__hmul(__hneg(s), ndx), __hmul(c, ndy));
+            const __half u =  __hfma(s, ndy, __hmul(c, ndx));                        // [-?,?]
+            const __half v = __hfma(c, ndy, __hmul(__hneg(s), ndx));
 
-            const __half tex_x = __hmul(__hmul(__hadd(u, __float2half(1.0f)), __float2half(0.5f)), __float2half(prim_config.template_width  - 1)); // [0..W-1]
-            const __half tex_y = __hmul(__hmul(__hadd(v, __float2half(1.0f)), __float2half(0.5f)), __float2half(prim_config.template_height - 1)); // [0..H-1]
+            const __half tex_x = __hmul(__hfma(u, __float2half(0.5f), __float2half(0.5f)), __float2half(prim_config.template_width  - 1)); // [0..W-1]
+            const __half tex_y = __hmul(__hfma(v, __float2half(0.5f), __float2half(0.5f)), __float2half(prim_config.template_height - 1)); // [0..H-1]
 
             const __half* tex = &inputs.primitive_templates[template_idx * prim_config.template_height * prim_config.template_width];
             mask_value = bilinear_sample_fp16(tex, prim_config.template_height, prim_config.template_width, tex_y, tex_x);
@@ -231,9 +231,10 @@ __global__ void tile_rasterize_forward_kernel_fp16(
 
         buffers.pixel_T_values[idx] = T;
 
-        comp_r = __hadd(comp_r, __hmul(__hmul(T, cr), a_k));
-        comp_g = __hadd(comp_g, __hmul(__hmul(T, cg), a_k));
-        comp_b = __hadd(comp_b, __hmul(__hmul(T, cb), a_k));
+        // Fused multiply-add in half to reduce rounding
+        comp_r = __hfma(__hmul(T, cr), a_k, comp_r);
+        comp_g = __hfma(__hmul(T, cg), a_k, comp_g);
+        comp_b = __hfma(__hmul(T, cb), a_k, comp_b);
 
         T = __hmul(T, __hmax(__hsub(__float2half(1.0f), a_k), __float2half(0.0f)));
     }
@@ -368,7 +369,7 @@ __global__ void tile_rasterize_forward_kernel_fp16_debug(
                     }
                 } else {
                     // Fallback to circular check for invalid template index
-                    if (__hgt(__hadd(__hmul(dx, dx), __hmul(dy, dy)), __hmul(r, r))) {
+                    if (__hgt(__hfma(dy, dy, __hmul(dx, dx)), __hmul(r, r))) {
                         continue;  // not pushed, keep local_k unchanged
                     }
                 }
@@ -392,11 +393,11 @@ __global__ void tile_rasterize_forward_kernel_fp16_debug(
                     const __half c = __float2half(cosf(__half2float(phi))), s = __float2half(sinf(__half2float(phi)));
                     const __half ndx = __hmul(dx, r_inv);
                     const __half ndy = __hmul(dy, r_inv);
-                    const __half u =  __hadd(__hmul(c, ndx), __hmul(s, ndy));                        // [-?,?]
-                    const __half v = __hadd(__hmul(__hneg(s), ndx), __hmul(c, ndy));
+                    const __half u =  __hfma(s, ndy, __hmul(c, ndx));                        // [-?,?]
+                    const __half v = __hfma(c, ndy, __hmul(__hneg(s), ndx));
 
-                    const __half tex_x = __hmul(__hmul(__hadd(u, __float2half(1.0f)), __float2half(0.5f)), __float2half(prim_config.template_width  - 1)); // [0..W-1]
-                    const __half tex_y = __hmul(__hmul(__hadd(v, __float2half(1.0f)), __float2half(0.5f)), __float2half(prim_config.template_height - 1)); // [0..H-1]
+                    const __half tex_x = __hmul(__hfma(u, __float2half(0.5f), __float2half(0.5f)), __float2half(prim_config.template_width  - 1)); // [0..W-1]
+                    const __half tex_y = __hmul(__hfma(v, __float2half(0.5f), __float2half(0.5f)), __float2half(prim_config.template_height - 1)); // [0..H-1]
 
                     const __half* tex = &inputs.primitive_templates[template_idx * prim_config.template_height * prim_config.template_width];
                     mask_value = bilinear_sample_fp16(tex, prim_config.template_height, prim_config.template_width, tex_y, tex_x);
@@ -454,10 +455,10 @@ __global__ void tile_rasterize_forward_kernel_fp16_debug(
                 // cache T[k] BEFORE updating by (1-α_k)
                 buffers.pixel_T_values[idx] = T;
 
-                // OVER accumulation with premultiplied color m_k = c_k * α_k
-                comp_r = __hadd(comp_r, __hmul(__hmul(T, cr), a_k));
-                comp_g = __hadd(comp_g, __hmul(__hmul(T, cg), a_k));
-                comp_b = __hadd(comp_b, __hmul(__hmul(T, cb), a_k));
+                // OVER accumulation with premultiplied color m_k = c_k * α_k (fused half FMA)
+                comp_r = __hfma(__hmul(T, cr), a_k, comp_r);
+                comp_g = __hfma(__hmul(T, cg), a_k, comp_g);
+                comp_b = __hfma(__hmul(T, cb), a_k, comp_b);
 
                 T = __hmul(T, __hmax(__hsub(__float2half(1.0f), a_k), __float2half(0.0f)));
             }
