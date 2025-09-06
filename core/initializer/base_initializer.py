@@ -277,17 +277,20 @@ class BaseInitializer(ABC):
 
         return points, point_levels
     
-    def find_best_densification(self, edge_map, N, target_binary_mask = None):
+    def find_best_densification(self, edge_map, N, W, target_binary_mask = None):
         best_points = None
         best_levels = None
         best_level = 8
         best_min_distance = None
         max_len = -1
 
+        # Scale min_dists based on target_binary_mask width (final_width)
+        width_scale = W / 256.0  # normalize to 256 baseline
+        min_dists = [1.9 * width_scale, 1.5 * width_scale, 1.0 * width_scale, 0.5 * width_scale]
         while best_level > 0:
             print("best_level: ", best_level)
             try:
-                for min_dist in [1.9, 1.5, 1.0, 0.5]:
+                for min_dist in min_dists:
                     self.min_distance = min_dist
                     points, point_levels = self.coarse_to_fine_densification(edge_map, N, best_level, target_binary_mask = target_binary_mask)
                     if len(points) > max_len:

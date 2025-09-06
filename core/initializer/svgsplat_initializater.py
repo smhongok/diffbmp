@@ -74,7 +74,7 @@ class StructureAwareInitializer(BaseInitializer):
             init_pts = np.array([kp.pt for kp in sorted_kp[:num_kp]])  # (x, y)
         
         # Apply our structure-aware techniques
-        densified_pts, point_levels = self.find_best_densification(edges, N, target_binary_mask)
+        densified_pts, point_levels = self.find_best_densification(edges, N, W, target_binary_mask)
         adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y, target_binary_mask)
         
         # Visualize densified_pts, point_levels, and adjusted_pts
