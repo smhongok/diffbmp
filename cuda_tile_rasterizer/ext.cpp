@@ -89,25 +89,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("init_tile_rasterizer", &init_tile_rasterizer, "Initialize global tile rasterizer");
     m.def("rasterize_tiles_class", &rasterize_tiles_class, "CUDA tile rasterization forward (class-based)");
     m.def("rasterize_tiles_backward_class", &rasterize_tiles_backward_class, "CUDA tile rasterization backward (class-based)");
-    
-    // Per-pixel gradient computation
-    m.def("compute_per_pixel_gradients", [](
-        torch::Tensor means2D,
-        torch::Tensor radii,
-        torch::Tensor rotations,
-        torch::Tensor opacities,
-        torch::Tensor colors,
-        torch::Tensor primitive_templates,
-        torch::Tensor global_bmp_sel,
-        torch::Tensor target_image,
-        int pixels_per_tile
-    ) {
-        if (!global_tile_rasterizer) {
-            throw std::runtime_error("TileRasterizer not initialized. Call init_tile_rasterizer first.");
-        }
-        return global_tile_rasterizer->compute_per_pixel_gradients(
-            means2D, radii, rotations, opacities, colors,
-            primitive_templates, global_bmp_sel, target_image, pixels_per_tile
-        );
-    }, "Compute per-pixel gradient magnitudes using CUDA");
 }

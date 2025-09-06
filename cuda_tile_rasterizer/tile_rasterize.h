@@ -77,20 +77,6 @@ public:
         torch::Tensor global_bmp_sel,
         torch::Tensor lr_config
     );
-
-    // Add this to the public section of TileRasterizer class
-    torch::Tensor compute_per_pixel_gradients(
-        torch::Tensor means2D,
-        torch::Tensor radii,
-        torch::Tensor rotations,
-        torch::Tensor opacities,
-        torch::Tensor colors,
-        torch::Tensor primitive_templates,
-        torch::Tensor global_bmp_sel,
-        torch::Tensor target_image,
-        int pixels_per_tile
-    );
-
     
     // Allocate memory if not already allocated
     void allocateMemory();

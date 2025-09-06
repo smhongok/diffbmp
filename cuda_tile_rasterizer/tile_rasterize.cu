@@ -5,7 +5,6 @@
 #include "cuda_kernels/tile_forward.h"
 #include "cuda_kernels/tile_backward.h"
 #include "cuda_kernels/tile_common.h"
-#include "cuda_kernels/pixel_gradient.h"
 
 #define DEBUG_CUDA_KERNELS 0
 
@@ -292,63 +291,6 @@ void TileRasterizer::freeMemory() {
     memory_allocated = false;
     
     printf("TileRasterizer: Memory freed successfully\n");
-}
-
-
-torch::Tensor TileRasterizer::compute_per_pixel_gradients(
-    torch::Tensor means2D,
-    torch::Tensor radii,
-    torch::Tensor rotations,
-    torch::Tensor opacities,
-    torch::Tensor colors,
-    torch::Tensor primitive_templates,
-    torch::Tensor global_bmp_sel,
-    torch::Tensor target_image,
-    int pixels_per_tile
-) {
-    if (!memory_allocated) {
-        throw std::runtime_error("TileRasterizer memory not allocated");
-    }
-    
-    // Ensure all tensors are on CUDA and contiguous
-    means2D = means2D.to(torch::kCUDA).contiguous();
-    radii = radii.to(torch::kCUDA).contiguous();
-    rotations = rotations.to(torch::kCUDA).contiguous();
-    opacities = opacities.to(torch::kCUDA).contiguous();
-    colors = colors.to(torch::kCUDA).contiguous();
-    primitive_templates = primitive_templates.to(torch::kCUDA).contiguous();
-    global_bmp_sel = global_bmp_sel.to(torch::kCUDA).contiguous();
-    target_image = target_image.to(torch::kCUDA).contiguous();
-    
-    // Create tile assignment tensors from internal buffers
-    torch::Tensor tile_offsets_tensor = torch::from_blob(
-        d_tile_offsets, {tile_offsets_size}, 
-        torch::dtype(torch::kInt32).device(torch::kCUDA)
-    );
-    
-    torch::Tensor tile_indices_tensor = torch::from_blob(
-        d_tile_indices, {tile_indices_size},
-        torch::dtype(torch::kInt32).device(torch::kCUDA)
-    );
-    
-    // Call the CUDA kernel
-    return compute_per_pixel_gradient_cuda(
-        means2D,
-        radii,
-        rotations,
-        opacities,
-        colors,
-        primitive_templates,
-        global_bmp_sel,
-        target_image,
-        tile_offsets_tensor,
-        tile_indices_tensor,
-        tile_size,
-        sigma,
-        alpha_upper_bound,
-        max_prims_per_pixel,
-        pixels_per_tile
-    );
 }
 
 std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(

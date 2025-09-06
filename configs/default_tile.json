@@ -5,7 +5,7 @@
         "FM_halftone": false,
         "transform": "none",
         "img_path": [
-            "images/hwar/hwar_hair.jpg"
+            "images/artwork/seurat.jpg"
         ],
         "bg_threshold": 250,
         "do_equalize": false,
@@ -25,13 +25,13 @@
     },
     "svg": {
         "svg_file": "arial.ttf",
-        "text": ["h","w","a","R"],
+        "text": ["S","e","u","r","a","t"],
         "svg_hollow": false,
         "output_width": 128
     },
     "initialization": {
         "initializer": "structure_aware",
-        "N": [4000],
+        "N": [2000],
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
@@ -93,7 +93,7 @@
         }
     },
     "postprocessing": {
-        "output_folder": "./outputs/tile--1",
+        "output_folder": "./outputs/tile_1",
         "save_final_image": true,
         "save_video": false,
         "video_fps": 30,
