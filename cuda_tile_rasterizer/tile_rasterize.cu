@@ -192,8 +192,8 @@ void TileRasterizer::allocateMemory() {
     delete[] h_tile_offsets_init;
     delete[] h_tile_indices_init;
     
-    cudaMemset(out_color, 1.f, total_pixels * 3 * sizeof(float));
-    cudaMemset(out_alpha, 1.f, total_pixels * sizeof(float));
+    cudaMemset(out_color, 0, total_pixels * 3 * sizeof(float));
+    cudaMemset(out_alpha, 0, total_pixels * sizeof(float));
     cudaMemset(grad_means2D, 0, num_primitives * 2 * sizeof(float));
     cudaMemset(grad_radii, 0, num_primitives * sizeof(float));
     cudaMemset(grad_rotations, 0, num_primitives * sizeof(float));

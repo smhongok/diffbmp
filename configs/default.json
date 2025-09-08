@@ -47,7 +47,7 @@
         "hollow": false
     },
     "optimization": {
-        "use_fp16": false,
+        "use_fp16": true,
         "renderer_type": "tile",
         "num_iterations": 100,
         "batch_optimization": false,
@@ -89,7 +89,7 @@
         "output_folder": "outputs/",
         "linewidth": 3.0,
         "compute_psnr": true,
-        "export_psd": true,
+        "export_psd": false,
         "psd_scale_factor": 2.0
     }
 } 

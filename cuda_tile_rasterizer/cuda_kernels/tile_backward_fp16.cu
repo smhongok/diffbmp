@@ -2,228 +2,397 @@
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <math_constants.h>
+#include <stdio.h>
+#include <math.h>
 #include "tile_backward_fp16.h"
+#include "tile_common_fp16.h"
+
+#ifdef __CUDACC__
+    #pragma STDC FP_CONTRACT OFF
+#endif
+
+#ifndef CHECK_CUDA
+#define CHECK_CUDA(x) (x)
+#endif
 
 #define DEBUG_CUDA_KERNELS_FP16_BACKWARD 0
+#define DEBUG_SEQUENTIAL_FP16 0  // Set to 1 for sequential debugging, 0 for parallel execution
+#define EPS1_FP16 __float2half(1e-6f)
 
-// FP16 version of the tile rasterization backward kernel
-__global__ void tile_rasterize_backward_kernel_fp16(
-    const __half* grad_out_color,
-    const __half* grad_out_alpha,
-    const __half* means2D,
-    const __half* radii,
-    const __half* rotations,
-    const __half* opacities,
-    const __half* colors,
-    const __half* primitive_templates,
-    __half* grad_means2D,
-    __half* grad_radii,
-    __half* grad_rotations,
-    __half* grad_opacities,
-    __half* grad_colors,
-    int num_primitives,
-    int template_height,
-    int template_width,
-    int image_height,
-    int image_width,
-    int tile_size,
-    __half sigma,
-    int total_tiles) {
-    
-    // Debug: Print kernel launch info (only from first thread)
-#if DEBUG_CUDA_KERNELS_FP16_BACKWARD
-    if (blockIdx.x == 0 && threadIdx.x == 0) {
-        printf("CUDA Backward Kernel FP16: num_primitives=%d, num_templates=%d, template_size=%dx%d, image_size=%dx%d\n",
-               num_primitives, num_templates, template_width, template_height, image_width, image_height);
-    }
-#endif
-    
-    int tile_id = blockIdx.x;
-    int pixel_id = threadIdx.x;
-    
-    if (tile_id >= total_tiles) return;
-    
-    // Calculate tile coordinates
-    int tiles_x = (image_width + tile_size - 1) / tile_size;
-    int tile_x = tile_id % tiles_x;
-    int tile_y = tile_id / tiles_x;
-    
-    // Calculate tile bounds
-    int tile_start_x = tile_x * tile_size;
-    int tile_start_y = tile_y * tile_size;
-    int tile_end_x = min(tile_start_x + tile_size, image_width);
-    int tile_end_y = min(tile_start_y + tile_size, image_height);
-    
-    int tile_width = tile_end_x - tile_start_x;
-    int tile_height = tile_end_y - tile_start_y;
-    int pixels_in_tile = tile_width * tile_height;
-    
-    if (pixel_id >= pixels_in_tile) return;
-    
-    // Calculate pixel coordinates within tile
-    int local_x = pixel_id % tile_width;
-    int local_y = pixel_id / tile_width;
-    int global_x = tile_start_x + local_x;
-    int global_y = tile_start_y + local_y;
-    
-    // Get gradient for this pixel
-    int pixel_idx = global_y * image_width + global_x;
-    __half grad_pixel_color_r = grad_out_color[pixel_idx * 3];
-    __half grad_pixel_color_g = grad_out_color[pixel_idx * 3 + 1];
-    __half grad_pixel_color_b = grad_out_color[pixel_idx * 3 + 2];
-    __half grad_pixel_alpha = grad_out_alpha[pixel_idx];
-    
-    // Process all primitives that might affect this pixel
-    for (int prim_id = 0; prim_id < num_primitives; prim_id++) {
-        __half mean_x = means2D[prim_id * 2];
-        __half mean_y = means2D[prim_id * 2 + 1];
-        __half radius = radii[prim_id];
-        __half rotation = rotations[prim_id];
-        __half opacity_logit = opacities[prim_id];
-        
-        // Quick distance check first
-        __half dx = __hsub(__int2half_rn(global_x), mean_x);
-        __half dy = __hsub(__int2half_rn(global_y), mean_y);
-        /*
-        __half dist_sq = hadd(__hmul(dx, dx), __hmul(dy, dy));
-        
-        if (__hgt(dist_sq, __hmul(__hmul(radius, radius), __float2half(2.0f)))) {
-            continue; // Pixel too far from primitive
+// Per-pixel backward with OVER rule and per-pixel local-k mapping
+template<bool HAVE_ALPHA_CACHE, bool HAVE_T_CACHE>
+__device__ inline void backward_over_one_pixel_fp16(
+    // pixel coord & config
+    int x, int y, const TileConfigFP16 tile_config,
+    const PrimitiveConfigFP16 prim_config,
+    // primitive set for this tile
+    const int* __restrict__ prim_ids,  // [K]
+    int K,
+    // upstream grads (dL/dC and dL/dA at this pixel)
+    __half gCx, __half gCy, __half gCz, __half gA,
+    // structured IO
+    const InputTensorsFP16 inputs,
+    const OutputTensorsFP16 outputs,
+    const GlobalBuffersFP16 buffers,
+    const LearningRateConfigFP16 lr_config
+){
+    const int W = tile_config.image_width;
+    const int H = tile_config.image_height;
+    const int pixel_idx = y * W + x;
+    const int base = pixel_idx * prim_config.max_prims_per_pixel;
+    const int num_k = min(buffers.pixel_prim_counts[pixel_idx], prim_config.max_prims_per_pixel);
+    if (num_k <= 0) return;
+
+    // Rebuild local k by using the SAME push condition as forward (radius check only).
+    int k_running = 0;
+
+    for (int kk = 0; kk < K; ++kk){
+        const int n = prim_ids[kk];
+        if (n < 0 || n >= prim_config.num_primitives) continue;
+
+        // Forward push condition: radius check only
+        const __half mx = inputs.means2D[2*n+0];
+        const __half my = inputs.means2D[2*n+1];
+        const __half r  = inputs.radii[n];
+        const __half dx = __hsub(__float2half((float)x), mx);
+        const __half dy = __hsub(__float2half((float)y), my);
+        const int template_idx = inputs.global_bmp_sel[n];
+        if (template_idx >= 0 && template_idx < prim_config.num_templates) {
+            const __half template_width = __float2half((float)prim_config.template_width);
+            const __half template_height = __float2half((float)prim_config.template_height);
+            const __half max_dim = __float2half(fmaxf(__half2float(template_width), __half2float(template_height)));
+            const __half scale_factor = __hdiv(r, __hmul(max_dim, __float2half(0.5f)));
+            
+            const __half half_width = __hmul(__hmul(template_width, __float2half(0.5f)), scale_factor);
+            const __half half_height = __hmul(__hmul(template_height, __float2half(0.5f)), scale_factor);
+            
+            if (__hgt(__habs(dx), half_width) || __hgt(__habs(dy), half_height)) {
+                continue;
+            }
+        } else {
+            if (__hgt(__hfma(dy, dy, __hmul(dx, dx)), __hmul(r, r))) {
+                continue;
+            }
         }
-        */
-        
-        // Normalize distance
-        __half norm_dx = __hdiv(dx, radius);
-        __half norm_dy = __hdiv(dy, radius);
-        
-        // Apply rotation
-        __half cos_theta = hcos(rotation);
-        __half sin_theta = hsin(rotation);
-        __half u = __hmul(cos_theta, norm_dx);
-        u = __hadd(u, __hmul(sin_theta, norm_dy));
-        __half v = __hmul(__hneg(sin_theta), norm_dx);
-        v = __hadd(v, __hmul(cos_theta, norm_dy));
-        
-        // Convert to template coordinates
-        __half sample_u = __hmul(__hadd(u, __float2half(1.0f)), __float2half(0.5f));
-        sample_u = __hmul(sample_u, __float2half(template_width - 1));
-        __half sample_v = __hmul(__hadd(v, __float2half(1.0f)), __float2half(0.5f));
-        sample_v = __hmul(sample_v, __float2half(template_height - 1));
-        
-        // Ensure coordinates are within bounds
-        sample_u = __hmax(__float2half(0.0f), __hmin(__float2half(template_width - 1.0f), sample_u));
-        sample_v = __hmax(__float2half(0.0f), __hmin(__float2half(template_height - 1.0f), sample_v));
-        
-        // Template selection (match forward pass)
-        int template_idx = 0; // Simplified for now
-        if (template_idx >= 0) {
-            // Sample primitive template (simplified bilinear)
-            __half mask_value = __float2half(0.0f);
-            int x0 = __half2int_rd(sample_u);
-            int y0 = __half2int_rd(sample_v);
-            int x1 = min(x0 + 1, template_width - 1);
-            int y1 = min(y0 + 1, template_height - 1);
-            
-            __half wx = __hsub(sample_u, sample_u);
-            __half wy = __hsub(sample_v, sample_v);
-            
-            __half v00 = primitive_templates[template_idx * template_height * template_width + y0 * template_width + x0];
-            __half v01 = primitive_templates[template_idx * template_height * template_width + y0 * template_width + x1];
-            __half v10 = primitive_templates[template_idx * template_height * template_width + y1 * template_width + x0];
-            __half v11 = primitive_templates[template_idx * template_height * template_width + y1 * template_width + x1];
-            
-            mask_value = __hmul(__hmul(v00, __hsub(__float2half(1.0f), wx)), __hsub(__float2half(1.0f), wy));
-            mask_value = __hadd(mask_value, __hmul(v01, __hmul(wx, __hsub(__float2half(1.0f), wy))));
-            mask_value = __hadd(mask_value, __hmul(v10, __hmul(__hsub(__float2half(1.0f), wx), wy)));
-            mask_value = __hadd(mask_value, __hmul(v11, __hmul(wx, wy)));
-            
-            mask_value = __hmax(__float2half(0.0f), __hmin(__float2half(1.0f), mask_value));
-            
-            // Convert opacity logit to probability
-            __half opacity = __hdiv(__float2half(1.0f), __hadd(__float2half(1.0f), hexp(__hneg(opacity_logit))));
-            __half alpha = __hmul(__float2half(0.5f), __hmul(opacity, mask_value)); // alpha_upper_bound = 0.5
-            
-            // Convert color logits to RGB
-            __half color_r = __hdiv(__float2half(1.0f), __hadd(__float2half(1.0f), hexp(__hneg(colors[prim_id * 3]))));
-            __half color_g = __hdiv(__float2half(1.0f), __hadd(__float2half(1.0f), hexp(__hneg(colors[prim_id * 3 + 1]))));
-            __half color_b = __hdiv(__float2half(1.0f), __hadd(__float2half(1.0f), hexp(__hneg(colors[prim_id * 3 + 2]))));
-            
-            // Compute gradients using atomic operations to avoid race conditions
-            // Gradient w.r.t. opacity logit
-            __half grad_opacity = __hmul(grad_pixel_alpha, __hmul(__hmul(__float2half(0.5f), mask_value), __hmul(opacity, __hsub(__float2half(1.0f), opacity))));
-            atomicAdd(reinterpret_cast<__half*>(&grad_opacities[prim_id]), grad_opacity);
-            
-            // Gradient w.r.t. color logits
-            __half grad_color_r = __hmul(grad_pixel_color_r, __hmul(alpha, __hmul(color_r, __hsub(__float2half(1.0f), color_r))));
-            __half grad_color_g = __hmul(grad_pixel_color_g, __hmul(alpha, __hmul(color_g, __hsub(__float2half(1.0f), color_g))));
-            __half grad_color_b = __hmul(grad_pixel_color_b, __hmul(alpha, __hmul(color_b, __hsub(__float2half(1.0f), color_b))));
-            
-            atomicAdd(&grad_colors[prim_id * 3], grad_color_r);
-            atomicAdd(&grad_colors[prim_id * 3 + 1], grad_color_g);
-            atomicAdd(&grad_colors[prim_id * 3 + 2], grad_color_b);
-            
-            // Gradient w.r.t. position (simplified - only consider alpha contribution)
-            __half grad_alpha_wrt_pos = __hmul(grad_pixel_alpha, __hmul(__hmul(__float2half(0.5f), opacity), mask_value));
-            // This is a simplified gradient - in practice, we'd need to compute ∂mask_value/∂position
-            __half grad_pos_scale = __hdiv(grad_alpha_wrt_pos, radius);
-            
-            atomicAdd(&grad_means2D[prim_id * 2], __hneg(__hmul(grad_pos_scale, dx)));
-            atomicAdd(&grad_means2D[prim_id * 2 + 1], __hneg(__hmul(grad_pos_scale, dy)));
-            
-            // Gradient w.r.t. radius (simplified)
-            __half grad_radius = __hmul(__hmul(grad_alpha_wrt_pos, mask_value), __hdiv(__hneg(__hadd(__hmul(dx, dx), __hmul(dy, dy))), __hmul(__hmul(radius, radius), radius)));
-            atomicAdd(&grad_radii[prim_id], grad_radius);
-            
-            // Gradient w.r.t. rotation (simplified)
-            __half grad_rotation = __hmul(__hmul(grad_alpha_wrt_pos, mask_value), __hsub(__hneg(__hmul(sin_theta, norm_dx)), __hmul(cos_theta, norm_dy)));
-            atomicAdd(&grad_rotations[prim_id], grad_rotation);
+
+        const int k = k_running;
+        if (k >= num_k) { k_running++; continue; } // safety
+
+        // Read caches written by forward
+        const int idx = base + k;
+        const __half a_k = buffers.pixel_alphas[idx];
+        const __half T_k = buffers.pixel_T_values[idx];
+        const __half cr  = buffers.pixel_colors_r[idx];
+        const __half cg  = buffers.pixel_colors_g[idx];
+        const __half cb  = buffers.pixel_colors_b[idx];
+
+        // Get mask value early for gradient computation decisions
+        __half mask_val = __float2half(0.0f);
+        if (template_idx >= 0 && template_idx < prim_config.num_templates) {
+            const __half inv_r = __hgt(r, __float2half(1e-6f)) ? __hdiv(__float2half(1.0f), r) : __float2half(1e6f);
+            const __half phi = inputs.rotations[n];
+            const __half c = __float2half(cosf(__half2float(phi))), s = __float2half(sinf(__half2float(phi)));
+            const __half ndx = __hmul(dx, inv_r);
+            const __half ndy = __hmul(dy, inv_r);
+            const __half u =  __hfma(s, ndy, __hmul(c, ndx));
+            const __half v = __hfma(c, ndy, __hmul(__hneg(s), ndx));
+            const __half tex_x = __hmul(__hfma(u, __float2half(0.5f), __float2half(0.5f)), __float2half(prim_config.template_width  - 1));
+            const __half tex_y = __hmul(__hfma(v, __float2half(0.5f), __float2half(0.5f)), __float2half(prim_config.template_height - 1));
+
+            const __half* tex = &inputs.primitive_templates[
+                template_idx * prim_config.template_height * prim_config.template_width];
+            mask_val = bilinear_sample_fp16(tex, prim_config.template_height, prim_config.template_width, tex_y, tex_x);
+            mask_val = clampf_fp16(mask_val, __float2half(0.0f), __float2half(1.0f));
         }
+        
+        if (__hle(mask_val, __float2half(1e-6f))) {
+            // This primitive doesn't affect this pixel, skip
+            continue;
+        }
+            
+        // Build suffix S and back-product B:
+        // S = Σ_{m>k} c_m α_m T_m,  B = Π_{m>k}(1-α_m)
+        __half Sx=__float2half(0.0f), Sy=__float2half(0.0f), Sz=__float2half(0.0f), B=__float2half(1.0f);
+        for (int m = k+1; m < num_k; ++m){
+            const int midx = base + m;
+            const __half am = buffers.pixel_alphas[midx];
+            const __half Tm = buffers.pixel_T_values[midx];
+            const __half crm= buffers.pixel_colors_r[midx];
+            const __half cgm= buffers.pixel_colors_g[midx];
+            const __half cbm= buffers.pixel_colors_b[midx];
+            // Fused multiply-add in half to reduce rounding
+            Sx = __hfma(__hmul(crm, am), Tm, Sx);
+            Sy = __hfma(__hmul(cgm, am), Tm, Sy);
+            Sz = __hfma(__hmul(cbm, am), Tm, Sz);
+            B  = __hmul(B, __hmax(__hsub(__float2half(1.0f), am), __float2half(0.0f)));
+        }
+
+        // (1) dL/d(color logits): ∂L/∂c = gC * (α_k T_k); ∂c/∂z = σ(z)(1-σ(z))
+        // Only compute color gradients if mask value is significant (not transparent)
+        if (__hgt(mask_val, __float2half(1e-6f))) {
+            const __half sr = sigmoidf_safe_fp16(inputs.colors[3*n+0]);
+            const __half sg = sigmoidf_safe_fp16(inputs.colors[3*n+1]);
+            const __half sb = sigmoidf_safe_fp16(inputs.colors[3*n+2]);
+            // Use FMA for gC * (a_k * T_k)
+            const __half aT = __hmul(a_k, T_k);
+            const __half dcr = __hmul(gCx, aT);
+            const __half dcg = __hmul(gCy, aT);
+            const __half dcb = __hmul(gCz, aT);
+            atomicAdd(&outputs.grad_colors[3*n+0], __hmul(dcr, __hmul(sr, __hsub(__float2half(1.0f), sr))));
+            atomicAdd(&outputs.grad_colors[3*n+1], __hmul(dcg, __hmul(sg, __hsub(__float2half(1.0f), sg))));
+            atomicAdd(&outputs.grad_colors[3*n+2], __hmul(dcb, __hmul(sb, __hsub(__float2half(1.0f), sb))));
+        }
+
+        // (2) dL/dα_k (OVER):
+        // ∂C/∂α_k = T_k c_k - S/(1-α_k),  ∂A/∂α_k = T_k * B
+        const __half inv1m = __hdiv(__float2half(1.0f), __hmax(__hsub(__float2half(1.0f), a_k), EPS1_FP16));
+        const __half dCda_x = __hsub(__hmul(T_k, cr), __hmul(Sx, inv1m));
+        const __half dCda_y = __hsub(__hmul(T_k, cg), __hmul(Sy, inv1m));
+        const __half dCda_z = __hsub(__hmul(T_k, cb), __hmul(Sz, inv1m));
+        // Accumulate dLdalpha with fused adds
+        __half dLdalpha = __hfma(gCx, dCda_x, __float2half(0.0f));
+        dLdalpha = __hfma(gCy, dCda_y, dLdalpha);
+        dLdalpha = __hfma(gCz, dCda_z, dLdalpha);
+        dLdalpha = __hfma(gA, __hmul(T_k, B), dLdalpha);
+
+        // (3) α = α_max * sigmoid(v_op) * mask(u,v)
+        //     opacities are LOGITS  → dα/dv = α_max * mask * σ(v)*(1-σ(v))
+        const __half v_op = inputs.opacities[n];
+        const __half s_op = sigmoidf_safe_fp16(v_op);
+        __half dmask_dx_tex=__float2half(0.0f), dmask_dy_tex=__float2half(0.0f);
+
+        // Template coords (forward-identical): (u,v) from rotation φ and scale r
+        const __half inv_r = __hgt(r, __float2half(1e-6f)) ? __hdiv(__float2half(1.0f), r) : __float2half(1e6f);
+        const __half phi = inputs.rotations[n];
+        const __half c = __float2half(cosf(__half2float(phi))), s = __float2half(sinf(__half2float(phi)));
+        const __half ndx = __hmul(dx, inv_r);
+        const __half ndy = __hmul(dy, inv_r);
+        const __half u =  __hfma(s, ndy, __hmul(c, ndx));
+        const __half v = __hfma(c, ndy, __hmul(__hneg(s), ndx));
+        const __half tex_x = __hmul(__hfma(u, __float2half(0.5f), __float2half(0.5f)), __float2half(prim_config.template_width  - 1));
+        const __half tex_y = __hmul(__hfma(v, __float2half(0.5f), __float2half(0.5f)), __float2half(prim_config.template_height - 1));
+
+        if (template_idx >= 0 && template_idx < prim_config.num_templates) {
+            const __half* tex = &inputs.primitive_templates[
+                template_idx * prim_config.template_height * prim_config.template_width];
+            mask_val = bilinear_value_and_grad_xy_fp16(
+                tex, prim_config.template_height, prim_config.template_width,
+                tex_y, tex_x, dmask_dx_tex, dmask_dy_tex);
+            mask_val = clampf_fp16(mask_val, __float2half(0.0f), __float2half(1.0f));
+        } else {
+            mask_val = __float2half(0.0f);
+            dmask_dx_tex = __float2half(0.0f);
+            dmask_dy_tex = __float2half(0.0f);
+        }
+        
+
+        // Only compute gradients if mask value is significant (not transparent)
+        if (__hgt(mask_val, __float2half(1e-6f))) {
+            const __half d_alpha_dv = __hmul(__hmul(__hmul(tile_config.alpha_upper_bound, mask_val), s_op), __hsub(__float2half(1.0f), s_op));
+            atomicAdd(&outputs.grad_opacities[n], __hmul(dLdalpha, d_alpha_dv));
+
+            // (4) mask path: dα/dmask = α_max * σ(v_op)
+            const __half dalpha_dmask = __hmul(tile_config.alpha_upper_bound, s_op);
+
+            // (5) ∂mask/∂(u,v) from texture-space grads:
+            // tex_x = 0.5*(u+1)*(W-1), tex_y = 0.5*(v+1)*(H-1)
+            const __half du2x = __float2half(0.5f * (prim_config.template_width  - 1));
+            const __half dv2y = __float2half(0.5f * (prim_config.template_height - 1));
+            const __half dmask_du = __hmul(dmask_dx_tex, du2x);
+            const __half dmask_dv = __hmul(dmask_dy_tex, dv2y);
+
+            const __half dL_dmask = __hmul(dLdalpha, dalpha_dmask);
+            const __half dL_du = __hmul(dL_dmask, dmask_du);
+            const __half dL_dv = __hmul(dL_dmask, dmask_dv);
+
+            // (6) ∂(u,v)/∂(μx,μy,r,φ)   (r is scale)
+            // u = ( c*dx + s*dy)/r,   v = (-s*dx + c*dy)/r
+            const __half du_dmx = __hneg(__hmul(c, inv_r)),  du_dmy = __hneg(__hmul(s, inv_r));
+            const __half dv_dmx =  __hmul(s, inv_r),  dv_dmy = __hneg(__hmul(c, inv_r));
+            const __half du_dr  = __hneg(__hmul(u, inv_r)),  dv_dr  = __hneg(__hmul(v, inv_r));
+            const __half du_dphi= __hfma(c, ndy, __hmul(__hneg(s), ndx));
+            const __half dv_dphi= __hsub(__hmul(__hneg(c), ndx), __hmul(s, ndy));
+
+            atomicAdd(&outputs.grad_means2D[2*n+0], __hfma(dL_dv, dv_dmx, __hmul(dL_du, du_dmx)));
+            atomicAdd(&outputs.grad_means2D[2*n+1], __hfma(dL_dv, dv_dmy, __hmul(dL_du, du_dmy)));
+            atomicAdd(&outputs.grad_radii[n],       __hfma(dL_dv, dv_dr,  __hmul(dL_du, du_dr)));
+            atomicAdd(&outputs.grad_rotations[n],   __hfma(dL_dv, dv_dphi, __hmul(dL_du, du_dphi)));
+        }
+
+        // advance local k just like forward push order
+        k_running++;
+        if (k_running >= num_k) break;
     }
+
+    //printf("CUDA Backward Kernel FP16: DEBUG MODE - pixel(%d,%d), K=%d, k_running=%d\n", x, y, K, k_running);
 }
 
-// FP16 version of the main backward kernel function
-void CudaRasterizeTilesBackwardKernelFP16(
+// Backward tile kernel (Original parallel version)
+__global__ void tile_backward_over_tilelist_kernel_fp16(
     const __half* grad_out_color,
     const __half* grad_out_alpha,
-    const __half* means2D,
-    const __half* radii,
-    const __half* rotations,
-    const __half* opacities,
-    const __half* colors,
-    const __half* primitive_templates,
-    __half* grad_means2D,
-    __half* grad_radii,
-    __half* grad_rotations,
-    __half* grad_opacities,
-    __half* grad_colors,
-    int num_primitives,
-    int template_height,
-    int template_width,
-    int image_height,
-    int image_width,
-    int tile_size,
-    __half sigma,
-    int total_tiles) {
+    const TileConfigFP16 tile_config,
+    const PrimitiveConfigFP16 prim_config,
+    const InputTensorsFP16 inputs,
+    const OutputTensorsFP16 outputs,
+    const GlobalBuffersFP16 buffers,
+    const LearningRateConfigFP16 lr_config
+) {
+    const int W = tile_config.image_width;
+    const int H = tile_config.image_height;
+    const int x = blockIdx.x*blockDim.x + threadIdx.x;
+    const int y = blockIdx.y*blockDim.y + threadIdx.y;
+    if (x>=W || y>=H) return;
+
+    const int tilesX = (W + tile_config.tile_size - 1) / tile_config.tile_size;
+    const int tx = x / tile_config.tile_size;
+    const int ty = y / tile_config.tile_size;
+    const int tile_id = ty*tilesX + tx;
+
+    const int start = buffers.d_tile_offsets[tile_id+0];
+    const int end   = buffers.d_tile_offsets[tile_id+1];
+    const int K     = end - start;
+    const int* prim_ids = buffers.d_tile_indices + start;
+
+    const int gidx = (y * W + x) * 3;
+    const __half gCx = grad_out_color[gidx + 0];
+    const __half gCy = grad_out_color[gidx + 1];
+    const __half gCz = grad_out_color[gidx + 2];
+    const __half gA  = grad_out_alpha ? grad_out_alpha[y * W + x] : __float2half(0.0f);
+
+    backward_over_one_pixel_fp16<true,true>(
+        x, y, tile_config, prim_config,
+        prim_ids, K,
+        gCx, gCy, gCz, gA,
+        inputs, outputs, buffers,
+        lr_config
+    );
+}
+
+// DEBUG MODE: Sequential version of the backward kernel for debugging
+__global__ void tile_backward_over_tilelist_kernel_fp16_debug(
+    const __half* grad_out_color,
+    const __half* grad_out_alpha,
+    const TileConfigFP16 tile_config,
+    const PrimitiveConfigFP16 prim_config,
+    const InputTensorsFP16 inputs,
+    const OutputTensorsFP16 outputs,
+    const GlobalBuffersFP16 buffers,
+    const LearningRateConfigFP16 lr_config
+) {
+    const int W = tile_config.image_width;
+    const int H = tile_config.image_height;
     
-    // Calculate maximum pixels per tile
-    int max_pixels_per_tile = tile_size * tile_size;
-    
-    // Launch kernel: one block per tile
-    dim3 grid(total_tiles);
-    dim3 block(max_pixels_per_tile);
-    
-    tile_rasterize_backward_kernel_fp16<<<grid, block>>>(
-        grad_out_color, grad_out_alpha, means2D, radii, rotations, opacities, colors, primitive_templates,
-        grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors,
-        num_primitives, template_height, template_width, image_height, image_width, tile_size, sigma, total_tiles);
-    
-    // Check for kernel launch errors
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        // Error handling
+    // Only thread (0,0) does the work
+    if (threadIdx.x != 0 || threadIdx.y != 0 || blockIdx.x != 0 || blockIdx.y != 0) {
         return;
     }
     
-    // Synchronize
-    cudaDeviceSynchronize();
+    printf("CUDA Backward Kernel FP16: DEBUG MODE - Processing all pixels sequentially\n");
+    
+    // Process all pixels sequentially
+    for (int y = 0; y < H; ++y) {
+        for (int x = 0; x < W; ++x) {
+            const int tilesX = (W + tile_config.tile_size - 1) / tile_config.tile_size;
+            const int tx = x / tile_config.tile_size;
+            const int ty = y / tile_config.tile_size;
+            const int tile_id = ty*tilesX + tx;
+
+            const int start = buffers.d_tile_offsets[tile_id+0];
+            const int end   = buffers.d_tile_offsets[tile_id+1];
+            const int K     = end - start;
+            const int* prim_ids = buffers.d_tile_indices + start;
+
+            const int gidx = (y * W + x) * 3;
+            const __half gCx = grad_out_color[gidx + 0];
+            const __half gCy = grad_out_color[gidx + 1];
+            const __half gCz = grad_out_color[gidx + 2];
+            const __half gA  = grad_out_alpha ? grad_out_alpha[y * W + x] : __float2half(0.0f);
+
+            // Debug print for first few pixels
+            if (x < 2 && y < 2) {
+                printf("CUDA Backward Kernel FP16: Debug - pixel(%d,%d), tile_id=%d, K=%d, grad_color=[%.4f,%.4f,%.4f], grad_alpha=%.4f\n", 
+                       x, y, tile_id, K, __half2float(gCx), __half2float(gCy), __half2float(gCz), __half2float(gA));
+            }
+
+            backward_over_one_pixel_fp16<true,true>(
+                x, y, tile_config, prim_config,
+                prim_ids, K,
+                gCx, gCy, gCz, gA,
+                inputs, outputs, buffers,
+                lr_config
+            );
+        }
+    }
+    printf("CUDA Backward Kernel FP16: DEBUG MODE - Sequential processing completed\n");
+}
+
+// =======================================================
+// tile_backward_fp16.cu와 동일한 인터페이스를 가진 CudaRasterizeTilesBackwardKernelFP16 함수
+// =======================================================
+void CudaRasterizeTilesBackwardKernelFP16(
+    const __half* grad_out_color,
+    const __half* grad_out_alpha,
+    const InputTensorsFP16 inputs,
+    const OutputTensorsFP16 outputs,
+    const GlobalBuffersFP16 buffers,
+    const TileConfigFP16 tile_config,
+    const PrimitiveConfigFP16 prim_config,
+    const LearningRateConfigFP16 lr_config) {
+    
+#if DEBUG_CUDA_KERNELS_FP16_BACKWARD
+    printf("CUDA Backward Kernel FP16: Starting with %d primitives, %dx%d image\n", prim_config.num_primitives, tile_config.image_width, tile_config.image_height);
+#endif
+
+#if DEBUG_SEQUENTIAL_FP16
+    // DEBUG MODE: Sequential execution for debugging
+    // Use only 1 block with 1 thread to avoid race conditions
+    dim3 grid(1, 1);  // Single block
+    dim3 block(1, 1); // Single thread
+    
+    printf("CUDA Backward Kernel FP16: DEBUG MODE - Grid size: %dx%d, Block size: %dx%d\n", grid.x, grid.y, block.x, block.y);
+    
+    printf("CUDA Backward Kernel FP16: About to launch debug kernel...\n");
+    
+    tile_backward_over_tilelist_kernel_fp16_debug<<<grid, block>>>(
+        grad_out_color, grad_out_alpha,
+        tile_config, prim_config,
+        inputs, outputs, buffers,
+        lr_config
+    );
+#else
+    dim3 block(tile_config.tile_size, tile_config.tile_size);
+    dim3 grid((tile_config.image_width  + tile_config.tile_size - 1) / tile_config.tile_size,
+              (tile_config.image_height + tile_config.tile_size - 1) / tile_config.tile_size);
+    
+#if DEBUG_CUDA_KERNELS_FP16_BACKWARD
+    printf("CUDA Backward Kernel FP16: NORMAL MODE - Grid size: %dx%d, Block size: %dx%d\n", grid.x, grid.y, block.x, block.y);
+    
+    printf("CUDA Backward Kernel FP16: About to launch normal kernel...\n");
+#endif
+    
+    tile_backward_over_tilelist_kernel_fp16<<<grid, block>>>(
+        grad_out_color, grad_out_alpha,
+        tile_config, prim_config,
+        inputs, outputs, buffers,
+        lr_config
+    );
+#endif
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Backward Kernel FP16: Kernel launch error: %s\n", cudaGetErrorString(err));
+        return;
+    }
+    
+    // Synchronize to ensure kernel completes
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        printf("CUDA Backward Kernel FP16: Kernel execution error: %s\n", cudaGetErrorString(err));
+        return;
+    }
+    
+#if DEBUG_CUDA_KERNELS_FP16_BACKWARD
+    printf("CUDA Backward Kernel FP16: Kernel completed successfully\n");
+#endif
 }
