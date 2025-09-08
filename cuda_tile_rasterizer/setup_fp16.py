@@ -10,10 +10,11 @@ setup(
     name='cuda_tile_rasterizer_fp16',
     ext_modules=[
         CUDAExtension(
-            name='cuda_tile_rasterizer_fp16._C',
+            name='cuda_tile_rasterizer_fp16._C_fp16',
             sources=[
                 'ext_fp16.cpp',
                 'tile_rasterize_fp16.cpp',
+                'cuda_kernels/tile_common_fp16.cu',
                 'cuda_kernels/tile_forward_fp16.cu',
                 'cuda_kernels/tile_backward_fp16.cu',
             ],
@@ -22,12 +23,14 @@ setup(
                 'cuda_kernels',
             ],
             extra_compile_args={
-                'cxx': ['-g', '-O0'],
+                'cxx': ['-g', '-O0'], #['-O2'],  # Debug flags for C++
                 'nvcc': [
-                    '-g',
+                    '-g', #'-O2',  # Debug flags for CUDA
                     '--generate-line-info',
                     '-Xptxas=-v',
-                    '--expt-relaxed-constexpr'
+                    # 아키텍처 타겟 고정 (3090=8.6, L40S=8.9)
+                    #'-gencode=arch=compute_86,code=sm_86',
+                    #'-gencode=arch=compute_89,code=sm_89',
                 ]
             }
         )

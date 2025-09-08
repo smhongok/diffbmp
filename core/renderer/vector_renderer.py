@@ -961,10 +961,10 @@ class VectorRenderer:
 
         # Initialize from target image
         if return_pts:
-            x, y, r, v, theta, c, adjusted_pts = initializer.initialize(target_image, target_binary_mask=target_binary_mask, return_pts=True)
+            x, y, r, v, theta, c, adjusted_pts = initializer.initialize(target_image, target_binary_mask=target_binary_mask, renderer=self, return_pts=True)
 
         else:
-            x, y, r, v, theta, c = initializer.initialize(target_image, target_binary_mask=target_binary_mask)
+            x, y, r, v, theta, c = initializer.initialize(target_image, target_binary_mask=target_binary_mask, renderer=self)
             adjusted_pts = None
         # Convert to leaf tensors for optimization
         x = x.detach().clone().requires_grad_(True)

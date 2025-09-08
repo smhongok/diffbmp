@@ -153,6 +153,13 @@ class PSDExporter:
         # Prepare templates for batched grid_sample (N, 1, template_H, template_W)
         templates_4d = templates.unsqueeze(1)
         
+        # Ensure both tensors have the same dtype for grid_sample
+        if templates_4d.dtype != grid.dtype:
+            if templates_4d.dtype == torch.float16:
+                grid = grid.half()
+            else:
+                templates_4d = templates_4d.float()
+        
         # Batched grid sample - this is the key optimization!
         sampled = F.grid_sample(templates_4d, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
         
