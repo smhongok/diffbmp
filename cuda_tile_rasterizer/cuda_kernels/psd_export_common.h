@@ -69,10 +69,10 @@ __device__ __forceinline__ float psd_grid_sample_bilinear(
     float v_template = (v_rot + 1.0f) * 0.5f * (config.template_height - 1);
     
     // Boundary check
-    // if (u_template < 0.0f || u_template >= config.template_width - 1 ||
-    //     v_template < 0.0f || v_template >= config.template_height - 1) {
-    //     return 0.0f;
-    // }
+    if (u_template < 0.0f || u_template >= config.template_width - 1 ||
+        v_template < 0.0f || v_template >= config.template_height - 1) {
+        return 0.0f;
+    }
     
     // Bilinear interpolation
     int u0 = (int)floorf(u_template);
