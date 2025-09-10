@@ -90,7 +90,7 @@ __global__ void generate_cropped_layers_kernel(
     int bbox_right = bounding_boxes[global_prim_id * 4 + 2];
     int bbox_bottom = bounding_boxes[global_prim_id * 4 + 3];
     int bbox_w = bbox_right - bbox_left;
-    int bbox_h = bbox_bottom - bbox_top;
+    // int bbox_h = bbox_bottom - bbox_top;
     
     // Get primitive parameters
     float x = means2D[global_prim_id * 2 + 0] * config.scale_factor;
