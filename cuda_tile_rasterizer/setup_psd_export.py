@@ -12,7 +12,7 @@ ext_modules = [
         name='psd_export_cuda',
         sources=[
             'psd_export_bindings.cpp',
-            'cuda_kernels/psd_export_kernels.cu',
+            'cuda_kernels/psd_export_kernels.cu'
         ],
         include_dirs=[
             'cuda_kernels/',

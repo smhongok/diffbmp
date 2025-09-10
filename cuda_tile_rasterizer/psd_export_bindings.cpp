@@ -31,6 +31,7 @@ extern "C" {
         float scale_factor, float alpha_upper_bound,
         int max_bbox_w, int max_bbox_h
     );
+
 }
 
 // Python binding for bounding box computation
@@ -67,6 +68,7 @@ void compute_bounding_boxes(
     );
 }
 
+
 // Python binding for cropped layer generation
 void generate_cropped_layers(
     torch::Tensor means2D,
@@ -79,9 +81,7 @@ void generate_cropped_layers(
     torch::Tensor bounding_boxes,
     torch::Tensor layer_offsets,
     torch::Tensor cropped_output_buffer,
-    int H, int W,
-    float scale_factor,
-    float alpha_upper_bound
+    int H, int W, float scale_factor, float alpha_upper_bound
 ) {
     // Check tensor properties
     TORCH_CHECK(means2D.is_cuda(), "means2D must be a CUDA tensor");
@@ -115,6 +115,6 @@ void generate_cropped_layers(
 
 // Module definition
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("compute_bounding_boxes", &compute_bounding_boxes, "Compute bounding boxes for PSD export");
+    m.def("compute_bounding_boxes", &compute_bounding_boxes, "Compute bounding boxes for primitives");
     m.def("generate_cropped_layers", &generate_cropped_layers, "Generate cropped layers for PSD export");
 }

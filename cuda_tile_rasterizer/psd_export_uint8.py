@@ -4,6 +4,7 @@ from PIL import Image
 from typing import List, Tuple
 import os
 import sys
+from psd_tools.api.layers import PixelLayer
 
 # Try to import the compiled CUDA extension
 try:
@@ -25,12 +26,12 @@ def export_psd_layers_cuda_uint8(
     H: int, W: int,                  # canvas dimensions
     scale_factor: float = 1.0,       # export scaling
     alpha_upper_bound: float = 1.0   # maximum alpha value
-) -> Tuple[List[Image.Image], List[Tuple[int, int, int, int]]]:
+) -> Tuple[List[np.ndarray], List[Tuple[int, int, int, int]], List[int]]:
     """
     Export PSD layers using 2-stage CUDA kernel for memory-efficient cropped output.
     
     Returns:
-        (PIL image list, bounding box list)
+        (numpy array list, bounding box list, original indices list) - filtered to exclude empty/invalid layers
     """
     if not CUDA_AVAILABLE:
         raise RuntimeError("CUDA PSD export extension not available")
@@ -87,9 +88,10 @@ def export_psd_layers_cuda_uint8(
         layer_offsets_tensor, cropped_buffer, H, W, scale_factor, alpha_upper_bound
     )
     
-    # Convert to PIL images
-    pil_images = []
-    bounds_list = []
+    # Convert to numpy arrays and filter valid layers
+    valid_arrays = []
+    valid_bounds = []
+    valid_indices = []
     h_bounding_boxes = bounding_boxes.cpu().numpy()
     h_cropped_buffer = cropped_buffer.cpu().numpy()
     
@@ -97,19 +99,57 @@ def export_psd_layers_cuda_uint8(
         left, top, right, bottom = h_bounding_boxes[i]
         w, h = h_cropped_sizes[i]
         
-        if w <= 1 or h <= 1:  # Empty layer
-            pil_images.append(Image.fromarray(np.zeros((1, 1, 4), dtype=np.uint8), 'RGBA'))
-            bounds_list.append((0, 0, 1, 1))
-        else:
-            # Extract cropped data
-            offset = layer_offsets[i]
-            layer_data = h_cropped_buffer[offset:offset + w * h * 4]
-            rgba_array = layer_data.reshape(h, w, 4)
+        if w <= 1 or h <= 1:  # Skip empty layers
+            continue
             
-            pil_images.append(Image.fromarray(rgba_array, 'RGBA'))
-            bounds_list.append((left, top, right, bottom))
+        # Extract cropped data
+        offset = layer_offsets[i]
+        layer_data = h_cropped_buffer[offset:offset + w * h * 4]
+        rgba_array = layer_data.reshape(h, w, 4)
+        
+        # Check if layer has any non-transparent pixels
+        if rgba_array[:,:,3].max() > 0:  # Has some alpha
+            valid_arrays.append(rgba_array)
+            valid_bounds.append((left, top, right, bottom))
+            valid_indices.append(i)
     
-    return pil_images, bounds_list
+    return valid_arrays, valid_bounds, valid_indices
+
+
+def create_pixel_layers_from_numpy(
+    numpy_arrays: List[np.ndarray],
+    bounds_list: List[Tuple[int, int, int, int]],
+    valid_indices: List[int],
+    names: List[str],
+    psd_file
+) -> List[PixelLayer]:
+    """
+    Create PixelLayer objects directly from numpy arrays with filtering.
+    
+    Args:
+        numpy_arrays: List of RGBA numpy arrays (already filtered for valid layers)
+        bounds_list: List of (left, top, right, bottom) tuples
+        valid_indices: List of original indices for the valid layers
+        names: List of layer names (original length)
+        psd_file: PSD file object
+    
+    Returns:
+        List of PixelLayer objects
+    """
+    layers = []
+    
+    for i, (rgba_array, (left, top, right, bottom), orig_idx) in enumerate(zip(numpy_arrays, bounds_list, valid_indices)):
+        # Convert numpy array to PIL Image for PixelLayer.frompil
+        pil_image = Image.fromarray(rgba_array, 'RGBA')
+        
+        # Use the original name based on the original index
+        layer_name = names[orig_idx] if orig_idx < len(names) else f"Layer_{orig_idx}"
+        
+        # Create PixelLayer using frompil method
+        layer = PixelLayer.frompil(pil_image, psd_file, layer_name, top=top, left=left)
+        layers.append(layer)
+    
+    return layers
 
 
 def export_psd_layers_pytorch_fallback(
@@ -117,7 +157,7 @@ def export_psd_layers_pytorch_fallback(
     x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, theta: torch.Tensor,
     v: torch.Tensor, c: torch.Tensor, global_bmp_sel: torch.Tensor,
     H: int, W: int, scale_factor: float = 1.0, alpha_upper_bound: float = 1.0
-) -> Tuple[List[Image.Image], List[Tuple[int, int, int, int]]]:
+) -> Tuple[List[np.ndarray], List[Tuple[int, int, int, int]], List[int]]:
     """
     Fallback PyTorch implementation matching the existing PSDExporter logic.
     This is used when CUDA extension is not available.
@@ -164,9 +204,10 @@ def export_psd_layers_pytorch_fallback(
         sampled = F.grid_sample(template_4d, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
         transformed_templates.append(sampled.squeeze())
     
-    # Convert to PIL images with bounds
-    pil_images = []
-    bounds_list = []
+    # Convert to numpy arrays with bounds and filter valid layers
+    valid_arrays = []
+    valid_bounds = []
+    valid_indices = []
     
     for i in range(N):
         template = transformed_templates[i].detach().cpu().numpy()
@@ -184,9 +225,7 @@ def export_psd_layers_pytorch_fallback(
         # Find bounding box
         alpha_mask = rgba[:, :, 3] > 0
         if not alpha_mask.any():
-            pil_images.append(Image.fromarray(np.zeros((1, 1, 4), dtype=np.uint8), 'RGBA'))
-            bounds_list.append((0, 0, 1, 1))
-            continue
+            continue  # Skip empty layers
         
         rows = np.any(alpha_mask, axis=1)
         cols = np.any(alpha_mask, axis=0)
@@ -196,9 +235,10 @@ def export_psd_layers_pytorch_fallback(
         bottom += 1
         right += 1
         
-        # Crop and create PIL image
+        # Crop and add to valid arrays
         cropped_rgba = rgba[top:bottom, left:right]
-        pil_images.append(Image.fromarray(cropped_rgba, 'RGBA'))
-        bounds_list.append((left, top, right, bottom))
+        valid_arrays.append(cropped_rgba)
+        valid_bounds.append((left, top, right, bottom))
+        valid_indices.append(i)
     
-    return pil_images, bounds_list
+    return valid_arrays, valid_bounds, valid_indices
