@@ -356,12 +356,12 @@ __global__ void tile_rasterize_forward_kernel_fp16_debug(
                     // Use template's actual dimensions for bounding box
                     const __half template_width = __float2half((float)prim_config.template_width);
                     const __half template_height = __float2half((float)prim_config.template_height);
-                    const __half max_dim = __float2half(fmaxf(__half2float(template_width), __half2float(template_height)));
-                    const __half scale_factor = __hdiv(r, __hmul(max_dim, __float2half(0.5f)));  // r as scale factor
+                    const __half max_dim = __hgt(template_width, template_height) ? template_width : template_height;
+                    const __half scale_factor = __hdiv(r, __hmul(max_dim, H05));  // r as scale factor
                     
                     // Calculate scaled template bounds
-                    const __half half_width = __hmul(__hmul(template_width, __float2half(0.5f)), scale_factor);
-                    const __half half_height = __hmul(__hmul(template_height, __float2half(0.5f)), scale_factor);
+                    const __half half_width = __hmul(__hmul(template_width, H05), scale_factor);
+                    const __half half_height = __hmul(__hmul(template_height, H05), scale_factor);
                     
                     // Check if pixel is outside template's bounding box
                     if (__hgt(__habs(dx), half_width) || __hgt(__habs(dy), half_height)) {
@@ -386,7 +386,7 @@ __global__ void tile_rasterize_forward_kernel_fp16_debug(
                 const __half alpha_max= tile_config.alpha_upper_bound;
 
                 // Template mask via bilinear
-                __half mask_value = __float2half(0.0f);
+                __half mask_value = H0;
                 if (template_idx >= 0 && template_idx < prim_config.num_templates) {
                     const __half r_inv = __hgt(r, EPS1_FP16) ? __hdiv(H1, r) : EPS6_FP16;     // avoid div0
                     const __half phi = inputs.rotations[n];
