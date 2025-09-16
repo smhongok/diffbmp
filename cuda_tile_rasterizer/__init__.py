@@ -2,7 +2,11 @@ import torch
 from torch.autograd import Function
 import os
 import sys
-from torch.amp import custom_bwd, custom_fwd
+try:
+    from torch.amp import custom_bwd, custom_fwd
+except ImportError:
+    # Fallback for older PyTorch versions
+    from torch.cuda.amp import custom_bwd, custom_fwd
 import ctypes
                     
 #sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

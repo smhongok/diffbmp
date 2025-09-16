@@ -5,16 +5,19 @@ from PIL import Image
 from psd_tools import PSDImage
 from psd_tools.api.layers import PixelLayer
 import time
+import os
+import sys
 
 class PSDExporter:
     """Exports individual transformed primitives as PSD layers using psd-tools."""
     
     def __init__(self, canvas_width: int, canvas_height: int,
-                 alpha_upper_bound: float = 1.0, scale_factor: float = 1.0):
+                 alpha_upper_bound: float = 1.0, scale_factor: float = 1.0, use_cuda: bool = True):
         self.canvas_width = canvas_width
         self.canvas_height = canvas_height
         self.alpha_upper_bound = alpha_upper_bound
         self.scale_factor = scale_factor
+        self.use_cuda = use_cuda
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Calculate scaled dimensions for high-resolution export
@@ -26,12 +29,12 @@ class PSDExporter:
         
         # Create new PSD document with scaled dimensions
         self.psd = PSDImage.new('RGBA', (self.export_width, self.export_height), color=(0, 0, 0, 0))
-        
+
         
     def add_layers_batch_optimized(self, primitive_templates: torch.Tensor,
                                   x_tensor: torch.Tensor, y_tensor: torch.Tensor, r_tensor: torch.Tensor,
                                   theta_tensor: torch.Tensor, v_tensor: torch.Tensor, c_tensor: torch.Tensor,
-                                  reverse_order: bool = True):
+                                  names=None, reverse_order: bool = True):
         """
         Add multiple layers using batched F.grid_sample for maximum efficiency.
         Handles all data preparation internally for cleaner main.py code.
@@ -44,63 +47,85 @@ class PSDExporter:
             reverse_order: Whether to reverse layer order for correct layering (default: True)
         """
         N = len(x_tensor)
+        if names is None:
+            names = [f"primitive_{i}" for i in range(N)]
         
         # Handle primitive templates preparation
-        if primitive_templates.dim() == 2:
-            primitive_templates = primitive_templates.unsqueeze(0)
-            
-        # Prepare data in reverse order for correct layering if requested
-        if reverse_order:
-            indices = torch.tensor(list(reversed(range(N))), device=x_tensor.device)
-            x_tensor = x_tensor[indices]
-            y_tensor = y_tensor[indices]
-            r_tensor = r_tensor[indices]
-            theta_tensor = theta_tensor[indices]
-            v_tensor = v_tensor[indices]
-            c_tensor = c_tensor[indices]
-            names = [f"primitive_{i:04d}" for i in indices.cpu().numpy()]
-        else:
-            names = [f"primitive_{i:04d}" for i in range(N)]
-            
-        print(f"Creating {N} layers using batched F.grid_sample...")
         start_total = time.time()
+        print(f"🎨 Starting PSD export for {N} primitives...")
         
-        # Step 1: Apply batched transformations to all primitives at once
-        print("📊 Step 1: Batched transformations...")
-        start_batch = time.time()
-        transformed_templates = self._apply_transformations_batch(
-            primitive_templates, x_tensor, y_tensor, r_tensor, theta_tensor
-        )
-        batch_time = time.time() - start_batch
-        print(f"   ⏱️  Batch transformations: {batch_time:.3f}s ({batch_time/N*1000:.2f}ms per primitive)")
-        
-        # Step 2: Batch PIL conversion and layer creation
-        print("📊 Step 2: Batch PIL conversion and layer creation...")
-        start_pil = time.time()
-        
-        # Batch convert all templates to numpy
-        start_numpy = time.time()
-        pil_images, bounds_list = self._batch_templates_to_pil_with_bounds(
-            transformed_templates, c_tensor, v_tensor
-        )
-        numpy_time = time.time() - start_numpy
-        print(f"      🔧 Batch numpy conversion: {numpy_time:.3f}s ({numpy_time/N*1000:.2f}ms per primitive)")
-        
-        # Create layers sequentially (this part is hard to parallelize due to PSD structure)
-        start_layers = time.time()
-        for i in range(N):
-            left, top, right, bottom = bounds_list[i]
-            layer = PixelLayer.frompil(pil_images[i], self.psd, names[i], top=top, left=left)
-            self.psd.append(layer)
-        layers_time = time.time() - start_layers
-        print(f"      🔧 Layer creation: {layers_time:.3f}s ({layers_time/N*1000:.2f}ms per primitive)")
-        
-        pil_time = time.time() - start_pil
-        print(f"   ⏱️  Total PIL + layer creation: {pil_time:.3f}s ({pil_time/N*1000:.2f}ms per primitive)")
-        
-        total_time = time.time() - start_total
-        print(f"✅ Total time: {total_time:.3f}s")
-        print(f"   🔄 Breakdown: Batch={batch_time/total_time*100:.1f}%, PIL+Layer={pil_time/total_time*100:.1f}%")
+        try:
+            # Try CUDA implementation first - add path for import
+            cuda_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cuda_tile_rasterizer')
+            if cuda_dir not in sys.path:
+                sys.path.insert(0, cuda_dir)
+            
+            from cuda_tile_rasterizer.psd_export_uint8 import export_psd_layers_cuda_uint8, create_pixel_layers_from_numpy
+            
+            # Generate global_bmp_sel (template selection indices)
+            if primitive_templates.dim() == 2:
+                # Single template for all primitives
+                global_bmp_sel = torch.zeros(N, dtype=torch.int32, device=x_tensor.device)
+                primitive_templates = primitive_templates.unsqueeze(0)
+            else:
+                # Multiple templates - cycle through them
+                p = primitive_templates.shape[0]
+                global_bmp_sel = (-torch.arange(N, device=x_tensor.device) + N - 1) % p
+                global_bmp_sel = global_bmp_sel.int()
+            
+            # Apply sigmoid to tensors
+            v_tensor = torch.sigmoid(v_tensor)
+            c_tensor = torch.sigmoid(c_tensor)
+            
+            # Export layers using CUDA
+            numpy_arrays, bounds_list, valid_indices = export_psd_layers_cuda_uint8(
+                primitive_templates, x_tensor, y_tensor, r_tensor, theta_tensor,
+                v_tensor, c_tensor, global_bmp_sel,
+                self.export_height, self.export_width, self.scale_factor, self.alpha_upper_bound
+            )
+            numpy_arrays.reverse()
+            bounds_list.reverse()
+            valid_indices.reverse()
+            
+            # Create PixelLayer objects and add to PSD
+            reversed_names = names[::-1]
+            layers = create_pixel_layers_from_numpy(
+                numpy_arrays, bounds_list, valid_indices, reversed_names, self.psd
+            )
+            self.psd.extend(layers)
+            
+            total_time = time.time() - start_total
+            print(f"✅ PSD export completed: {len(layers)}/{N} layers in {total_time:.3f}s")
+            
+        except (ImportError, RuntimeError) as e:
+            # Fallback to PyTorch implementation
+            print(f"⚠️  CUDA unavailable, using PyTorch fallback...")
+            
+            # Apply transformations in batch
+            transformed_templates = self._apply_transformations_batch(
+                primitive_templates, x_tensor, y_tensor, r_tensor, theta_tensor
+            )
+            
+            # Create layers in batch
+            layers = []
+            for i in range(N):
+                template = transformed_templates[i]
+                rgb = torch.sigmoid(c_tensor[i])
+                vis = torch.sigmoid(v_tensor[i]) * self.alpha_upper_bound
+                
+                # Create RGBA image
+                rgba = self._create_rgba_image(template, rgb, vis)
+                
+                # Convert to PIL and create layer
+                pil_image = Image.fromarray(rgba, 'RGBA')
+                layer = PixelLayer.frompil(pil_image, self.psd, names[i])
+                layers.append(layer)
+            
+            # Add all layers to PSD in batch
+            self.psd.extend(layers)
+            
+            total_time = time.time() - start_total
+            print(f"✅ PSD export completed: {len(layers)}/{N} layers in {total_time:.3f}s")
 
         
     def _apply_transformations_batch(self, primitive_templates: torch.Tensor,
@@ -260,5 +285,5 @@ class PSDExporter:
             filepath = filepath.replace('.tiff', '.psd').replace('.png', '.psd')
             
         self.psd.save(filepath)
-        print(f"✅ Exported PSD with {len(self.psd)} layers to {filepath}")
+        print(f"💾 Exported PSD with {len(self.psd)} layers to {filepath}")
         

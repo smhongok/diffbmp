@@ -106,11 +106,12 @@ class StructureAwareInitializer(BaseInitializer):
         
         # Determine radius based on level - coarser level (smaller value) gets larger radius
         # The formula: r = max_radius * (1 - level/max_level) + min_radius
+        min_radius = self.radii_min
         if self.radii_max is not None:
             max_radius = self.radii_max
         else:
-            max_radius = min(H, W) / 4
-        min_radius = self.radii_min
+            max_radius = max(min(H, W) / 4, min_radius + 0.1)
+        
         
         # Calculate distance transform from Canny edges
         inverted_edges = cv2.bitwise_not(edges)
@@ -239,6 +240,6 @@ class StructureAwareInitializer(BaseInitializer):
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         plt.savefig(f'visualization_output/initialization_points_{timestamp}.png', 
                    dpi=150, bbox_inches='tight')
-        plt.show()
+        # plt.show()
         
         print(f"Visualization saved to: visualization_output/initialization_points_{timestamp}.png")
