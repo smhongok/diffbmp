@@ -37,6 +37,11 @@ To build for fp16:
 cd cuda_tile_rasterizer && python setup_fp16.py clean && rm -rf build/ *.egg-info *.so && python setup_fp16.py build_ext --inplace && cd ..
 ```
 
+To build for psd_exporter:
+```bash
+cd cuda_tile_rasterizer && python setup_psd_export.py clean && rm -rf build/ *.egg-info *.so && python setup_psd_export.py build_ext --inplace && cd ..
+```
+
 If you want to specify the spec of your GPU or CUDA version:
 ```bash
 cd cuda_tile_rasterizer && TORCH_CUDA_ARCH_LIST="8.6" CUDA_HOME=/usr/local/cuda-12.1 python setup_fp16.py clean && rm -rf build/ *.egg-info *.so && TORCH_CUDA_ARCH_LIST="8.6" CUDA_HOME=/usr/local/cuda-12.1 python setup_fp16.py build_ext --inplace && cd ..

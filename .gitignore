@@ -53,6 +53,9 @@ cuda_pytorch_comparison.png
 
 test_results.json
 
+animation/input/*
+animation/output/*
+
 ### Python ###
 # Byte-compiled / optimized / DLL files
 __pycache__/
