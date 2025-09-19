@@ -95,7 +95,7 @@ class PSDExporter:
             self.psd.extend(layers)
             
             total_time = time.time() - start_total
-            print(f"✅ PSD export completed: {len(layers)}/{N} layers in {total_time:.3f}s")
+            print(f"✅ PSD generation {len(layers)}/{N} layers: wating for saving...")
             
         except (ImportError, RuntimeError) as e:
             # Fallback to PyTorch implementation
@@ -256,6 +256,38 @@ class PSDExporter:
         
         return pil_images, bounds_list
         
+    def _create_rgba_image(self, template: torch.Tensor, rgb: torch.Tensor, vis: torch.Tensor) -> np.ndarray:
+        """
+        Create RGBA image from template, RGB color, and visibility.
+        
+        Args:
+            template: (H, W) transformed template
+            rgb: (3,) RGB color tensor
+            vis: scalar visibility value
+            
+        Returns:
+            RGBA numpy array (H, W, 4) with dtype uint8
+        """
+        H, W = template.shape
+        
+        # Convert to numpy
+        template_np = template.detach().cpu().numpy()
+        rgb_np = rgb.detach().cpu().numpy()
+        vis_np = vis.detach().cpu().numpy()
+        
+        # Create RGBA array
+        rgba = np.zeros((H, W, 4), dtype=np.uint8)
+        
+        # Set RGB channels where template is non-zero
+        template_mask = template_np > 0
+        for i in range(3):
+            rgba[:, :, i] = (template_mask * rgb_np[i] * 255).astype(np.uint8)
+        
+        # Set alpha channel
+        rgba[:, :, 3] = (template_np * vis_np * 255).astype(np.uint8)
+        
+        return rgba
+        
     def _precompute_coordinate_grids(self):
         """Pre-compute coordinate grids and expansions to avoid redundant calculations."""
         H, W = self.export_height, self.export_width
@@ -286,4 +318,3 @@ class PSDExporter:
             
         self.psd.save(filepath)
         print(f"💾 Exported PSD with {len(self.psd)} layers to {filepath}")
-        
