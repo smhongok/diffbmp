@@ -24,11 +24,12 @@ setup(
                 'cuda_kernels',
             ],
             extra_compile_args={
-                'cxx': ['-g', '-O0'],  # Debug flags for C++
+                'cxx': ['-O3'],  # Debug flags for C++
                 'nvcc': [
-                    '-g',  # Debug flags for CUDA
-                    '--generate-line-info',
-                    '-Xptxas=-v'
+                    '-O3',  # Debug flags for CUDA
+                    '--use_fast_math',
+                    '-Xptxas=-v',
+                    '-gencode=arch=compute_89,code=sm_89',
                 ]
             }
         )
