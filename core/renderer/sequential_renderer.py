@@ -224,7 +224,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             optimizer.zero_grad()
             
             # Generate rendered image using tile-based rendering
-            rendered = self.render_from_params(x, y, r, theta, v, c, sigma=0.0)
+            I_bg = torch.ones((self.H, self.W, 3), device=self.device)
+            rendered = self.render_from_params(x, y, r, theta, v, c, I_bg=I_bg, sigma=0.0)
             
             # Compute loss with warmup scheduling
             loss_config = {

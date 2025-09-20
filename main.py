@@ -318,7 +318,8 @@ if sequential_config.get("enabled", False):
         
         # Render final frame for export
         with torch.no_grad():
-            rendered_frame = sequential_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, is_final=True)
+            white_bg = torch.ones((sequential_renderer.H, sequential_renderer.W, 3), device=sequential_renderer.device)
+            frame_rendered = sequential_renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0, is_final=True)
         
         # Store results for this frame
         current_params = {
@@ -328,7 +329,7 @@ if sequential_config.get("enabled", False):
             'v': v.clone(),
             'theta': theta.clone(),
             'c': c.clone(),
-            'rendered_frame': rendered_frame.clone()
+            'rendered_frame': frame_rendered.clone()
         }
         
         frame_results.append({
@@ -403,7 +404,9 @@ if sequential_config.get("enabled", False):
         
 
         # Still render final PNG for preview/compatibility using tile-based rendering
-        frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, sigma=0.0, is_final=True)
+        with torch.no_grad():
+            white_bg = torch.ones((sequential_renderer.H, sequential_renderer.W, 3), device=sequential_renderer.device)
+            frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, I_bg=white_bg, sigma=0.0, is_final=True)
         # Save rendered frame directly
         frame_rendered_np = frame_rendered.detach().cpu().numpy()
         frame_rendered_np = (frame_rendered_np * 255).astype(np.uint8)
