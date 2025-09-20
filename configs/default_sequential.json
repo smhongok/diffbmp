@@ -130,6 +130,7 @@
         "mode": "pixel"
       },
       "gradient_ranking": {
+        "enabled": true,
         "pixels_per_tile": 64
       }
     },

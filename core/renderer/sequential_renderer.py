@@ -523,6 +523,11 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         color_nerf_enabled = color_nerf_config.get('enabled', False)
         color_nerf_mode = color_nerf_config.get('mode', 'mean')
         
+        # Extract gradient_ranking configuration
+        gradient_ranking_config = adaptive_config.get('gradient_ranking', {})
+        gradient_ranking_enabled = gradient_ranking_config.get('enabled', True)
+        print(f"[Adaptive Control] Gradient ranking enabled: {gradient_ranking_enabled}")
+        
         # Create new leaf tensors - single detach operation
         x_adapted = x.detach().requires_grad_(True)
         y_adapted = y.detach().requires_grad_(True)
@@ -565,7 +570,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 # Find problematic primitives (already limited by max_primitives_per_tile)
                 problematic_indices = self._find_problematic_primitives(
                     tile_indices, x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
-                    scale_threshold, opacity_threshold, gradient_magnitudes, max_primitives_per_tile
+                    scale_threshold, opacity_threshold, gradient_magnitudes, max_primitives_per_tile,
+                    gradient_ranking_enabled
                 )
                 
                 # Apply opacity reduction using in-place operation to maintain leaf tensor status
@@ -581,15 +587,16 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         return x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted
     
     def _find_problematic_primitives(self, 
-                               tile_indices: torch.Tensor,
-                               x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
-                               v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
-                               scale_threshold: float, opacity_threshold: float,
-                               gradient_magnitudes: torch.Tensor = None,
-                               max_primitives_per_tile: int = 16) -> torch.Tensor:
+                           tile_indices: torch.Tensor,
+                           x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
+                           v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
+                           scale_threshold: float, opacity_threshold: float,
+                           gradient_magnitudes: torch.Tensor = None,
+                           max_primitives_per_tile: int = 16,
+                           gradient_ranking_enabled: bool = True) -> torch.Tensor:
         """
         Find problematic primitives within a tile based on three criteria,
-        then select top-k by gradient magnitude.
+        then select top-k by gradient magnitude or scale*opacity based on configuration.
         
         Args:
             tile_indices: Indices of primitives in this tile
@@ -598,9 +605,10 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             opacity_threshold: Threshold for high opacity primitives
             gradient_magnitudes: Per-primitive gradient magnitudes for ranking
             max_primitives_per_tile: Maximum number of primitives to select
+            gradient_ranking_enabled: Whether to use gradient-based ranking (True) or scale*opacity fallback (False)
             
         Returns:
-            Indices of problematic primitives (top-k by gradient magnitude)
+            Indices of problematic primitives (top-k by gradient magnitude or scale*opacity)
         """
         if len(tile_indices) == 0:
             return torch.tensor([], dtype=torch.long, device=tile_indices.device)
@@ -646,9 +654,9 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         problematic_tile_indices = torch.where(problematic_mask)[0]
         problematic_global_indices = tile_indices[problematic_tile_indices]
         
-        # If we have gradient magnitudes, select top-k by gradient magnitude
-        if gradient_magnitudes is not None and len(problematic_global_indices) > 0:
-            # Get gradient magnitudes for problematic primitives
+        # Select top-k primitives based on configuration
+        if gradient_ranking_enabled and gradient_magnitudes is not None and len(problematic_global_indices) > 0:
+            # Use gradient-based ranking
             problematic_gradients = gradient_magnitudes[problematic_global_indices]
             
             # Select top-k by gradient magnitude
@@ -661,13 +669,14 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 selected_indices = problematic_global_indices
                 print(f"  - Selected all problematic: {len(problematic_global_indices)}/{len(problematic_global_indices)}")
         else:
-            # Fallback: limit by max_primitives_per_tile using scale*opacity score
+            # Use scale*opacity ranking (either disabled by config or gradient magnitudes unavailable)
             num_to_select = min(max_primitives_per_tile, len(problematic_global_indices))
             if num_to_select < len(problematic_global_indices):
                 scores = r[problematic_global_indices] * torch.sigmoid(v[problematic_global_indices])
                 _, top_indices = torch.topk(scores, num_to_select)
                 selected_indices = problematic_global_indices[top_indices]
-                print(f"  - Selected top-{num_to_select} by scale*opacity: {num_to_select}/{len(problematic_global_indices)}")
+                ranking_method = "gradient (unavailable)" if gradient_ranking_enabled else "scale*opacity (config)"
+                print(f"  - Selected top-{num_to_select} by {ranking_method}: {num_to_select}/{len(problematic_global_indices)}")
             else:
                 selected_indices = problematic_global_indices
                 print(f"  - Selected all problematic: {len(problematic_global_indices)}/{len(problematic_global_indices)}")
@@ -1414,13 +1423,14 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         scale_threshold = adaptive_config.get('scale_threshold', 8.0)
         opacity_threshold = adaptive_config.get('opacity_threshold', 0.7)
         max_primitives_per_tile = adaptive_config.get('max_primitives_per_tile', 3)
+
         
-        # Extract gradient-based criterion configuration
-        gradient_config = adaptive_config.get('gradient_criterion', {})
-        use_gradient_criterion = gradient_config.get('enabled', False)
+        # Extract gradient_ranking configuration
+        gradient_ranking_config = adaptive_config.get('gradient_ranking', {})
+        gradient_ranking_enabled = gradient_ranking_config.get('enabled', True)
         
         print(f"[Debug Adaptive Control] Starting debug with gradient visualization")
-        print(f"[Debug Adaptive Control] Tile grid: {tile_rows}x{tile_cols}, gradient criterion: {use_gradient_criterion}")
+        print(f"[Debug Adaptive Control] Tile grid: {tile_rows}x{tile_cols}, Gradient ranking enabled: {gradient_ranking_enabled}")
         
         # Create new leaf tensors
         x_adapted = x.detach().requires_grad_(True)
@@ -1468,7 +1478,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 # Find problematic primitives
                 problematic_indices = self._find_problematic_primitives(
                     tile_indices, x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
-                    scale_threshold, opacity_threshold, gradient_magnitudes, max_primitives_per_tile
+                    scale_threshold, opacity_threshold, gradient_magnitudes, max_primitives_per_tile,
+                    gradient_ranking_enabled
                 )
                 
                 # Find non-problematic primitives for comparison
