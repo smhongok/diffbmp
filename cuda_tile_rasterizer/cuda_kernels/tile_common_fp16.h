@@ -16,6 +16,14 @@
     #define DEV
 #endif
 
+#define H0   __float2half(0.0f)
+#define H05  __float2half(0.5f)
+#define H1   __float2half(1.0f)
+#define EPS1_FP16 __float2half(1e-6f)
+#define EPS6_FP16 __float2half(1e6f)
+#define EPS1 1e-6f
+#define EPS6 1e6f
+
 HD static inline int clampi(int v, int lo, int hi) {
     return (v < lo) ? lo : ((v > hi) ? hi : v);
 }
@@ -209,6 +217,16 @@ DEV half2 mul_fp16(const half2x2& a, const half2& b) {
     return make_half2(__float2half(result_x), __float2half(result_y));
 }
 #endif
+
+// --------- Packed output layout ---------
+struct OutputTensorsFP16_H2Packed {
+    // 기존 그대로(원하면 여기도 half2로 바꿀 수 있음)
+    __half*  grad_means2D;          // [2*N] (mx,my) — 기존 인터페이스 유지
+
+    __half2* grad_opacity_radius_h2; // [N] (opacity, radius)
+    __half2* grad_rot_colorR_h2;     // [N] (rotation, color_r)
+    __half2* grad_colorGB_h2;        // [N] (color_g, color_b)
+};
 
 // --------- Indexing utilities ----------
 __device__ __forceinline__ int idx_nhw(int n, int h, int w, int H, int W) {
