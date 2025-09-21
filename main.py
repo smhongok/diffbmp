@@ -318,7 +318,8 @@ if sequential_config.get("enabled", False):
         
         # Render final frame for export
         with torch.no_grad():
-            rendered_frame = sequential_renderer.render_from_params(x, y, r, theta, v, c, sigma=0.0, is_final=True)
+            white_bg = torch.ones((sequential_renderer.H, sequential_renderer.W, 3), device=sequential_renderer.device)
+            frame_rendered = sequential_renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0, is_final=True)
         
         # Store results for this frame
         current_params = {
@@ -328,7 +329,7 @@ if sequential_config.get("enabled", False):
             'v': v.clone(),
             'theta': theta.clone(),
             'c': c.clone(),
-            'rendered_frame': rendered_frame.clone()
+            'rendered_frame': frame_rendered.clone()
         }
         
         frame_results.append({
@@ -401,6 +402,22 @@ if sequential_config.get("enabled", False):
         theta_frame = frame_result['theta']
         c_frame = frame_result['c']
         
+
+        # Still render final PNG for preview/compatibility using tile-based rendering
+        with torch.no_grad():
+            white_bg = torch.ones((sequential_renderer.H, sequential_renderer.W, 3), device=sequential_renderer.device)
+            frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, I_bg=white_bg, sigma=0.0, is_final=True)
+        # Save rendered frame directly
+        frame_rendered_np = frame_rendered.detach().cpu().numpy()
+        frame_rendered_np = (frame_rendered_np * 255).astype(np.uint8)
+        frame_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}.png')
+        Image.fromarray(frame_rendered_np).save(frame_path)
+        
+        # Store rendered frame for GIF/MP4 export
+        frame_np = rendered_frame.cpu().numpy()
+        frame_np = (frame_np * 255).astype(np.uint8)
+        exported_frames.append(frame_np)
+        
         # Check if PSD export is requested
         psd_export = config.get('postprocessing', {}).get('export_psd', False)
         
@@ -408,7 +425,7 @@ if sequential_config.get("enabled", False):
             # Export PSD layers using util/psd_exporter.py with batched processing
             from util.psd_exporter import PSDExporter
             
-            psd_path = output_path.replace('.png', '.psd')
+            psd_path = frame_path.replace('.png', '.psd')
             psd_scale_factor = config.get('postprocessing', {}).get('psd_scale_factor', 1.0)
             exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
             
@@ -420,18 +437,7 @@ if sequential_config.get("enabled", False):
             # Export PSD file
             exporter.export_psd(psd_path)
         
-        # Still render final PNG for preview/compatibility using tile-based rendering
-        frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, sigma=0.0, is_final=True)
-        # Save rendered frame directly
-        frame_rendered_np = frame_rendered.detach().cpu().numpy()
-        frame_rendered_np = (frame_rendered_np * 255).astype(np.uint8)
-        frame_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}.png')
-        Image.fromarray(frame_rendered_np).save(frame_path)
         
-        # Store rendered frame for GIF/MP4 export
-        frame_np = rendered_frame.cpu().numpy()
-        frame_np = (frame_np * 255).astype(np.uint8)
-        exported_frames.append(frame_np)
     
     # Export GIF
     export_config = sequential_config.get("export", {})
