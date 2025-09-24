@@ -353,6 +353,29 @@ class Preprocessor:
         
         # Open video with OpenCV
         cap = cv2.VideoCapture(video_path)
+        
+        # If max_frames is None, set it to the total number of frames in the video
+        if max_frames is None:
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            # If automatic frame count detection fails (returns 0), manually count frames
+            if total_frames == 0:
+                print("Automatic frame count detection failed, manually counting frames...")
+                temp_cap = cv2.VideoCapture(video_path)
+                total_frames = 0
+                while True:
+                    ret, _ = temp_cap.read()
+                    if not ret:
+                        break
+                    total_frames += 1
+                temp_cap.release()
+                print(f"Manually counted {total_frames} frames in video")
+            else:
+                print(f"Auto-detected {total_frames} frames in video")
+            
+            max_frames = total_frames
+            print(f"Processing all {max_frames} frames")
+        
         frame_count = 0
         
         while True:

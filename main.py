@@ -27,7 +27,7 @@ from core.initializer.svgsplat_initializater import StructureAwareInitializer
 from core.initializer.random_initializater import RandomInitializer
 
 # Route visualization flag - set to True to enable primitive movement visualization
-# ENABLE_ROUTE_VISUALIZATION = True
+ENABLE_ROUTE_VISUALIZATION = True
 
 # Import our modules
 from core.preprocessing import Preprocessor
@@ -36,8 +36,8 @@ from util.pdf_exporter import PDFExporter
 import util.target_masks as target_masks
 
 # Conditional import for route visualization
-#if ENABLE_ROUTE_VISUALIZATION:
-#    from util.route_visualizer import create_route_visualization
+if ENABLE_ROUTE_VISUALIZATION:
+    from util.route_visualizer import create_route_visualization
 
 
 
@@ -455,7 +455,7 @@ if sequential_config.get("enabled", False):
                 output_path=route_viz_path,
                 line_width=1.5,
                 alpha=0.7,
-                max_primitives=100,
+                max_primitives=1000,
                 color_scheme='rainbow',
                 interpolation_points=10
             )
