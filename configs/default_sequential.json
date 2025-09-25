@@ -5,7 +5,7 @@
     "FM_halftone": false,
     "transform": "none",
     "img_path": [
-      "images/videos/golf_ball.mp4"
+      "images/gif/pororo_monkey_crop_first2.gif"
     ],
     "bg_threshold": 250,
     "do_equalize": false,
@@ -100,7 +100,7 @@
   },
   "sequential": {
     "enabled": true,
-    "input_type": "video",
+    "input_type": "gif",
     "max_frames": null,
     "optimization": {
       "num_iterations": 100,
@@ -118,32 +118,20 @@
     },
     "adaptive_control": {
       "enabled": true,
-      "tile_rows": 8,
-      "tile_cols": 8,
+      "tile_rows": 4,
+      "tile_cols": 4,
       "scale_threshold": 12.0,
       "opacity_threshold": 0.7,
       "opacity_reduction_factor": 0.4,
-      "max_primitives_per_tile": 8,
+      "max_primitives_per_tile": 4,
       "apply_every_n_iterations": 20,
-      "color_nerf": {
-        "enabled": false,
-        "mode": "pixel"
-      },
+
       "gradient_ranking": {
         "enabled": true,
         "pixels_per_tile": 64
       }
     },
-    "combined_loss": {
-      "enabled": false,
-      "grayscale_weight": 0.3,
-      "color_weight": 0.7,
-      "use_gradient_loss": false,
-      "gradient_weight": 0.1,
-      "use_cosine_similarity": false,
-      "use_canny_loss": true,
-      "canny_weight": 0.2
-    },
+
     "export": {
       "export_frames": true,
       "export_gif": false,
@@ -152,7 +140,7 @@
     }
   },
   "postprocessing": {
-    "output_folder": "./outputs/seq_route_vis/golf_ball_video/",
+    "output_folder": "./outputs/reduce_code/pororo_monkey/",
     "hires_export": false,
     "hires_scale_factor": 4.0,
     "compute_psnr": false,

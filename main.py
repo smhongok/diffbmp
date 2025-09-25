@@ -27,7 +27,7 @@ from core.initializer.svgsplat_initializater import StructureAwareInitializer
 from core.initializer.random_initializater import RandomInitializer
 
 # Route visualization flag - set to True to enable primitive movement visualization
-ENABLE_ROUTE_VISUALIZATION = True
+ENABLE_ROUTE_VISUALIZATION = False
 
 # Import our modules
 from core.preprocessing import Preprocessor

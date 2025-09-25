@@ -12,8 +12,13 @@ import sys
 import time
 import torch
 import numpy as np
+import cv2
+import matplotlib.pyplot as plt
 from PIL import Image
 from datetime import datetime
+
+# Import GradientVisualizer
+from gradient_visualizer import GradientVisualizer
 
 # Add the parent directory to the path to import modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -115,7 +120,7 @@ OPTIMIZATION_CONFIG = {
 
 # Output configuration
 OUTPUT_CONFIG = {
-    "output_folder": "./outputs/initialization_test/",
+    "output_folder": "./outputs/initialization_test001/",
     "save_format": "png"
 }
 
@@ -310,16 +315,132 @@ def render_and_save(renderer, x, y, r, v, theta, c, output_path, method_name):
 
 def save_target_image(I_target, output_path):
     """Save the target image for comparison"""
-    print("Saving target image for comparison...")
-    
-    with torch.no_grad():
-        target_np = I_target.detach().cpu().numpy()
-        target_np = np.clip(target_np, 0, 1)
-        target_np = (target_np * 255).astype(np.uint8)
+    if isinstance(I_target, torch.Tensor):
+        # Convert tensor to numpy array
+        I_np = I_target.detach().cpu().numpy()
         
-        img = Image.fromarray(target_np)
-        img.save(output_path)
-        print(f"Saved target image to: {output_path}")
+        # Handle different tensor formats
+        if I_np.ndim == 3 and I_np.shape[2] == 3:
+            # RGB format (H, W, 3)
+            I_np = (I_np * 255).astype(np.uint8)
+        else:
+            # Grayscale or other format
+            I_np = (I_np * 255).astype(np.uint8)
+            if I_np.ndim == 2:
+                I_np = np.stack([I_np] * 3, axis=-1)
+    
+    # Save as PNG
+    Image.fromarray(I_np).save(output_path)
+    print(f"Target image saved to: {output_path}")
+
+def analyze_edge_proximity(x, y, I_target, output_dir, timestamp, method_name, top_k=50):
+    """
+    Analyze edge proximity of primitives and visualize closest primitives on edge map.
+    Uses the same edge processing logic as base_initializer.py and svgsplat_initializater.py.
+    
+    Args:
+        x, y: Primitive coordinates (torch tensors)
+        I_target: Target image tensor
+        output_dir: Directory to save results
+        timestamp: Timestamp for unique filenames
+        method_name: Name of initialization method
+        top_k: Number of closest-to-edge primitives to extract
+    
+    Returns:
+        torch.Tensor: Indices of primitives closest to edges [top_k]
+    """
+    print(f"\nAnalyzing edge proximity for {method_name} initialization...")
+    
+    # Convert target image to numpy format for edge processing
+    if isinstance(I_target, torch.Tensor):
+        I_np = I_target.detach().cpu().numpy()
+        # Convert to grayscale if needed
+        if I_np.ndim == 3:
+            I_np = np.mean(I_np, axis=2)
+    else:
+        I_np = I_target
+        if I_np.ndim == 3:
+            I_np = cv2.cvtColor(I_np, cv2.COLOR_RGB2GRAY)
+    
+    # Ensure image is in correct format for edge detection
+    if I_np.dtype != np.uint8:
+        I_np = (I_np * 255).astype(np.uint8)
+    
+    H, W = I_np.shape
+    
+    # Edge processing - EXACTLY matching the initializer logic
+    edges = cv2.Canny(I_np, 100, 200)
+    inverted_edges = cv2.bitwise_not(edges)
+    distance_map = cv2.distanceTransform(inverted_edges, cv2.DIST_L2, 5)
+    
+    # Convert primitive coordinates to numpy
+    x_np = x.detach().cpu().numpy()
+    y_np = y.detach().cpu().numpy()
+    
+    # Sample distance at each primitive location
+    idx_x = np.clip(np.round(x_np).astype(int), 0, W - 1)
+    idx_y = np.clip(np.round(y_np).astype(int), 0, H - 1)
+    primitive_distances = distance_map[idx_y, idx_x]
+    
+    # Find indices of primitives closest to edges (smallest distances)
+    closest_indices = np.argsort(primitive_distances)[:top_k]
+    closest_distances = primitive_distances[closest_indices]
+    
+    # Get coordinates of closest primitives
+    closest_x = x_np[closest_indices]
+    closest_y = y_np[closest_indices]
+    
+    # Calculate statistics
+    distance_stats = {
+        'min': np.min(primitive_distances),
+        'max': np.max(primitive_distances),
+        'mean': np.mean(primitive_distances),
+        'std': np.std(primitive_distances)
+    }
+    
+    # Create visualization: overlay closest primitives on edge map
+    plt.figure(figsize=(12, 8))
+    
+    # Display edge map as background
+    plt.imshow(edges, cmap='gray', alpha=0.7)
+    
+    # Overlay closest primitives as red circles
+    plt.scatter(closest_x, closest_y, c='red', s=30, alpha=0.8, edgecolors='white', linewidth=1)
+    
+    # Add title with statistics
+    title = f"{method_name.upper()} Initialization - Top {top_k} Closest to Edges\n"
+    title += f"Total: {len(x_np)} primitives | "
+    title += f"Avg distance: {distance_stats['mean']:.2f} | "
+    title += f"Min distance: {distance_stats['min']:.2f} | "
+    title += f"Closest range: {np.min(closest_distances):.2f}-{np.max(closest_distances):.2f}"
+    
+    plt.title(title, fontsize=12, pad=20)
+    plt.xlabel('X coordinate')
+    plt.ylabel('Y coordinate')
+    
+    # Add legend
+    plt.scatter([], [], c='red', s=30, alpha=0.8, edgecolors='white', linewidth=1, label=f'Top {top_k} closest to edges')
+    plt.legend(loc='upper right')
+    
+    # Set axis limits and invert y-axis to match image coordinates
+    plt.xlim(0, W)
+    plt.ylim(H, 0)
+    plt.gca().set_aspect('equal', adjustable='box')
+    
+    # Save the visualization
+    viz_path = os.path.join(output_dir, f"edge_proximity_viz_{method_name}_{timestamp}.png")
+    plt.tight_layout()
+    plt.savefig(viz_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"Edge proximity analysis completed for {method_name}:")
+    print(f"  Visualization saved to: {viz_path}")
+    print(f"  Total primitives: {len(x_np)}")
+    print(f"  Closest {top_k} primitives - distance range: {np.min(closest_distances):.4f} to {np.max(closest_distances):.4f}")
+    print(f"  Overall distance stats - mean: {distance_stats['mean']:.4f}, std: {distance_stats['std']:.4f}")
+    
+    # Return closest indices as torch tensor for compatibility with GradientVisualizer
+    return torch.tensor(closest_indices, dtype=torch.long)
 
 def main():
     """Main function to run initialization export"""
@@ -349,8 +470,8 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # Save target image for comparison
-    target_path = os.path.join(output_dir, f"target_{timestamp}.png")
-    save_target_image(I_target, target_path)
+    # target_path = os.path.join(output_dir, f"target_{timestamp}.png")
+    # save_target_image(I_target, target_path)
     
     # Test different initializers
     initializers_to_test = [
@@ -372,6 +493,32 @@ def main():
             # Render and save
             output_path = os.path.join(output_dir, f"init_{method_name}_{timestamp}.png")
             render_and_save(renderer, x, y, r, v, theta, c, output_path, method_name)
+            
+            # Analyze edge proximity of initialized primitives
+            closest_indices = analyze_edge_proximity(
+                x, y, I_target, output_dir, timestamp, method_name, top_k=5
+            )
+            
+            # Create GradientVisualizer and visualize gradients for closest primitives
+            gradient_save_path = os.path.join(output_dir, f"gradient_{method_name}_{timestamp}")
+            gradient_visualizer = GradientVisualizer(
+                target_image=I_target,
+                save_path=gradient_save_path,
+                color_spectrum="full",
+                background_color=(1.0, 1.0, 1.0),  # White background
+                enable_logging=True,
+                center_dot_radius=2,
+            )
+            
+            # Visualize per-pixel gradients for closest-to-edge primitives
+            print(f"\nVisualizing gradients for {len(closest_indices)} closest-to-edge primitives...")
+            vis_tensor, saved_path = gradient_visualizer.visualize_gradients(
+                renderer, x, y, r, v, theta, c, closest_indices,
+                suffix="closest_to_edges",
+                title_prefix=f"Gradient Visualization - {method_name.upper()} Closest to Edges",
+                center_dot_color=(0.0, 0.0, 0.0)  # Black dots
+            )
+            print(f"Gradient visualization saved to: {saved_path}")
             
         except Exception as e:
             print(f"Error with {method_name} initializer: {e}")
