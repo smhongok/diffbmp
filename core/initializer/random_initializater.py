@@ -15,7 +15,7 @@ class RandomInitializer(BaseInitializer):
     def __init__(self, init_opt:Dict[str, Any]):
         super().__init__(init_opt)
    
-    def initialize(self, I_target, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
+    def initialize(self, I_target, target_binary_mask=None, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
         """
         Specialization for SVG input to match the API expected in main_svg.py
         """
