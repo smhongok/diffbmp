@@ -26,11 +26,18 @@ from util.svg_converter import FontParser, ImageToSVG
 from core.initializer.svgsplat_initializater import StructureAwareInitializer
 from core.initializer.random_initializater import RandomInitializer
 
+# Route visualization flag - set to True to enable primitive movement visualization
+ENABLE_ROUTE_VISUALIZATION = False
+
 # Import our modules
 from core.preprocessing import Preprocessor
 from util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
 from util.pdf_exporter import PDFExporter
 import util.target_masks as target_masks
+
+# Conditional import for route visualization
+if ENABLE_ROUTE_VISUALIZATION:
+    from util.route_visualizer import create_route_visualization
 
 
 
@@ -437,7 +444,24 @@ if sequential_config.get("enabled", False):
             # Export PSD file
             exporter.export_psd(psd_path)
         
-        
+    
+    # Generate route visualization if enabled (after all frames are processed)
+    if ENABLE_ROUTE_VISUALIZATION and len(frame_results) >= 2:
+        print("\nGenerating primitive movement route visualization...")
+        route_viz_path = os.path.join(output_dir, f'primitive_routes_{timestamp}.png')
+        try:
+            create_route_visualization(
+                frame_results=frame_results,
+                output_path=route_viz_path,
+                line_width=1.5,
+                alpha=0.7,
+                max_primitives=1000,
+                color_scheme='rainbow',
+                interpolation_points=10
+            )
+            print(f"Route visualization saved to: {route_viz_path}")
+        except Exception as e:
+            print(f"Warning: Failed to generate route visualization: {e}")
     
     # Export GIF
     export_config = sequential_config.get("export", {})

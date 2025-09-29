@@ -31,7 +31,7 @@
   },
   "initialization": {
     "initializer": "structure_aware",
-    "N": [1000],
+    "N": [4000],
     "alpha": 0.3,
     "min_distance": 5,
     "peak_threshold": 0.5,
@@ -125,38 +125,27 @@
       "opacity_reduction_factor": 0.4,
       "max_primitives_per_tile": 4,
       "apply_every_n_iterations": 20,
-      "color_nerf": {
-        "enabled": false,
-        "mode": "pixel"
-      },
+
       "gradient_ranking": {
+        "enabled": true,
         "pixels_per_tile": 64
       }
     },
-    "combined_loss": {
-      "enabled": false,
-      "grayscale_weight": 0.3,
-      "color_weight": 0.7,
-      "use_gradient_loss": false,
-      "gradient_weight": 0.1,
-      "use_cosine_similarity": false,
-      "use_canny_loss": true,
-      "canny_weight": 0.2
-    },
+
     "export": {
       "export_frames": true,
-      "export_gif": true,
+      "export_gif": false,
       "export_mp4": true,
       "frame_duration": 100
     }
   },
   "postprocessing": {
-    "output_folder": "./outputs/psd_seq_debug/pororo/",
+    "output_folder": "./outputs/reduce_code/pororo_monkey/",
     "hires_export": false,
     "hires_scale_factor": 4.0,
     "compute_psnr": false,
     "linewidth": 3.0,
-    "export_psd": true,
+    "export_psd": false,
     "psd_scale_factor": 2.0
   },
   "seed": 42

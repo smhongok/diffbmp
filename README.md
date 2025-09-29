@@ -75,6 +75,24 @@ To execute specific evaluations on generated results:
 python run_evaluation.py
 ```
 
+### Visualization Methods
+
+To visualize the initialization process:
+
+```
+python util/initialization_exporter.py
+```
+
+
+To visualize frame-by-frame primitive (x,y) movement:
+
+```
+go to main.py and set ENABLE_ROUTE_VISUALIZATION = True
+then run 
+python main.py --config configs/default_sequential.json
+```
+
+
 ## Assets
 
 * Put any predefined SVG templates based on 'path' tag in the `assets/svg` directory.
