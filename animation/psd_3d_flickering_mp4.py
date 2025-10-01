@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
 """
-PSD 3D Camera Animation with PyVista
+PSD 3D Camera Animation with Flickering Effect using PyVista
 
-Creates 3D camera movement animations from PSD layers using PyVista:
-- Each layer is positioned in 3D space as a textured plane
-- Full RGBA support with proper alpha blending
-- Camera can move freely in 3D space
-- Initial view matches the original PSD layout
+Combines 3D camera movement (zoom out + orbit) with flickering layer appearance.
+Layers gradually appear with flickering effect while camera orbits around the scene.
 
 Usage:
-    python psd_3d_pyvista_mp4.py input.psd -o output.mp4
+    python psd_3d_flickering_mp4.py input.psd -o output.mp4
 """
 
 import os
 import sys
 import argparse
 import math
+import random
 import numpy as np
 from pathlib import Path
 from PIL import Image
@@ -41,19 +39,7 @@ except ImportError as e:
 
 
 def extract_psd_layers_3d(psd_path, layer_start=None, layer_end=None, depth_range=(100, 1000), verbose=False):
-    """
-    Extract layers from PSD file with 3D positioning.
-    
-    Args:
-        psd_path: Path to PSD file
-        layer_start: Starting layer index (0-based, inclusive)
-        layer_end: Ending layer index (0-based, inclusive)
-        depth_range: (min_z, max_z) depth range for layer positioning
-        verbose: Print extraction details
-        
-    Returns:
-        tuple: (layer_images, layer_3d_positions, canvas_size, reference_camera_pos)
-    """
+    """Extract layers from PSD file with 3D positioning."""
     try:
         psd = PSDImage.open(psd_path)
         layers = list(psd)
@@ -61,7 +47,6 @@ def extract_psd_layers_3d(psd_path, layer_start=None, layer_end=None, depth_rang
         if verbose:
             print(f"Total layers found: {len(layers)}")
         
-        # Apply layer range filtering
         if layer_start is not None:
             layer_start = max(0, layer_start)
         else:
@@ -77,7 +62,6 @@ def extract_psd_layers_3d(psd_path, layer_start=None, layer_end=None, depth_rang
         if verbose:
             print(f"Using layers {layer_start} to {layer_end} ({len(selected_layers)} layers)")
         
-        # Extract individual layer images
         layer_images = []
         layer_3d_positions = []
         canvas_size = (psd.width, psd.height)
@@ -85,12 +69,8 @@ def extract_psd_layers_3d(psd_path, layer_start=None, layer_end=None, depth_rang
         total_layers = len(selected_layers)
         min_z, max_z = depth_range
         
-        # Reference camera position to match original PSD view
-        reference_camera_pos = (canvas_size[0] / 2, canvas_size[1] / 2, 0)
-        
         for i, layer in enumerate(selected_layers):
             try:
-                # Handle different layer types
                 if hasattr(layer, 'compose'):
                     layer_image = layer.compose()
                 elif hasattr(layer, 'topil'):
@@ -98,50 +78,35 @@ def extract_psd_layers_3d(psd_path, layer_start=None, layer_end=None, depth_rang
                 else:
                     layer_image = layer.as_PIL()
                 
-                # Skip if layer_image is None
                 if layer_image is None:
                     if verbose:
                         print(f"  Skipped layer {i}: {layer.name} - No image data")
                     continue
                 
-                # Convert to RGBA if needed
                 if layer_image.mode != 'RGBA':
                     layer_image = layer_image.convert('RGBA')
                 
-                # Get original 2D position
                 original_x = layer.left
                 original_y = layer.top
                 
-                # Calculate 3D depth based on layer order
                 z_depth = min_z + (i / max(1, total_layers - 1)) * (max_z - min_z)
                 
-                # Calculate 3D position with perspective correction
-                # Original 2D position in canvas
                 canvas_x = original_x + layer_image.size[0] / 2
                 canvas_y = original_y + layer_image.size[1] / 2
                 
-                # We want the camera at (canvas_center_x, canvas_center_y, -camera_distance)
-                # to see layers at their original 2D positions
-                # Using perspective projection: scale = (z + camera_distance) / camera_distance
-                camera_distance_ref = 1500  # Reference camera distance
-                
-                # Center of canvas (target point)
+                camera_distance_ref = 1500
                 canvas_center_x = canvas_size[0] / 2
                 canvas_center_y = canvas_size[1] / 2
                 
-                # Distance from canvas center in 2D
                 dx_2d = canvas_x - canvas_center_x
                 dy_2d = canvas_y - canvas_center_y
                 
-                # Perspective scale factor
                 perspective_scale = (z_depth + camera_distance_ref) / camera_distance_ref
                 
-                # Apply perspective to position
                 world_x = canvas_center_x + dx_2d * perspective_scale
                 world_y = canvas_center_y + dy_2d * perspective_scale
                 world_z = z_depth
                 
-                # Scale layer size by perspective
                 depth_scale = perspective_scale
                 
                 layer_images.append(layer_image)
@@ -157,9 +122,8 @@ def extract_psd_layers_3d(psd_path, layer_start=None, layer_end=None, depth_rang
         
         if verbose:
             print(f"Successfully extracted {len(layer_images)} layers")
-            print(f"Canvas size: {canvas_size}")
-            print(f"Reference camera: {reference_camera_pos}")
         
+        reference_camera_pos = (canvas_size[0] / 2, canvas_size[1] / 2, 0)
         return layer_images, layer_3d_positions, canvas_size, reference_camera_pos
         
     except Exception as e:
@@ -167,29 +131,20 @@ def extract_psd_layers_3d(psd_path, layer_start=None, layer_end=None, depth_rang
         return [], [], (0, 0), (0, 0, 0)
 
 
-def create_textured_plane(image, position, scale):
-    """
-    Create a textured plane for a layer image with full RGBA support.
-    
-    Args:
-        image: PIL Image (RGBA)
-        position: (x, y, z) center position in world space
-        scale: Scale factor for the plane
-        
-    Returns:
-        pyvista.PolyData plane with texture
-    """
+def create_textured_plane(image, position, scale, opacity=1.0):
+    """Create a textured plane with opacity support."""
     width, height = image.size
-    
-    # Convert PIL image to numpy array
     img_array = np.array(image)
     
-    # Create a plane mesh
+    # Apply opacity to alpha channel
+    if opacity < 1.0:
+        img_array = img_array.copy()
+        img_array[:, :, 3] = (img_array[:, :, 3] * opacity).astype(np.uint8)
+    
     w = width * scale / 2
     h = height * scale / 2
     x, y, z = position
     
-    # Create plane centered at position
     plane = pv.Plane(
         center=(x, y, z),
         direction=(0, 0, 1),
@@ -199,123 +154,65 @@ def create_textured_plane(image, position, scale):
         j_resolution=1
     )
     
-    # Flip image vertically for correct texture mapping
     img_flipped = np.flipud(img_array)
-    
-    # Create texture from image (PyVista supports RGBA)
     texture = pv.Texture(img_flipped)
     
     return plane, texture
 
 
-def create_3d_scene(layer_images, layer_3d_positions, verbose=False):
+def calculate_layer_opacity(frame_idx, layer_idx, total_frames, num_layers, 
+                           flicker_intensity=0.3, layer_states=None):
     """
-    Create PyVista scene with all layers as textured planes.
+    Calculate opacity for a layer at given frame with flickering effect.
     
-    Args:
-        layer_images: List of PIL Images
-        layer_3d_positions: List of (x, y, z, scale) tuples
-        verbose: Print progress
+    States:
+    - 0 (A): Transparent (opacity = 0)
+    - 1 (B): Flickering (opacity varies)
+    - 2 (C): Stable/Visible (opacity = 1)
+    """
+    if layer_states is None or layer_states[layer_idx] == 0:
+        return 0.0
+    elif layer_states[layer_idx] == 2:
+        return 1.0
+    else:  # State 1 (B) - Flickering
+        # Multi-component flickering
+        slow_frequency = 0.08 + (layer_idx % 10) * 0.01
+        sine_component = math.sin(frame_idx * slow_frequency + layer_idx * 0.3)
         
-    Returns:
-        List of (plane, texture) tuples
-    """
-    planes = []
-    
-    if verbose:
-        print(f"Creating 3D scene with {len(layer_images)} layers...")
-    
-    for i, (image, (x, y, z, scale)) in enumerate(zip(layer_images, layer_3d_positions)):
-        plane, texture = create_textured_plane(image, (x, y, z), scale)
-        planes.append((plane, texture))
+        random.seed(frame_idx // 12 + layer_idx)
+        random_component = random.uniform(-0.4, 0.4)
         
-        if verbose and (i + 1) % 100 == 0:
-            print(f"  Created plane {i+1}/{len(layer_images)}")
-    
-    return planes
-
-
-def render_frame_pyvista(planes, camera_pos, camera_target, canvas_size, fov=60):
-    """
-    Render a single frame using PyVista offscreen renderer.
-    
-    Args:
-        planes: List of (plane, texture) tuples
-        camera_pos: (x, y, z) camera position
-        camera_target: (x, y, z) point camera is looking at
-        canvas_size: (width, height) of output
-        fov: Field of view in degrees
+        breathing = math.sin(frame_idx * 0.03 + layer_idx * 0.7) * 0.25
         
-    Returns:
-        PIL Image of rendered frame
-    """
-    # Create plotter for offscreen rendering
-    plotter = pv.Plotter(off_screen=True, window_size=canvas_size)
-    
-    # Add all planes to scene with textures
-    for plane, texture in planes:
-        plotter.add_mesh(plane, texture=texture, opacity=1.0)
-    
-    # Set camera position
-    plotter.camera_position = [
-        camera_pos,  # camera position
-        camera_target,  # focal point
-        (0, -1, 0)  # view up vector (Y down for screen coordinates)
-    ]
-    
-    # Set field of view
-    plotter.camera.view_angle = fov
-    
-    # Set background to white
-    plotter.set_background('white')
-    
-    # Render to image
-    img_array = plotter.screenshot(return_img=True, transparent_background=False)
-    
-    # Close plotter
-    plotter.close()
-    
-    # Convert to PIL Image
-    pil_image = Image.fromarray(img_array)
-    
-    return pil_image
+        base_opacity = 0.5
+        flicker_variation = sine_component * flicker_intensity + random_component * 0.15 + breathing
+        current_opacity = base_opacity + flicker_variation
+        return max(0.0, min(1.0, current_opacity))
 
 
 def generate_camera_path(total_frames, camera_distance=1500,
                         target_pos=None, canvas_size=(512, 880), 
-                        zoom_out_ratio=0.3, verbose=False):
-    """
-    Generate 3D camera movement path: zoom out then orbit.
-    
-    Args:
-        total_frames: Number of frames
-        camera_distance: Initial camera distance
-        target_pos: Target position
-        canvas_size: Canvas size
-        zoom_out_ratio: Fraction of frames for zoom out (default: 0.3 = 30%)
-        verbose: Verbose output
-        
-    Returns:
-        List of (camera_pos, target_pos) tuples
-    """
+                        zoom_out_ratio=0.3, orbit_center_z=None, verbose=False):
+    """Generate 3D camera movement path: zoom out then orbit."""
     if target_pos is None:
         target_pos = (canvas_size[0] / 2, canvas_size[1] / 2, 0)
     
     camera_path = []
     tx, ty, tz = target_pos
     
-    # Calculate zoom out and orbit frame counts
+    # Use orbit_center_z for orbit phase if provided (layers Z median)
+    orbit_tz = orbit_center_z if orbit_center_z is not None else tz
+    
     zoom_frames = int(total_frames * zoom_out_ratio)
     orbit_frames = total_frames - zoom_frames
     
-    # Maximum zoom out distance (2x initial distance)
-    max_distance = camera_distance * 2.0
+    # Adjust orbit radius based on Z center shift
+    z_shift = abs(orbit_tz - tz) if orbit_center_z is not None else 0
+    max_distance = camera_distance * 2.0 + z_shift
     
     for frame_idx in range(total_frames):
         if frame_idx < zoom_frames:
-            # Phase 1: Zoom out (camera moves back along z-axis)
             t_zoom = frame_idx / max(1, zoom_frames - 1) if zoom_frames > 1 else 1.0
-            # Smooth easing: slow start, fast middle, slow end
             t_smooth = 0.5 - 0.5 * math.cos(t_zoom * math.pi)
             
             current_distance = camera_distance + (max_distance - camera_distance) * t_smooth
@@ -324,98 +221,143 @@ def generate_camera_path(total_frames, camera_distance=1500,
             camera_z = tz - current_distance
             
         else:
-            # Phase 2: Orbit around target at max distance
             t_orbit = (frame_idx - zoom_frames) / max(1, orbit_frames - 1)
             angle = t_orbit * 2 * math.pi
             
+            # Orbit around (tx, ty, orbit_tz) - using layers Z median
             camera_x = tx + max_distance * math.sin(angle)
             camera_y = ty
-            camera_z = tz - max_distance * math.cos(angle)
+            camera_z = orbit_tz - max_distance * math.cos(angle)
         
         camera_path.append(((camera_x, camera_y, camera_z), target_pos))
     
     if verbose:
         print(f"Generated zoom-out + orbit camera path with {total_frames} frames")
-        print(f"  Zoom out: {zoom_frames} frames ({camera_distance} -> {max_distance})")
-        print(f"  Orbit: {orbit_frames} frames at distance {max_distance}")
+        print(f"  Zoom out: {zoom_frames} frames ({camera_distance} -> {max_distance:.1f})")
+        print(f"  Orbit: {orbit_frames} frames at radius {max_distance:.1f}")
+        if orbit_center_z is not None:
+            z_shift = abs(orbit_tz - tz)
+            print(f"  Orbit center Z: {orbit_center_z:.1f} (layers Z median, shift: {z_shift:.1f})")
     
     return camera_path
 
 
 def calculate_fov_for_canvas(canvas_size, camera_distance):
-    """
-    Calculate FOV so that canvas fits exactly in the viewport.
-    
-    Args:
-        canvas_size: (width, height) of canvas
-        camera_distance: Distance from camera to target
-        
-    Returns:
-        FOV in degrees
-    """
-    # Use the larger dimension to ensure full canvas is visible
+    """Calculate FOV so that canvas fits exactly in the viewport."""
     canvas_height = canvas_size[1]
-    
-    # Calculate FOV using: tan(fov/2) = (height/2) / distance
     fov_radians = 2 * math.atan(canvas_height / (2 * camera_distance))
     fov_degrees = math.degrees(fov_radians)
-    
     return fov_degrees
 
 
-def generate_3d_sequence(layer_images, layer_3d_positions, canvas_size, total_frames,
-                        camera_distance=1500, zoom_out_ratio=0.3, depth_range=(100, 1000), verbose=False):
-    """
-    Generate sequence of frames with 3D camera movement using PyVista.
+def render_frame_with_opacity(layer_images, layer_3d_positions, layer_opacities,
+                              camera_pos, camera_target, canvas_size, fov):
+    """Render a single frame with per-layer opacity."""
+    plotter = pv.Plotter(off_screen=True, window_size=canvas_size)
     
-    Args:
-        layer_images: List of PIL Images
-        layer_3d_positions: List of (x, y, z, scale) tuples
-        canvas_size: (width, height)
-        total_frames: Number of frames
-        camera_distance: Initial camera distance
-        zoom_out_ratio: Fraction of frames for zoom out phase
-        verbose: Verbose output
+    # Add layers with their current opacity
+    for i, (image, (x, y, z, scale), opacity) in enumerate(zip(layer_images, layer_3d_positions, layer_opacities)):
+        if opacity <= 0:
+            continue
         
-    Returns:
-        List of PIL Images
-    """
-    # Create 3D scene
-    planes = create_3d_scene(layer_images, layer_3d_positions, verbose)
+        plane, texture = create_textured_plane(image, (x, y, z), scale, opacity)
+        plotter.add_mesh(plane, texture=texture, opacity=1.0)
     
-    # Calculate scene center
-    # Fix target at z=0 to match the camera_distance_ref assumption
+    plotter.camera_position = [
+        camera_pos,
+        camera_target,
+        (0, -1, 0)
+    ]
+    
+    plotter.camera.view_angle = fov
+    plotter.set_background('white')
+    
+    img_array = plotter.screenshot(return_img=True, transparent_background=False)
+    plotter.close()
+    
+    pil_image = Image.fromarray(img_array)
+    return pil_image
+
+
+def generate_3d_flickering_sequence(layer_images, layer_3d_positions, canvas_size, total_frames,
+                                   camera_distance=1500, zoom_out_ratio=0.3, 
+                                   flicker_intensity=0.3, final_display_seconds=4.0, fps=24, verbose=False):
+    """Generate sequence with 3D camera movement and simple layer appearance (no flickering)."""
+    num_layers = len(layer_images)
+    
+    # Calculate target and FOV
     if layer_3d_positions:
         center_x = sum(pos[0] for pos in layer_3d_positions) / len(layer_3d_positions)
         center_y = sum(pos[1] for pos in layer_3d_positions) / len(layer_3d_positions)
-        # Force z=0 so camera at z=-camera_distance matches perspective calculation
         target_pos = (center_x, center_y, 0)
     else:
         target_pos = (canvas_size[0] / 2, canvas_size[1] / 2, 0)
     
-    # Calculate FOV to fit canvas exactly at initial distance
     fov = calculate_fov_for_canvas(canvas_size, camera_distance)
     
     if verbose:
         print(f"Calculated FOV: {fov:.2f}° for canvas {canvas_size} at distance {camera_distance}")
     
-    # Generate camera path (zoom out + orbit)
+    # Calculate layers Z median for orbit center
+    layer_z_values = [pos[2] for pos in layer_3d_positions]
+    orbit_center_z = sorted(layer_z_values)[len(layer_z_values) // 2]
+    
+    # Generate camera path with layers Z median as orbit center
     camera_path = generate_camera_path(
         total_frames, camera_distance, target_pos, canvas_size,
-        zoom_out_ratio, verbose
+        zoom_out_ratio, orbit_center_z, verbose
     )
+    
+    # Simple random appearance logic (no flickering)
+    # Create random permutation of layer indices
+    import random
+    layer_order = list(range(num_layers))
+    random.shuffle(layer_order)
+    
+    # Calculate when each layer appears (spread evenly across frames)
+    layer_appear_frame = {}
+    for i, layer_idx in enumerate(layer_order):
+        # Spread appearances across all frames
+        appear_frame = int(i * total_frames / num_layers)
+        layer_appear_frame[layer_idx] = appear_frame
+    
+    if verbose:
+        print(f"Simple appearance animation:")
+        print(f"  {num_layers} layers will appear randomly across {total_frames} frames")
+        print(f"  Average: {total_frames/num_layers:.1f} frames per layer")
     
     frames = []
     
     if verbose:
         print(f"Rendering {total_frames} frames...")
     
-    for frame_idx, (camera_pos, camera_target) in enumerate(camera_path):
-        frame = render_frame_pyvista(planes, camera_pos, camera_target, canvas_size, fov)
+    # Simple loop: just check if each layer should be visible
+    for frame_idx in range(total_frames):
+        # Calculate opacity for each layer (0 or 1, no flickering)
+        layer_opacities = []
+        for layer_idx in range(num_layers):
+            if frame_idx >= layer_appear_frame[layer_idx]:
+                opacity = 1.0  # Visible
+            else:
+                opacity = 0.0  # Hidden
+            layer_opacities.append(opacity)
+        
+        # Get camera position
+        (camera_pos, camera_target) = camera_path[frame_idx]
+        
+        # Render frame
+        frame = render_frame_with_opacity(
+            layer_images, layer_3d_positions, layer_opacities,
+            camera_pos, camera_target, canvas_size, fov
+        )
         frames.append(frame)
         
         if verbose and (frame_idx + 1) % 10 == 0:
-            print(f"  Rendered frame {frame_idx + 1}/{total_frames}")
+            visible_count = sum(1 for o in layer_opacities if o > 0)
+            print(f"  Frame {frame_idx + 1}/{total_frames}: Visible={visible_count}/{num_layers}")
+    
+    if verbose:
+        print(f"\n✅ All {num_layers} layers appeared across {total_frames} frames")
     
     return frames
 
@@ -456,7 +398,7 @@ def create_3d_animation(frames, output_path, fps=24, verbose=False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Create 3D camera animation from PSD using PyVista",
+        description="Create 3D camera animation with simple layer appearance from PSD using PyVista",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -466,6 +408,7 @@ def main():
     parser.add_argument('--fps', type=int, default=24, help='Frames per second (default: 24)')
     parser.add_argument('--distance', type=float, default=1500, help='Initial camera distance (default: 1500)')
     parser.add_argument('--zoom-ratio', type=float, default=0.3, help='Zoom out phase ratio (default: 0.3)')
+    parser.add_argument('--flicker-intensity', type=float, default=0.3, help='Flicker intensity (default: 0.3)')
     parser.add_argument('--depth-range', type=str, default='100,1000', help='Depth range (default: 100,1000)')
     parser.add_argument('--layer-start', type=int, help='Starting layer index')
     parser.add_argument('--layer-end', type=int, help='Ending layer index')
@@ -487,13 +430,13 @@ def main():
     
     if args.output is None:
         psd_path = Path(args.psd_file)
-        args.output = str(psd_path.with_name(psd_path.stem + '_3d_pyvista.mp4'))
+        args.output = str(psd_path.with_name(psd_path.stem + '_3d_simple.mp4'))
     
     output_dir = os.path.dirname(args.output)
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
     
-    print(f"Creating 3D camera animation with PyVista:")
+    print(f"Creating 3D camera animation with simple layer appearance:")
     print(f"  Input:  {args.psd_file}")
     print(f"  Output: {args.output}")
     print(f"  Duration: {args.duration}s")
@@ -513,10 +456,10 @@ def main():
     total_frames = int(args.duration * args.fps)
     
     # Generate sequence
-    print(f"\nGenerating 3D sequence with {len(layer_images)} layers...")
-    frames = generate_3d_sequence(
+    print(f"\nGenerating 3D simple appearance sequence with {len(layer_images)} layers...")
+    frames = generate_3d_flickering_sequence(
         layer_images, layer_3d_positions, canvas_size, total_frames,
-        args.distance, args.zoom_ratio, depth_range, args.verbose
+        args.distance, args.zoom_ratio, args.flicker_intensity, 4.0, args.fps, args.verbose
     )
     
     # Create animation
