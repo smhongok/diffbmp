@@ -115,13 +115,34 @@ def extract_psd_layers_3d(psd_path, layer_start=None, layer_end=None, depth_rang
                 # Calculate 3D depth based on layer order
                 z_depth = min_z + (i / max(1, total_layers - 1)) * (max_z - min_z)
                 
-                # Calculate 3D position
-                world_x = original_x + layer_image.size[0] / 2
-                world_y = original_y + layer_image.size[1] / 2
+                # Calculate 3D position with perspective correction
+                # Original 2D position in canvas
+                canvas_x = original_x + layer_image.size[0] / 2
+                canvas_y = original_y + layer_image.size[1] / 2
+                
+                # We want the camera at (canvas_center_x, canvas_center_y, -camera_distance)
+                # to see layers at their original 2D positions
+                # Using perspective projection: scale = (z + camera_distance) / camera_distance
+                camera_distance_ref = 1500  # Reference camera distance
+                
+                # Center of canvas (target point)
+                canvas_center_x = canvas_size[0] / 2
+                canvas_center_y = canvas_size[1] / 2
+                
+                # Distance from canvas center in 2D
+                dx_2d = canvas_x - canvas_center_x
+                dy_2d = canvas_y - canvas_center_y
+                
+                # Perspective scale factor
+                perspective_scale = (z_depth + camera_distance_ref) / camera_distance_ref
+                
+                # Apply perspective to position
+                world_x = canvas_center_x + dx_2d * perspective_scale
+                world_y = canvas_center_y + dy_2d * perspective_scale
                 world_z = z_depth
                 
-                # No depth scaling - keep original size
-                depth_scale = 1.0
+                # Scale layer size by perspective
+                depth_scale = perspective_scale
                 
                 layer_images.append(layer_image)
                 layer_3d_positions.append((world_x, world_y, world_z, depth_scale))
@@ -292,14 +313,12 @@ def generate_camera_path(total_frames, movement_type='orbit', camera_distance=15
         t = frame_idx / max(1, total_frames - 1)
         
         if movement_type == 'orbit':
-            # Circular orbit - start from reference position
-            if frame_idx == 0:
-                camera_x, camera_y, camera_z = ref_x, ref_y, ref_z
-            else:
-                angle = t * 2 * math.pi
-                camera_x = tx + camera_distance * math.cos(angle)
-                camera_y = ty
-                camera_z = tz + camera_distance * math.sin(angle)
+            # Circular orbit around target
+            # t=0: camera at (tx, ty, tz - camera_distance) looking at (tx, ty, tz)
+            angle = t * 2 * math.pi
+            camera_x = tx + camera_distance * math.sin(angle)
+            camera_y = ty
+            camera_z = tz - camera_distance * math.cos(angle)
             
         elif movement_type == 'orbit_vertical':
             # Vertical orbit
