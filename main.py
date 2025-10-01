@@ -603,23 +603,7 @@ if not sequential_config.get("enabled", False):
         
         # Check if PSD export is requested
         psd_export = config.get('postprocessing', {}).get('export_psd', False)
-        
-        if psd_export:
-            # Export PSD layers using util/psd_exporter.py with batched processing
-            from util.psd_exporter import PSDExporter
-            
-            psd_path = output_path.replace('.png', '.psd')
-            psd_scale_factor = config.get('postprocessing', {}).get('psd_scale_factor', 1.0)
-            exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
-            
-            # Use batched processing - all data preparation handled internally
-            exporter.add_layers_batch_optimized(
-                renderer.S, x, y, r, theta, v, c
-            )
-                
-            # Export PSD file
-            exporter.export_psd(psd_path)
-        
+
         # Convert parameters to FP16 for final rendering if using FP16 renderer
         if renderer.use_fp16:
             from torch.amp import autocast
@@ -639,6 +623,23 @@ if not sequential_config.get("enabled", False):
             rendered_np = rendered.detach().cpu().numpy()
             rendered_np = (rendered_np * 255).astype(np.uint8)
             Image.fromarray(rendered_np).save(output_path)
+
+        if psd_export:
+            # Export PSD layers using util/psd_exporter.py with batched processing
+            from util.psd_exporter import PSDExporter
+            
+            psd_path = output_path.replace('.png', '.psd')
+            psd_scale_factor = config.get('postprocessing', {}).get('psd_scale_factor', 1.0)
+            exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
+            
+            # Use batched processing - all data preparation handled internally
+            exporter.add_layers_batch_optimized(
+                renderer.S, x, y, r, theta, v, c
+            )
+                
+            # Export PSD file
+            exporter.export_psd(psd_path)
+    
 
         if config['postprocessing'].get('export_mp4', False):
             video_path = os.path.join(output_dir, f'output_{timestamp}.mp4')
