@@ -44,7 +44,8 @@
         "pruning_enabled": true,
         "level": 2,
         "multi_level": false,
-        "hollow": false
+        "hollow": false,
+        "detail_first": false
     },
     "optimization": {
         "use_fp16": true,

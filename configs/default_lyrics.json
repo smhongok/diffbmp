@@ -36,7 +36,8 @@
         "alpha": 0.3,
         "min_distance": 5,
         "peak_threshold": 0.5,
-        "radii_min": 2,
+        "radii_min": 1,
+        "radii_max": 16,
         "v_init_bias": -5.0,
         "v_init_slope": 3.0,
         "keypoint_extracting": false,
@@ -45,7 +46,8 @@
         "pruning_enabled": true,
         "level": 2,
         "multi_level": false,
-        "hollow": false
+        "hollow": false,
+        "detail_first": false
     },
     "optimization": {
         "use_fp16": false,
@@ -89,7 +91,7 @@
         "output_folder": "outputs/",
         "linewidth": 3.0,
         "compute_psnr": true,
-        "export_psd": true,
+        "export_psd": false,
         "psd_scale_factor": 2.0
     }
 } 
