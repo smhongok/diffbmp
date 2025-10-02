@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Run flickering, parallax, and falling animations in one go
+# Run all available PSD animations (2D and 3D) in one go
 # Usage:
 #   ./run_all.sh <input.psd> [--out-dir DIR] [--fps N]
 #                 [--flicker-opts "..."] [--parallax-opts "..."] [--falling-opts "..."]
+#                 [--3d-opts "..."] [--3d-flicker-opts "..."]
 # Examples:
 #   ./run_all.sh ../outputs/output_20250930_110724.psd --out-dir ./output --fps 24 \
 #       --parallax-opts "--movement cardioid --duration 8" \
 #       --falling-opts "--pattern top_to_bottom" \
-#       --flicker-opts "--intensity 0.3"
+#       --flicker-opts "--intensity 0.3" \
+#       --3d-opts "--duration 10 --distance 1500" \
+#       --3d-flicker-opts "--duration 15 --fps 12"
 
 set -euo pipefail
 
@@ -21,9 +24,11 @@ FPS=24
 FLICKER_OPTS=""
 PARALLAX_OPTS=""
 FALLING_OPTS=""
+THREED_OPTS=""
+THREED_FLICKER_OPTS=""
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <input.psd> [--out-dir DIR] [--fps N] [--flicker-opts \"...\"] [--parallax-opts \"...\"] [--falling-opts \"...\"]"
+  echo "Usage: $0 <input.psd> [--out-dir DIR] [--fps N] [--flicker-opts \"...\"] [--parallax-opts \"...\"] [--falling-opts \"...\"] [--3d-opts \"...\"] [--3d-flicker-opts \"...\"]"
   exit 1
 fi
 
@@ -42,6 +47,10 @@ while [[ $# -gt 0 ]]; do
       PARALLAX_OPTS="$2"; shift 2 ;;
     --falling-opts)
       FALLING_OPTS="$2"; shift 2 ;;
+    --3d-opts)
+      THREED_OPTS="$2"; shift 2 ;;
+    --3d-flicker-opts)
+      THREED_FLICKER_OPTS="$2"; shift 2 ;;
     *)
       echo "Unknown option: $1"; exit 1 ;;
   esac
@@ -63,6 +72,8 @@ BASENAME_NOEXT="${BASENAME%.*}"
 FLICKER_OUT="$OUT_DIR/${BASENAME_NOEXT}_flicker.mp4"
 PARALLAX_OUT="$OUT_DIR/${BASENAME_NOEXT}_parallax.mp4"
 FALLING_OUT="$OUT_DIR/${BASENAME_NOEXT}_falling.mp4"
+THREED_OUT="$OUT_DIR/${BASENAME_NOEXT}_3d.mp4"
+THREED_FLICKER_OUT="$OUT_DIR/${BASENAME_NOEXT}_3d_flicker.mp4"
 
 # Status bookkeeping
 FAIL=0
@@ -94,7 +105,7 @@ else
 fi
 
 # 3) Falling
-echo "\n[3/3] Running falling animation..."
+echo "\n[3/5] Running falling animation..."
 set +e
 python "$SCRIPT_DIR/psd_falling_mp4.py" "$PSD_FILE" -o "$FALLING_OUT" --fps "$FPS" ${FALLING_OPTS}
 RET=$?
@@ -106,11 +117,39 @@ else
   echo "  ✅ Falling OK: $FALLING_OUT"
 fi
 
+# 4) 3D Camera (PyVista)
+echo "\n[4/5] Running 3D camera animation (PyVista)..."
+set +e
+python "$SCRIPT_DIR/psd_3d_pyvista_mp4.py" "$PSD_FILE" -o "$THREED_OUT" --fps "$FPS" ${THREED_OPTS}
+RET=$?
+set -e
+if [[ $RET -ne 0 ]]; then
+  echo "  ❌ 3D camera failed (exit $RET)"
+  FAIL=1
+else
+  echo "  ✅ 3D camera OK: $THREED_OUT"
+fi
+
+# 5) 3D Camera + Simple Appearance (PyVista)
+echo "\n[5/5] Running 3D camera + simple appearance animation (PyVista)..."
+set +e
+python "$SCRIPT_DIR/psd_3d_flickering_mp4.py" "$PSD_FILE" -o "$THREED_FLICKER_OUT" --fps "$FPS" ${THREED_FLICKER_OPTS}
+RET=$?
+set -e
+if [[ $RET -ne 0 ]]; then
+  echo "  ❌ 3D flickering failed (exit $RET)"
+  FAIL=1
+else
+  echo "  ✅ 3D flickering OK: $THREED_FLICKER_OUT"
+fi
+
 # Summary
 echo "\n=== Summary ==="
-[[ -f "$FLICKER_OUT" ]] && echo "Flicker:  $FLICKER_OUT" || echo "Flicker:  FAILED"
-[[ -f "$PARALLAX_OUT" ]] && echo "Parallax: $PARALLAX_OUT" || echo "Parallax: FAILED"
-[[ -f "$FALLING_OUT" ]] && echo "Falling:  $FALLING_OUT" || echo "Falling:  FAILED"
+[[ -f "$FLICKER_OUT" ]] && echo "Flicker (2D):        $FLICKER_OUT" || echo "Flicker (2D):        FAILED"
+[[ -f "$PARALLAX_OUT" ]] && echo "Parallax (2D):       $PARALLAX_OUT" || echo "Parallax (2D):       FAILED"
+[[ -f "$FALLING_OUT" ]] && echo "Falling (2D):        $FALLING_OUT" || echo "Falling (2D):        FAILED"
+[[ -f "$THREED_OUT" ]] && echo "3D Camera:           $THREED_OUT" || echo "3D Camera:           FAILED"
+[[ -f "$THREED_FLICKER_OUT" ]] && echo "3D + Appearance:     $THREED_FLICKER_OUT" || echo "3D + Appearance:     FAILED"
 
 if [[ $FAIL -ne 0 ]]; then
   echo "\nSome tasks failed. See messages above."
