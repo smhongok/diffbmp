@@ -131,48 +131,70 @@ else:
     W = preprocessor.final_width
 
 # Handle SVG file loading
-svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
-if svg_ext == ".svg":
-    svg_path = os.path.join("assets/svg", config["svg"].get("svg_file"))
-elif svg_ext in (".png", ".jpg", ".jpeg"):
-    if config["svg"].get("convert_to_svg", True):
-        img_converter = ImageToSVG()
-        svg_path = img_converter.extract_filled_outlines(config["svg"].get("svg_file"), threshold=100, min_area_ratio=0.000001)
-        del img_converter
-    else:
-        svg_path = os.path.join("assets/primitives", config["svg"].get("svg_file"))
-elif svg_ext in (".otf", ".ttf"):
-    # 텍스트 소스 결정
-    texts = None
-    if "text" in config["svg"]:
-        texts = config["svg"]["text"]
-    elif "text_file" in config["svg"]:
-        # 파일에서 텍스트 추출 (예시: txt, lrc 등 처리)
-        text_ext = os.path.splitext(config["svg"].get("text_file"))[1].lower()
-        text_path = os.path.join("assets/texts", config["svg"].get("text_file")) 
-        
-        # 전용 파서 클래스 (여기서는 간단 예시)
-        if text_ext == ".txt" or text_ext == ".lrc":
-            texts, char_counts, word_lengths_per_line = extract_chars_from_file(text_path, text_ext, remove_punct=config["svg"].get("remove_punctuation", False), punct_to_remove=".,;:()\{\}[]\"\'")
-            html_extra_path_special = "output_webpage/src_lyrics/index.html"
-            config["initialization"]["N"] = sum(char_counts)  # N은 텍스트의 개수로 설정
-        else:
-            raise ValueError(f"Unsupported text_file type: {text_ext}")
+svg_file_config = config["svg"].get("svg_file")
 
-    if texts is not None:
-        font_parser = FontParser(config["svg"]["svg_file"])
-        # texts = config["svg"]["text"]
-        if isinstance(texts, list):
-            svg_paths = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
+# Handle list of files (multiple primitives)
+if isinstance(svg_file_config, list):
+    # Multiple primitives - process each one
+    svg_path = []
+    for file_item in svg_file_config:
+        file_ext = os.path.splitext(file_item)[1].lower()
+        if file_ext == ".svg":
+            svg_path.append(os.path.join("assets/svg", file_item))
+        elif file_ext in (".png", ".jpg", ".jpeg"):
+            if config["svg"].get("convert_to_svg", True):
+                img_converter = ImageToSVG()
+                converted_path = img_converter.extract_filled_outlines(file_item, threshold=100, min_area_ratio=0.000001)
+                svg_path.append(converted_path)
+                del img_converter
+            else:
+                svg_path.append(os.path.join("assets/primitives", file_item))
         else:
-            svg_paths = str(font_parser.text_to_svg(texts, mode="opt-path"))
-        svg_path = svg_paths
-        del font_parser
-    else:
-        raise ValueError("No text source ('text' or 'text_file') provided in svg config.")
-
+            raise ValueError(f"Unsupported file extension in list: {file_ext}")
 else:
-    svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
+    # Single primitive - original logic
+    svg_ext = os.path.splitext(svg_file_config)[1].lower()
+    if svg_ext == ".svg":
+        svg_path = os.path.join("assets/svg", svg_file_config)
+    elif svg_ext in (".png", ".jpg", ".jpeg"):
+        if config["svg"].get("convert_to_svg", True):
+            img_converter = ImageToSVG()
+            svg_path = img_converter.extract_filled_outlines(svg_file_config, threshold=100, min_area_ratio=0.000001)
+            del img_converter
+        else:
+            svg_path = os.path.join("assets/primitives", svg_file_config)
+    elif svg_ext in (".otf", ".ttf"):
+        # 텍스트 소스 결정
+        texts = None
+        if "text" in config["svg"]:
+            texts = config["svg"]["text"]
+        elif "text_file" in config["svg"]:
+            # 파일에서 텍스트 추출 (예시: txt, lrc 등 처리)
+            text_ext = os.path.splitext(config["svg"].get("text_file"))[1].lower()
+            text_path = os.path.join("assets/texts", config["svg"].get("text_file")) 
+            
+            # 전용 파서 클래스 (여기서는 간단 예시)
+            if text_ext == ".txt" or text_ext == ".lrc":
+                texts, char_counts, word_lengths_per_line = extract_chars_from_file(text_path, text_ext, remove_punct=config["svg"].get("remove_punctuation", False), punct_to_remove=".,;:()\{\}[]\"\'")
+                html_extra_path_special = "output_webpage/src_lyrics/index.html"
+                config["initialization"]["N"] = sum(char_counts)  # N은 텍스트의 개수로 설정
+            else:
+                raise ValueError(f"Unsupported text_file type: {text_ext}")
+
+        if texts is not None:
+            font_parser = FontParser(config["svg"]["svg_file"])
+            # texts = config["svg"]["text"]
+            if isinstance(texts, list):
+                svg_paths = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
+            else:
+                svg_paths = str(font_parser.text_to_svg(texts, mode="opt-path"))
+            svg_path = svg_paths
+            del font_parser
+        else:
+            raise ValueError("No text source ('text' or 'text_file') provided in svg config.")
+
+    else:
+        svg_path = svg_file_config if svg_file_config else "assets/svg/MaruBuri-Bold_HELLO.svg"
 
 # Load primitives (SVG, PNG, JPG)
 # Use PrimitiveLoader for hybrid support, fallback to SVGLoader for compatibility
@@ -581,23 +603,7 @@ if not sequential_config.get("enabled", False):
         
         # Check if PSD export is requested
         psd_export = config.get('postprocessing', {}).get('export_psd', False)
-        
-        if psd_export:
-            # Export PSD layers using util/psd_exporter.py with batched processing
-            from util.psd_exporter import PSDExporter
-            
-            psd_path = output_path.replace('.png', '.psd')
-            psd_scale_factor = config.get('postprocessing', {}).get('psd_scale_factor', 1.0)
-            exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
-            
-            # Use batched processing - all data preparation handled internally
-            exporter.add_layers_batch_optimized(
-                renderer.S, x, y, r, theta, v, c
-            )
-                
-            # Export PSD file
-            exporter.export_psd(psd_path)
-        
+
         # Convert parameters to FP16 for final rendering if using FP16 renderer
         if renderer.use_fp16:
             from torch.amp import autocast
@@ -617,6 +623,23 @@ if not sequential_config.get("enabled", False):
             rendered_np = rendered.detach().cpu().numpy()
             rendered_np = (rendered_np * 255).astype(np.uint8)
             Image.fromarray(rendered_np).save(output_path)
+
+        if psd_export:
+            # Export PSD layers using util/psd_exporter.py with batched processing
+            from util.psd_exporter import PSDExporter
+            
+            psd_path = output_path.replace('.png', '.psd')
+            psd_scale_factor = config.get('postprocessing', {}).get('psd_scale_factor', 1.0)
+            exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
+            
+            # Use batched processing - all data preparation handled internally
+            exporter.add_layers_batch_optimized(
+                renderer.S, x, y, r, theta, v, c
+            )
+                
+            # Export PSD file
+            exporter.export_psd(psd_path)
+    
 
         if config['postprocessing'].get('export_mp4', False):
             video_path = os.path.join(output_dir, f'output_{timestamp}.mp4')

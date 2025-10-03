@@ -189,14 +189,14 @@ class PrimitiveLoader:
         
         # Use alpha channel for mask
         alpha = padded[:, :, 3]
-        binary = (alpha > 0).astype(np.float32)
-        # return torch.tensor(binary, device=self.device)
         padded_gray = np.pad(
             gray_arr,
             ((pad_h, new_size - h - pad_h), (pad_w, new_size - w - pad_w)),
             mode='constant', constant_values=255
         )
-        return torch.tensor(1. - padded_gray.astype(float)/255., device=self.device)
+        # Apply alpha mask: keep grayscale values where alpha > 0, set to 0 where alpha = 0
+        result = (1. - padded_gray.astype(float) / 255.) * (alpha > 0).astype(float)
+        return torch.tensor(result, device=self.device)
 
     def get_html_embedding_data(self, index: int) -> dict:
         """
