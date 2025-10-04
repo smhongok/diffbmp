@@ -25,13 +25,13 @@
   },
   "svg": {
     "svg_file": "arial.ttf",
-    "text": "B",
+    "text": "S",
     "svg_hollow": false,
     "output_width": 128
   },
   "initialization": {
     "initializer": "structure_aware",
-    "N": [4000],
+    "N": [1000],
     "alpha": 0.3,
     "min_distance": 5,
     "peak_threshold": 0.5,
@@ -124,7 +124,7 @@
       "opacity_threshold": 0.7,
       "opacity_reduction_factor": 0.4,
       "max_primitives_per_tile": 4,
-      "apply_every_n_iterations": 20,
+      "apply_epochs": [50, 60, 80],
 
       "gradient_ranking": {
         "enabled": true,
@@ -140,12 +140,12 @@
     }
   },
   "postprocessing": {
-    "output_folder": "./outputs/reduce_code/pororo_monkey/",
+    "output_folder": "./outputs/new_seq/pororo_monkey",
     "hires_export": false,
     "hires_scale_factor": 4.0,
-    "compute_psnr": false,
+    "compute_psnr": true,
     "linewidth": 3.0,
-    "export_psd": false,
+    "export_psd": true,
     "psd_scale_factor": 2.0
   },
   "seed": 42

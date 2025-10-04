@@ -8,10 +8,10 @@ from .simple_tile_renderer import SimpleTileRenderer
 # DEBUG CONFIGURATION FOR GRADIENT VISUALIZATION
 # =============================================================================
 # Set to True to enable gradient visualization during adaptive control
-ENABLE_GRADIENT_DEBUG_VISUALIZATION = True
+ENABLE_GRADIENT_DEBUG_VISUALIZATION = False
 
 # Set to True to enable non-problematic primitive gradient visualization for comparison
-ENABLE_NON_PROBLEMATIC_PRIMITIVE_GRADIENT_VISUALIZATION = True
+ENABLE_NON_PROBLEMATIC_PRIMITIVE_GRADIENT_VISUALIZATION = False
 
 # Directory to save gradient visualization images
 GRADIENT_DEBUG_SAVE_DIR = "./outputs/vis_class/debug_gradients_sequential"
@@ -156,7 +156,9 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         
         num_iter = opt_conf.get("num_iterations", opt_conf.get("num_iter", 50))
         adaptive_config = opt_conf.get('adaptive_control', {})
-        apply_every_n = adaptive_config.get('apply_every_n_iterations', 10)
+        # Read explicit epochs at which to apply adaptive control
+        # Expect a list of iteration indices (0-based) in config under 'apply_epochs'
+        apply_epochs = set(adaptive_config.get('apply_epochs', []))
         
         pbar = tqdm(range(num_iter), desc="Optimizing with warmup scheduling")
         
@@ -164,9 +166,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
 
         # Main optimization loop
         for i in pbar:
-            # Apply adaptive control periodically if enabled
-            if (adaptive_config.get('enabled', False) and 
-                i > 0 and i % apply_every_n == 0):
+            # Apply adaptive control at specified epochs if enabled
+            if (adaptive_config.get('enabled', False) and i in apply_epochs):
                 
                 # Choose between debug visualization or normal adaptive control
                 if ENABLE_GRADIENT_DEBUG_VISUALIZATION:
@@ -225,8 +226,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             
             # Update progress bar
             postfix = {'loss': f'{loss.item():.6f}', 'lr': f'{scheduler.get_last_lr()[0]:.6f}'}
-            if (adaptive_config.get('enabled', False) and 
-                i > 0 and i % apply_every_n == 0):
+            if (adaptive_config.get('enabled', False) and i in apply_epochs):
                 postfix['adaptive'] = 'applied'
             pbar.set_postfix(postfix)
         

@@ -659,6 +659,38 @@ if config['postprocessing'].get('compute_psnr', False):
             total_vif = 0
             total_lpips = 0
             
+            # Prepare metrics txt output path under configured output folder
+            metrics_txt_path = os.path.join(output_dir, f"metrics_{timestamp}.txt")
+            try:
+                metrics_fh = open(metrics_txt_path, 'w')
+                metrics_fh.write("Sequential frame metrics\n")
+                metrics_fh.write(f"Timestamp: {timestamp}\n")
+                
+                # Write adaptive_control configuration snapshot for record
+                try:
+                    ac_conf = sequential_config.get("adaptive_control", {})
+                    metrics_fh.write("adaptive_control_config\n")
+                    metrics_fh.write(f"  enabled: {ac_conf.get('enabled', False)}\n")
+                    metrics_fh.write(f"  tile_rows: {ac_conf.get('tile_rows', '')}\n")
+                    metrics_fh.write(f"  tile_cols: {ac_conf.get('tile_cols', '')}\n")
+                    metrics_fh.write(f"  scale_threshold: {ac_conf.get('scale_threshold', '')}\n")
+                    metrics_fh.write(f"  opacity_threshold: {ac_conf.get('opacity_threshold', '')}\n")
+                    metrics_fh.write(f"  opacity_reduction_factor: {ac_conf.get('opacity_reduction_factor', '')}\n")
+                    metrics_fh.write(f"  max_primitives_per_tile: {ac_conf.get('max_primitives_per_tile', '')}\n")
+                    metrics_fh.write(f"  apply_epochs: {ac_conf.get('apply_epochs', '')}\n")
+                    gr_conf = ac_conf.get('gradient_ranking', {})
+                    if isinstance(gr_conf, dict) and gr_conf:
+                        metrics_fh.write("  gradient_ranking:\n")
+                        metrics_fh.write(f"    enabled: {gr_conf.get('enabled', False)}\n")
+                        metrics_fh.write(f"    pixels_per_tile: {gr_conf.get('pixels_per_tile', '')}\n")
+                except Exception as e:
+                    print(f"Warning: Failed to write adaptive_control config to metrics file: {e}")
+
+                metrics_fh.write("frame,psnr,ssim,vif,lpips\n")
+            except Exception as e:
+                print(f"Warning: Could not open metrics file for writing: {e}")
+                metrics_fh = None
+            
             for frame_idx, (frame_result, I_target_frame) in enumerate(zip(frame_results, I_targets)):
                 # Render frame for metrics using tile-based rendering
                 with torch.no_grad():
@@ -682,6 +714,13 @@ if config['postprocessing'].get('compute_psnr', False):
                 
                 print(f"Frame {frame_idx + 1}: PSNR: {psnr_val.item():.2f} dB, SSIM: {ssim_val.item():.4f}, VIF: {vif_val.item():.4f}, LPIPS: {lpips_val.item():.4f}")
                 
+                # Write per-frame metrics to txt file if available
+                if metrics_fh is not None:
+                    try:
+                        metrics_fh.write(f"{frame_idx + 1},{psnr_val.item():.4f},{ssim_val.item():.6f},{vif_val.item():.6f},{lpips_val.item():.6f}\n")
+                    except Exception as e:
+                        print(f"Warning: Failed to write metrics for frame {frame_idx + 1}: {e}")
+                
                 total_psnr += psnr_val.item()
                 total_ssim += ssim_val.item()
                 total_vif += vif_val.item()
@@ -695,6 +734,19 @@ if config['postprocessing'].get('compute_psnr', False):
             print(f"VIF: {total_vif / num_frames:.4f}")
             print(f"LPIPS: {total_lpips / num_frames:.4f}")
             print(f"Number of splats: {len(frame_results[0]['x'])}")
+            
+            # Append averages to metrics txt and close file
+            if metrics_fh is not None:
+                try:
+                    metrics_fh.write("\nAverages\n")
+                    metrics_fh.write(f"avg_psnr,{total_psnr / num_frames:.4f}\n")
+                    metrics_fh.write(f"avg_ssim,{total_ssim / num_frames:.6f}\n")
+                    metrics_fh.write(f"avg_vif,{total_vif / num_frames:.6f}\n")
+                    metrics_fh.write(f"avg_lpips,{total_lpips / num_frames:.6f}\n")
+                    metrics_fh.close()
+                    print(f"Per-frame metrics saved to: {metrics_txt_path}")
+                except Exception as e:
+                    print(f"Warning: Failed to finalize metrics file: {e}")
             
         else:
             # Single image metrics (original behavior)
