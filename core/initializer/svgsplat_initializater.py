@@ -48,45 +48,96 @@ class StructureAwareInitializer(BaseInitializer):
         if I_np.dtype != np.uint8:
             I_np = (I_np * 255).astype(np.uint8)        
 
-        # Now use our structure-aware initialization
-        edges = cv2.Canny(I_np, 100, 200)
-        grad_y, grad_x = np.gradient(I_np.astype(np.float32))
+        # -------------------- RGB variance-based importance map -------------------- #
+        # Compute local variance for each RGB channel
+        window_size = 7  # 7x7 sliding window
+        half_window = window_size // 2
         
-        # Start with ORB points
-        num_kp = 0
-        if self.keypoint_extracting:
-            orb = cv2.ORB_create(nfeatures=N, scaleFactor=1.2, nlevels=8, edgeThreshold=15, firstLevel=0, WTA_K=2, patchSize=31, fastThreshold=20)
-            keypoints = orb.detect(I_np, None)
+        # Ensure I_color is in correct format (H, W, 3) with values 0-1
+        if I_color.max() > 1.0:
+            I_color_normalized = I_color / 255.0
         else:
-            keypoints = False
+            I_color_normalized = I_color
         
-        # If no keypoints found, do random initialization
-        if not keypoints:
-            if self.keypoint_extracting:
-                print("No ORB keypoints. using coarse-to-fine initialization.")
+        # Compute local variance for each channel
+        variance_map = np.zeros((H, W), dtype=np.float32)
+        
+        for channel in range(3):  # R, G, B
+            channel_img = I_color_normalized[:, :, channel]
+            
+            # Use cv2.boxFilter for efficient local mean computation
+            local_mean = cv2.boxFilter(channel_img, -1, (window_size, window_size), normalize=True)
+            local_mean_sq = cv2.boxFilter(channel_img**2, -1, (window_size, window_size), normalize=True)
+            
+            # Variance = E[X^2] - E[X]^2
+            channel_variance = local_mean_sq - local_mean**2
+            variance_map += channel_variance
+        
+        # Normalize variance map to [0, 1]
+        if variance_map.max() > 0:
+            variance_map = variance_map / variance_map.max()
+        
+        print(f"Variance map stats: min={variance_map.min():.4f}, max={variance_map.max():.4f}, mean={variance_map.mean():.4f}")
+        
+        # -------------------- Stratified sampling based on variance -------------------- #
+        # High variance (complex) → more points, small radius, high index
+        # Low variance (flat) → fewer points, large radius, low index
+        
+        # Apply background mask if provided
+        valid_mask = np.ones((H, W), dtype=np.float32)
+        if target_binary_mask is not None:
+            if hasattr(target_binary_mask, 'detach'):
+                mask_np = target_binary_mask.detach().cpu().numpy()
             else:
-                print("keypoint_extracting off. using random initialization.")
-            init_pts = np.random.rand(num_kp, 2) * np.array([W, H])
+                mask_np = target_binary_mask
+            valid_mask = 1 - mask_np  # 1 = foreground, 0 = background
+        
+        # Create sampling probability map: higher variance = higher probability
+        # But also ensure some coverage in low-variance areas
+        sampling_prob = variance_map * valid_mask
+        
+        # Add base probability to ensure low-variance areas get some points
+        base_prob = 0.1
+        sampling_prob = base_prob + (1 - base_prob) * sampling_prob
+        sampling_prob = sampling_prob * valid_mask
+        
+        # Flatten and normalize
+        sampling_prob_flat = sampling_prob.flatten()
+        if sampling_prob_flat.sum() > 0:
+            sampling_prob_flat = sampling_prob_flat / sampling_prob_flat.sum()
         else:
-            # Sort based on less strength and pick top N//5
-            sorted_kp = sorted(keypoints, key=lambda kp: -kp.response, reverse=True)
-            print("num_kp: ", num_kp)
-            init_pts = np.array([kp.pt for kp in sorted_kp[:num_kp]])  # (x, y)
+            print("Warning: No valid sampling probabilities. Using uniform distribution.")
+            sampling_prob_flat = valid_mask.flatten()
+            sampling_prob_flat = sampling_prob_flat / sampling_prob_flat.sum()
         
-        # Apply our structure-aware techniques
-        densified_pts, point_levels = self.find_best_densification(edges, N, W, target_binary_mask)
-        adjusted_pts = self.structure_aware_adjustment(densified_pts, grad_x, grad_y, target_binary_mask)
+        # Sample N points based on variance probability
+        all_coords = np.array([(y, x) for y in range(H) for x in range(W)])
+        sampled_indices = np.random.choice(len(all_coords), size=N, replace=False, p=sampling_prob_flat)
+        sampled_coords = all_coords[sampled_indices]
         
-        # Visualize densified_pts, point_levels, and adjusted_pts
-        self.visualize_initialization_points(I_np, densified_pts, point_levels, adjusted_pts)
+        # Get variance values at sampled points for sorting
+        sampled_variances = variance_map[sampled_coords[:, 0], sampled_coords[:, 1]]
         
-        print("len(densified_pts): ", len(densified_pts), ", len(adjusted_pts): ", len(adjusted_pts))
-
-        # Print distribution of levels
-        unique_levels, counts = np.unique(point_levels, return_counts=True)
-        print("Level distribution:")
-        for level, count in zip(unique_levels, counts):
-            print(f"  Level {level}: {count} points")
+        # Sort by variance based on detail_first setting
+        if self.detail_first:
+            # Detail-first (East Asian style): low variance first (background), high variance last (foreground)
+            sort_indices = np.argsort(sampled_variances)
+        else:
+            # Background-first (Western style): high variance first (foreground), low variance last (background)
+            sort_indices = np.argsort(sampled_variances)[::-1]
+        
+        sampled_coords = sampled_coords[sort_indices]
+        sampled_variances = sampled_variances[sort_indices]
+        
+        # Convert from (y, x) to (x, y) format
+        adjusted_pts = sampled_coords[:, [1, 0]].astype(np.float32)
+        
+        print(f"Initialized {len(adjusted_pts)} points (variance-based stratified sampling)")
+        print(f"Variance distribution: low={sampled_variances.min():.4f}, high={sampled_variances.max():.4f}")
+        print(f"Rendering order: {'Detail-first (East Asian style)' if self.detail_first else 'Background-first (Western style)'}")
+        
+        # Visualize initialization
+        self.visualize_initialization_points(I_np, variance_map, adjusted_pts)
 
         # Color initialization
         # Sample pixel colors at splat coordinates
@@ -98,52 +149,30 @@ class StructureAwareInitializer(BaseInitializer):
         c_init += np.random.normal(0.0, 0.02, c_init.shape)
         c_init = np.clip(c_init, 0.0, 1.0)              # Safely clip values
         
-        # -------------------- Radius initialization based on levels and edge distance -------------------- #
+        # -------------------- Variance-based radius initialization -------------------- #
         num_points = adjusted_pts.shape[0]
         
-        # Calculate max level for normalization
-        max_level = np.max(point_levels) if len(point_levels) > 0 else 1
-        
-        # Determine radius based on level - coarser level (smaller value) gets larger radius
-        # The formula: r = max_radius * (1 - level/max_level) + min_radius
         min_radius = self.radii_min
         if self.radii_max is not None:
             max_radius = self.radii_max
         else:
             max_radius = max(min(H, W) / 4, min_radius + 0.1)
         
+        # Radius based on variance at each point
+        # Low variance (flat, index 0) → large radius
+        # High variance (complex, index N-1) → small radius
+        # sampled_variances is already sorted from low to high
         
-        # Calculate distance transform from Canny edges
-        inverted_edges = cv2.bitwise_not(edges)
-        distance_map = cv2.distanceTransform(inverted_edges, cv2.DIST_L2, 5)
+        # Map variance [0, 1] to radius [max, min]
+        # variance 0 → max_radius, variance 1 → min_radius
+        r_np = max_radius - sampled_variances * (max_radius - min_radius)
         
-        # Sample distance at each adjusted point location
-        idx_x = np.clip(np.round(adjusted_pts[:, 0]).astype(int), 0, W - 1)
-        idx_y = np.clip(np.round(adjusted_pts[:, 1]).astype(int), 0, H - 1)
-        point_distances = distance_map[idx_y, idx_x]
-        
-        # Normalize distances (0 = on edge, 1 = farthest from edge)
-        max_distance = np.max(distance_map) if np.max(distance_map) > 0 else 1.0
-        normalized_distances = point_distances / max_distance
-        
-        # Calculate radius for each point - invert the level so lower levels get larger radii
-        normalized_levels = 1.0 - (point_levels / max_level)
-        level_based_radius = min_radius + normalized_levels * (max_radius - min_radius)
-        
-        # Combine level-based radius with edge distance (farther from edge = larger radius)
-        distance_factor = self.distance_factor  # Weight for distance influence (0.0 = only levels, 1.0 = only distance)
-        distance_based_radius = min_radius + normalized_distances * (max_radius - min_radius)
-        
-        # Weighted combination of level-based and distance-based radius
-        r_np = (1.0 - distance_factor) * level_based_radius + distance_factor * distance_based_radius
-        
-        # Add some noise for variety while preserving the coarse-to-fine relationship
-        noise_scale = 0.1  # Scale of noise relative to radius range
-        noise = np.random.normal(0, noise_scale * (max_radius - min_radius), num_points)
+        # Add noise for variety
+        noise_scale = 0.1 * (max_radius - min_radius)
+        noise = np.random.normal(0, noise_scale, num_points)
         r_np = np.clip(r_np + noise, min_radius, max_radius)
         
-        # No sorting - keep the original order from the coarse-to-fine process
-        # This preserves the natural ordering where coarser level points come first
+        print(f"Radius distribution: min={r_np.min():.2f}, max={r_np.max():.2f}, mean={r_np.mean():.2f}")
 
         # -------------------- Convert to tensors -------------------- #
         # Leave FP32 even if renderer is in FP16 mode. Parse in cuda
@@ -175,9 +204,9 @@ class StructureAwareInitializer(BaseInitializer):
         
         return x, y, r, v, theta, c, adjusted_pts
     
-    def visualize_initialization_points(self, I_np, densified_pts, point_levels, adjusted_pts):
+    def visualize_initialization_points(self, I_np, variance_map, adjusted_pts):
         """
-        Visualize densified_pts, point_levels, and adjusted_pts
+        Visualize variance map and initialized points
         """
         fig, axes = plt.subplots(1, 3, figsize=(18, 6))
         
@@ -186,51 +215,25 @@ class StructureAwareInitializer(BaseInitializer):
         axes[0].set_title('Original Image')
         axes[0].axis('off')
         
-        # Densified points with level coloring
-        axes[1].imshow(I_np, cmap='gray', alpha=0.7)
-        if len(densified_pts) > 0:
-            # Color by level
-            unique_levels = np.unique(point_levels)
-            colors = plt.cm.viridis(np.linspace(0, 1, len(unique_levels)))
-            
-            for i, level in enumerate(unique_levels):
-                mask = point_levels == level
-                pts_at_level = densified_pts[mask]
-                if len(pts_at_level) > 0:
-                    axes[1].scatter(pts_at_level[:, 0], pts_at_level[:, 1], 
-                                  c=[colors[i]], s=30, alpha=0.8, 
-                                  label=f'Level {level}')
-            
-            axes[1].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        axes[1].set_title(f'Densified Points by Level\n({len(densified_pts)} points)')
+        # Variance map
+        im = axes[1].imshow(variance_map, cmap='hot')
+        axes[1].set_title('RGB Variance Map\n(Red=Complex, Blue=Flat)')
         axes[1].axis('off')
+        plt.colorbar(im, ax=axes[1], fraction=0.046, pad=0.04)
         
-        # Adjusted points
-        axes[2].imshow(I_np, cmap='gray', alpha=0.7)
+        # Variance map with initialized points
+        axes[2].imshow(variance_map, cmap='hot', alpha=0.7)
         if len(adjusted_pts) > 0:
-            # Color by level for adjusted points too
-            unique_levels = np.unique(point_levels)
-            colors = plt.cm.plasma(np.linspace(0, 1, len(unique_levels)))
-            
-            for i, level in enumerate(unique_levels):
-                mask = point_levels == level
-                pts_at_level = adjusted_pts[mask]
-                if len(pts_at_level) > 0:
-                    axes[2].scatter(pts_at_level[:, 0], pts_at_level[:, 1], 
-                                  c=[colors[i]], s=30, alpha=0.8,
-                                  label=f'Level {level}')
-            
-            # Draw arrows showing the adjustment
-            if len(densified_pts) == len(adjusted_pts):
-                for i in range(0, len(densified_pts), max(1, len(densified_pts)//50)):  # Show every nth arrow to avoid clutter
-                    dx = adjusted_pts[i, 0] - densified_pts[i, 0]
-                    dy = adjusted_pts[i, 1] - densified_pts[i, 1]
-                    if abs(dx) > 1 or abs(dy) > 1:  # Only show significant adjustments
-                        axes[2].arrow(densified_pts[i, 0], densified_pts[i, 1], dx, dy,
-                                    head_width=3, head_length=2, fc='red', ec='red', alpha=0.3)
-            
-            axes[2].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        axes[2].set_title(f'Structure-Aware Adjusted Points\n({len(adjusted_pts)} points)')
+            # Color points by their index (drawing order)
+            colors = plt.cm.viridis(np.linspace(0, 1, len(adjusted_pts)))
+            axes[2].scatter(adjusted_pts[:, 0], adjusted_pts[:, 1], 
+                          c=colors, s=20, alpha=0.8, edgecolors='white', linewidths=0.5)
+            # Add colorbar for drawing order
+            sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=0, vmax=len(adjusted_pts)-1))
+            sm.set_array([])
+            cbar = plt.colorbar(sm, ax=axes[2], fraction=0.046, pad=0.04)
+            cbar.set_label('Drawing Order\n(0=First/Large, N=Last/Small)', rotation=270, labelpad=20)
+        axes[2].set_title(f'Variance-Based Initialization\n({len(adjusted_pts)} points)')
         axes[2].axis('off')
         
         plt.tight_layout()
@@ -240,6 +243,5 @@ class StructureAwareInitializer(BaseInitializer):
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         plt.savefig(f'visualization_output/initialization_points_{timestamp}.png', 
                    dpi=150, bbox_inches='tight')
-        # plt.show()
         
         print(f"Visualization saved to: visualization_output/initialization_points_{timestamp}.png")

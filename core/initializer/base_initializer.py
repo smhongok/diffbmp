@@ -22,6 +22,7 @@ class BaseInitializer(ABC):
         self.keypoint_extracting = init_opt.get("keypoint_extracting", False)
         self.debug_mode = init_opt.get("debug_mode", False)
         self.distance_factor = init_opt.get("distance_factor", 0.0)
+        self.detail_first = init_opt.get("detail_first", True)
         
     @abstractmethod
     def initialize(self, I_target, target_binary_mask = None, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
