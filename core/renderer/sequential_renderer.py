@@ -85,24 +85,24 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         lr_config = opt_conf.get("learning_rate", {})
         
         if isinstance(lr_config, (int, float)):
-            # Simple learning rate format
+            # Simple learning rate format (constants already merged in config)
             return {
                 'default_lr': lr_config,
                 'gain_x': 1.0, 'gain_y': 1.0, 'gain_r': 1.0,
                 'gain_v': 1.0, 'gain_theta': 1.0, 'gain_c': 1.0,
-                'decay_rate': opt_conf.get('decay_rate', 0.95)
+                'decay_rate': opt_conf['decay_rate']
             }
         else:
-            # Complex learning rate format with gains
+            # Complex learning rate format with gains (constants already merged in config)
             return {
                 'default_lr': lr_config.get('default', 0.005),
-                'gain_x': lr_config.get('gain_x', 1.0),
-                'gain_y': lr_config.get('gain_y', 1.0),
-                'gain_r': lr_config.get('gain_r', 1.0),
-                'gain_v': lr_config.get('gain_v', 1.0),
-                'gain_theta': lr_config.get('gain_theta', 1.0),
+                'gain_x': lr_config['gain_x'],
+                'gain_y': lr_config['gain_y'],
+                'gain_r': lr_config['gain_r'],
+                'gain_v': lr_config['gain_v'],
+                'gain_theta': lr_config['gain_theta'],
                 'gain_c': lr_config.get('gain_c', 1.0),
-                'decay_rate': opt_conf.get('decay_rate', 0.95)
+                'decay_rate': opt_conf['decay_rate']
             }
     
     def optimize_parameters_full_temporal(self,

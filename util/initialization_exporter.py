@@ -63,7 +63,7 @@ PREPROCESSING_CONFIG = {
 
 # SVG/Primitive configuration
 SVG_CONFIG = {
-    "svg_file": "arial.ttf",  # Change this to your primitive file
+    "primitive_file": "arial.ttf",  # Change this to your primitive file
     "convert_to_svg": True,
     "output_width": 128,
     "bg_threshold": 250,
@@ -173,19 +173,19 @@ def load_primitive_templates(device):
     print("Loading primitive templates...")
     
     # Handle SVG file loading (same logic as main.py lines 134-197)
-    svg_file = SVG_CONFIG.get("svg_file")
-    svg_ext = os.path.splitext(svg_file)[1].lower()
+    primitive_file = SVG_CONFIG.get("primitive_file")
+    svg_ext = os.path.splitext(primitive_file)[1].lower()
     
     if svg_ext == ".svg":
-        svg_path = os.path.join("./assets/svg", svg_file)
+        svg_path = os.path.join("./assets/svg", primitive_file)
     elif svg_ext in (".png", ".jpg", ".jpeg"):
         if SVG_CONFIG.get("convert_to_svg", True):
             from util.svg_converter import ImageToSVG
             img_converter = ImageToSVG()
-            svg_path = img_converter.extract_filled_outlines(svg_file, threshold=100, min_area_ratio=0.000001)
+            svg_path = img_converter.extract_filled_outlines(primitive_file, threshold=100, min_area_ratio=0.000001)
             del img_converter
         else:
-            svg_path = os.path.join("./assets/primitives", svg_file)
+            svg_path = os.path.join("./assets/primitives", primitive_file)
     elif svg_ext in (".otf", ".ttf"):
         # Handle font files - text rendering
         texts = None
@@ -207,7 +207,7 @@ def load_primitive_templates(device):
         
         if texts is not None:
             from util.svg_converter import FontParser
-            font_parser = FontParser(svg_file)
+            font_parser = FontParser(primitive_file)
             if isinstance(texts, list):
                 svg_paths = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
             else:
@@ -217,7 +217,7 @@ def load_primitive_templates(device):
         else:
             raise ValueError("No text source ('text' or 'text_file') provided in svg config.")
     else:
-        svg_path = SVG_CONFIG.get("svg_file", "assets/svg/circle.svg")
+        svg_path = SVG_CONFIG.get("primitive_file", "assets/svg/circle.svg")
     
     # Load primitives using PrimitiveLoader with fallback to SVGLoader (same as main.py)
     try:

@@ -53,8 +53,12 @@ config_path = args.config
 # Load configuration
 with open(config_path, "r", encoding="utf-8") as f:
     config = json.load(f)
+
+# Apply constants as default values
+from util.constants import apply_constants_to_config
+config = apply_constants_to_config(config)
 # After import or after loading config
-set_global_seed(config.get("seed", 42))
+set_global_seed(config["seed"])
 
 # Force list attributes to single item
 if type(config["preprocessing"]["img_path"]) is list:
@@ -73,7 +77,7 @@ opt_conf = config["optimization"]
 use_fp16 = opt_conf.get("use_fp16", False)  # Default to False for CPU compatibility
 
 preprocessor = Preprocessor(
-    final_width=pp_conf.get("final_width", 128),
+    final_width=pp_conf["final_width"],
     trim=pp_conf.get("trim", False),
     FM_halftone=pp_conf.get("FM_halftone", False),
     transform_mode=pp_conf.get("transform", "none"),
@@ -82,15 +86,15 @@ preprocessor = Preprocessor(
 exist_bg = pp_conf.get("exist_bg", True)
 
 # Check if sequential processing is enabled
-sequential_config = config.get("sequential", {"enabled": False})
+sequential_config = config["sequential"]
 
-if not exist_bg and sequential_config.get("enabled", False):
+if not exist_bg and sequential_config["enabled"]:
     raise NotImplementedError("Sequential processing is not supported for images without background. Please set 'exist_bg' to True in the config.")
 
-if sequential_config.get("enabled", False):
+if sequential_config["enabled"]:
     # Load frames for sequential processing
     input_path = config["preprocessing"]["img_path"]
-    input_type = sequential_config.get("input_type", "gif")
+    input_type = sequential_config["input_type"]
     max_frames = sequential_config.get("max_frames", None)
     
     print(f"Loading {input_type} frames from: {input_path}")
@@ -130,19 +134,19 @@ else:
     H = preprocessor.final_height
     W = preprocessor.final_width
 
-# Handle SVG file loading
-svg_file_config = config["svg"].get("svg_file")
+# Handle primitive file loading
+primitive_file_config = config["primitive"].get("primitive_file")
 
 # Handle list of files (multiple primitives)
-if isinstance(svg_file_config, list):
+if isinstance(primitive_file_config, list):
     # Multiple primitives - process each one
     svg_path = []
-    for file_item in svg_file_config:
+    for file_item in primitive_file_config:
         file_ext = os.path.splitext(file_item)[1].lower()
         if file_ext == ".svg":
             svg_path.append(os.path.join("assets/svg", file_item))
         elif file_ext in (".png", ".jpg", ".jpeg"):
-            if config["svg"].get("convert_to_svg", True):
+            if config["primitive"]["convert_to_svg"]:
                 img_converter = ImageToSVG()
                 converted_path = img_converter.extract_filled_outlines(file_item, threshold=100, min_area_ratio=0.000001)
                 svg_path.append(converted_path)
@@ -153,37 +157,35 @@ if isinstance(svg_file_config, list):
             raise ValueError(f"Unsupported file extension in list: {file_ext}")
 else:
     # Single primitive - original logic
-    svg_ext = os.path.splitext(svg_file_config)[1].lower()
-    if svg_ext == ".svg":
-        svg_path = os.path.join("assets/svg", svg_file_config)
-    elif svg_ext in (".png", ".jpg", ".jpeg"):
-        if config["svg"].get("convert_to_svg", True):
+    primitive_ext = os.path.splitext(primitive_file_config)[1].lower()
+    if primitive_ext == ".svg":
+        svg_path = os.path.join("assets/svg", primitive_file_config)
+    elif primitive_ext in (".png", ".jpg", ".jpeg"):
+        if config["primitive"]["convert_to_svg"]:
             img_converter = ImageToSVG()
-            svg_path = img_converter.extract_filled_outlines(svg_file_config, threshold=100, min_area_ratio=0.000001)
+            svg_path = img_converter.extract_filled_outlines(primitive_file_config, threshold=100, min_area_ratio=0.000001)
             del img_converter
-        else:
-            svg_path = os.path.join("assets/primitives", svg_file_config)
-    elif svg_ext in (".otf", ".ttf"):
+            svg_path = os.path.join("assets/primitives", primitive_file_config)
+    elif primitive_ext in (".otf", ".ttf"):
         # 텍스트 소스 결정
         texts = None
-        if "text" in config["svg"]:
-            texts = config["svg"]["text"]
-        elif "text_file" in config["svg"]:
-            # 파일에서 텍스트 추출 (예시: txt, lrc 등 처리)
-            text_ext = os.path.splitext(config["svg"].get("text_file"))[1].lower()
-            text_path = os.path.join("assets/texts", config["svg"].get("text_file")) 
+        if "text" in config["primitive"]:
+            texts = config["primitive"]["text"]
+        elif "text_file" in config["primitive"]:
+            text_ext = os.path.splitext(config["primitive"].get("text_file"))[1].lower()
+            text_path = os.path.join("assets/texts", config["primitive"].get("text_file")) 
             
             # 전용 파서 클래스 (여기서는 간단 예시)
             if text_ext == ".txt" or text_ext == ".lrc":
-                texts, char_counts, word_lengths_per_line = extract_chars_from_file(text_path, text_ext, remove_punct=config["svg"].get("remove_punctuation", False), punct_to_remove=".,;:()\{\}[]\"\'")
+                texts, char_counts, word_lengths_per_line = extract_chars_from_file(text_path, text_ext, remove_punct=config["primitive"]["remove_punctuation"], punct_to_remove=".,;:()\{\}[]\"\'")
                 html_extra_path_special = "output_webpage/src_lyrics/index.html"
                 config["initialization"]["N"] = sum(char_counts)  # N은 텍스트의 개수로 설정
             else:
                 raise ValueError(f"Unsupported text_file type: {text_ext}")
 
         if texts is not None:
-            font_parser = FontParser(config["svg"]["svg_file"])
-            # texts = config["svg"]["text"]
+            font_parser = FontParser(config["primitive"]["primitive_file"])
+            # texts = config["primitive"]["text"]
             if isinstance(texts, list):
                 svg_paths = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
             else:
@@ -191,19 +193,19 @@ else:
             svg_path = svg_paths
             del font_parser
         else:
-            raise ValueError("No text source ('text' or 'text_file') provided in svg config.")
+            raise ValueError("No text source ('text' or 'text_file') provided in primitive config.")
 
     else:
-        svg_path = svg_file_config if svg_file_config else "assets/svg/MaruBuri-Bold_HELLO.svg"
+        svg_path = primitive_file_config if primitive_file_config else "assets/svg/MaruBuri-Bold_HELLO.svg"
 
 # Load primitives (SVG, PNG, JPG)
 # Use PrimitiveLoader for hybrid support, fallback to SVGLoader for compatibility
 try:
     primitive_loader = PrimitiveLoader(
         primitive_paths=svg_path,
-        output_width=config["svg"].get("output_width", 128),
+        output_width=config["primitive"]["output_width"],
         device=device,
-        bg_threshold=config["svg"].get("bg_threshold", 250)
+        bg_threshold=config["primitive"]["bg_threshold"]
     )
     # Keep reference for backward compatibility
     svg_loader = primitive_loader
@@ -213,13 +215,13 @@ except Exception as e:
     print(f"PrimitiveLoader failed, falling back to SVGLoader: {e}")
     svg_loader = SVGLoader(
         svg_path=svg_path,
-        output_width=config["svg"].get("output_width", 128),
+        output_width=config["primitive"]["output_width"],
         device=device
     )
     primitive_loader = None
 
 # Initialize renderer based on loss type
-renderer_type = opt_conf.get("renderer_type", "mse")
+renderer_type = opt_conf["renderer_type"]
 renderer_class = {
     "mse": MseRenderer,
     "tile": SimpleTileRenderer,
@@ -242,12 +244,12 @@ W = preprocessor.final_width
 renderer_kwargs = {
     "canvas_size": (H, W),
     "S": bmp_tensor,
-    "alpha_upper_bound": config["optimization"].get("alpha_upper_bound", 0.5),
+    "alpha_upper_bound": config["optimization"]["alpha_upper_bound"],
     "device": device,
     "use_fp16": use_fp16,
-    "output_path": config["postprocessing"].get("output_folder", "./outputs/"),
-	"tile_size": opt_conf.get("tile_size", 32),
-    "sigma": opt_conf.get("blur_sigma", 0.0) if opt_conf.get("do_gaussian_blur", False) else 0.0,
+    "output_path": config["postprocessing"]["output_folder"],
+    "tile_size": opt_conf["tile_size"],
+    "sigma": opt_conf["blur_sigma"] if opt_conf.get("do_gaussian_blur", False) else 0.0,
 }
 
 renderer = renderer_class(**renderer_kwargs)
@@ -271,14 +273,14 @@ if sequential_config.get("enabled", False):
     sequential_renderer = SequentialFrameRenderer(
         canvas_size=(H, W), 
         S=bmp_tensor,
-        alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
+        alpha_upper_bound=config["optimization"]["alpha_upper_bound"],
         device=device,
         use_fp16=use_fp16,
         gamma=config["optimization"].get("gamma", 1.0),
-        output_path=config["postprocessing"].get("output_folder", "./outputs/"),
-        tile_size=sequential_config.get("tile_size", 32)
+        output_path=config["postprocessing"]["output_folder"],
+        tile_size=sequential_config["tile_size"]
     )
-    print(f"Using SequentialFrameRenderer with tile-based rendering (tile_size: {sequential_config.get('tile_size', 32)})")
+    print(f"Using SequentialFrameRenderer with tile-based rendering (tile_size: {sequential_config['tile_size']})")
     
     # Store optimized parameters for each frame
     frame_results = []
@@ -455,7 +457,7 @@ if sequential_config.get("enabled", False):
             from util.psd_exporter import PSDExporter
             
             psd_path = frame_path.replace('.png', '.psd')
-            psd_scale_factor = config.get('postprocessing', {}).get('psd_scale_factor', 1.0)
+            psd_scale_factor = config['postprocessing']['psd_scale_factor']
             exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
             
             # Use batched processing - all data preparation handled internally
@@ -542,8 +544,8 @@ if not (primitive_loader and primitive_loader.has_raster_primitives()):
                 svg_loader.svg_path, 
                 canvas_size=(W, H),
                 viewbox_size=svg_loader.get_svg_size(),
-                alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
-                stroke_width=config["postprocessing"].get("linewidth", 3.0)
+                alpha_upper_bound=config["optimization"]["alpha_upper_bound"],
+                stroke_width=config["postprocessing"]["linewidth"]
             )
             
             # Use sequential-specific HTML path and export sequence
@@ -559,7 +561,7 @@ if not (primitive_loader and primitive_loader.has_raster_primitives()):
             exporter.export(last_frame['x'], last_frame['y'], last_frame['r'], 
                           last_frame['theta'], last_frame['v'], last_frame['c'],
                           output_path=pdf_path,
-                          svg_hollow=config["svg"].get("svg_hollow", False),
+                          svg_hollow=config["primitive"].get("primitive_hollow", False),
                           html_extra_path=lastframe_html_path,
                           export_pdf=True,
                           html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
@@ -573,7 +575,7 @@ if not (primitive_loader and primitive_loader.has_raster_primitives()):
             exporter.export_sequence(
                 frame_results=frame_results,
                 output_html_path=sequential_html_path,
-                svg_hollow=config["svg"].get("svg_hollow", False),
+                svg_hollow=config["primitive"].get("primitive_hollow", False),
                 fps=sequence_fps,
                 html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
             )
@@ -585,13 +587,13 @@ if not (primitive_loader and primitive_loader.has_raster_primitives()):
             svg_loader.svg_path, 
             canvas_size=(W, H),
             viewbox_size=svg_loader.get_svg_size(),
-            alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5),
-            stroke_width=config["postprocessing"].get("linewidth", 3.0)
+            alpha_upper_bound=config["optimization"]["alpha_upper_bound"],
+            stroke_width=config["postprocessing"]["linewidth"]
         )
         
         exporter.export(x, y, r, theta, v, c,
                         output_path=pdf_path,
-                        svg_hollow=config["svg"].get("svg_hollow", False),
+                        svg_hollow=config["primitive"].get("primitive_hollow", False),
                         html_extra_path = "output_webpage/src/index.html" if html_extra_path_special is None else html_extra_path_special,
                         export_pdf=True,
                         html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
@@ -629,7 +631,7 @@ if not sequential_config.get("enabled", False):
             from util.psd_exporter import PSDExporter
             
             psd_path = output_path.replace('.png', '.psd')
-            psd_scale_factor = config.get('postprocessing', {}).get('psd_scale_factor', 1.0)
+            psd_scale_factor = config['postprocessing']['psd_scale_factor']
             exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
             
             # Use batched processing - all data preparation handled internally

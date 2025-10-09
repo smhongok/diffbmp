@@ -1,96 +1,36 @@
 {
     "preprocessing": {
         "final_width": [256],
-        "trim": false,
-        "FM_halftone": false,
-        "transform": "none",
         "img_path": [
             "images/artwork/seurat.jpg"
-        ],
-        "bg_threshold": 250,
-        "do_equalize": false,
-        "do_local_contrast": false,
-        "local_contrast":{
-            "radius": 2.0,
-            "amount": 3.0
-        },
-        "do_tone_curve": false,
-        "tone_params": {
-            "in_low": 50,
-            "in_high": 200,
-            "out_low": 30,
-            "out_high": 230
-        },
-        "vertical_paddings": [0, 0]
+        ]
     },
-    "svg": {
-        "svg_file": "arial.ttf",
+    "primitive": {
+        "primitive_file": "arial.ttf",
         "text": ["s","e", "u", "r", "a", "t"],
-        "svg_hollow": false,
+        "primitive_hollow": false,
         "output_width": 128
     },
     "initialization": {
         "initializer": "structure_aware",
         "N": [2000],
-        "alpha": 0.3,
-        "min_distance": 5,
-        "peak_threshold": 0.5,
         "radii_min": 2,
-        "v_init_bias": -5.0,
-        "v_init_slope": 3.0,
-        "keypoint_extracting": false,
         "debug_mode": true,
-        "prune_tau": 0.01,
-        "pruning_enabled": true,
-        "level": 2,
-        "multi_level": false,
-        "hollow": false,
         "detail_first": false
     },
     "optimization": {
         "use_fp16": true,
         "renderer_type": "tile",
         "num_iterations": 100,
-        "batch_optimization": false,
-        "batch_size": 256,
         "learning_rate": {
-            "default": 0.1, 
-            "gain_x": 10.0,
-            "gain_y": 10.0,
-            "gain_r": 10.0,
-            "gain_v": 1.5,
-            "gain_theta": 1.0,
-            "gain_c": 1.0
+            "default": 0.1
         },
         "do_decay": true,
-        "decay_rate": 0.99,
-        "alpha_upper_bound": 1.0,
-        "do_gaussian_blur": true,
-        "blur_sigma": 1.0,
-        "do_adapt_gaussian_blur": false,
-        "blur_sigma_start": 2.0,
-        "blur_sigma_end": 0.0,
-        "sparsifying": { 
-            "do_sparsify": false,
-            "sparsify_warmup": 10,
-            "sparsify_duration": 24,
-            "sparsify_loss_coeff": 1.0,
-            "sparsifying_period": 4,
-            "sparsified_N": 1000,
-            "dst_enabled": true,
-            "dst_period": 4,
-            "dst_prune_frac": 0.1
-        },
-        "freq_gamma":1.0,
-        "do_dwa": true,
-        "save_epoch": true,
-        "log_gradients": false
+        "do_gaussian_blur": true
     },
     "postprocessing": {
         "output_folder": "outputs/",
-        "linewidth": 3.0,
         "compute_psnr": true,
-        "export_psd": true,
-        "psd_scale_factor": 2.0
+        "export_psd": true
     }
 } 
