@@ -166,6 +166,8 @@ else:
             svg_path = img_converter.extract_filled_outlines(primitive_file_config, threshold=100, min_area_ratio=0.000001)
             del img_converter
             svg_path = os.path.join("assets/primitives", primitive_file_config)
+        else:
+            svg_path = os.path.join("assets/primitives", primitive_file_config)
     elif primitive_ext in (".otf", ".ttf"):
         # 텍스트 소스 결정
         texts = None
