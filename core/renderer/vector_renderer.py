@@ -1096,20 +1096,20 @@ class VectorRenderer:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(self.output_path, exist_ok=True)
         
-        # Create optimizer
+        # Create optimizer (constants already merged in config)
         optimizer = torch.optim.Adam([
-            {'params': x, 'lr': lr*lr_conf.get("gain_x", 1.0)},
-            {'params': y, 'lr': lr*lr_conf.get("gain_y", 1.0)},
-            {'params': r, 'lr': lr*lr_conf.get("gain_r", 1.0)},
-            {'params': v, 'lr': lr*lr_conf.get("gain_v", 1.0)},
-            {'params': theta, 'lr': lr*lr_conf.get("gain_theta", 1.0)},
+            {'params': x, 'lr': lr*lr_conf['gain_x']},
+            {'params': y, 'lr': lr*lr_conf['gain_y']},
+            {'params': r, 'lr': lr*lr_conf['gain_r']},
+            {'params': v, 'lr': lr*lr_conf['gain_v']},
+            {'params': theta, 'lr': lr*lr_conf['gain_theta']},
             {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
         ])
         
-        # Create scheduler if decay is enabled
+        # Create scheduler if decay is enabled (constants already merged in config)
         do_decay = opt_conf.get("do_decay", False)
         scheduler = torch.optim.lr_scheduler.ExponentialLR(
-            optimizer, gamma=opt_conf.get("decay_rate", 0.99)) if do_decay else None
+            optimizer, gamma=opt_conf['decay_rate']) if do_decay else None
         
         # For Gaussian blur transition if enabled
         do_gaussian_blur = opt_conf.get("do_gaussian_blur", False)

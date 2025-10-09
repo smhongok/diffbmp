@@ -457,12 +457,12 @@ def process_combination(args):
     
     exporter.export(x, y, r, theta, v, c,
                 output_path=pdf_path,
-                svg_hollow=config["svg"].get("svg_hollow", False),
+                primitive_hollow=config["primitive"].get("primitive_hollow", False),
                 html_extra_path = "output_webpage/src/index.html")
     
     # exporter.export_with_pngs(x,y,r,theta,v,c,
     #             output_folder=folder_path,
-    #             svg_hollow=config["svg"].get("svg_hollow", False))
+    #             primitive_hollow=config["primitive"].get("primitive_hollow", False))
     
     # Copy parameters to CPU before returning
     params_cpu = (
@@ -683,10 +683,10 @@ def main():
         renderer_names = ["MseRenderer"] # Add more renderers as needed
     
     if args.svg_path != '':
-        config["svg"]["svg_file"] = args.svg_path
+        config["primitive"]["primitive_file"] = args.svg_path
         config["postprocessing"]["output_folder"] = config["postprocessing"]["output_folder"].replace("outputs/", "outputs/" + args.svg_path.split("/")[-1].split(".")[0] + "-")
     elif args.svg_text != '':
-        config["svg"]["text"] = args.svg_text
+        config["primitive"]["text"] = args.svg_text
         config["postprocessing"]["output_folder"] = config["postprocessing"]["output_folder"].replace("outputs/", "outputs/" + args.svg_text + "-")
     
     if args.img_path != '':
@@ -707,30 +707,30 @@ def main():
     )
     
     # Handle SVG file loading
-    svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
+    svg_ext = os.path.splitext(config["primitive"].get("primitive_file"))[1].lower()
     if svg_ext == ".svg":
-        svg_path = os.path.join("assets/svg", config["svg"].get("svg_file"))
+        svg_path = os.path.join("assets/svg", config["primitive"].get("primitive_file"))
     elif svg_ext in (".png", ".jpg", ".jpeg"):
         img_converter = ImageToSVG()
-        svg_path = img_converter.extract_filled_outlines(config["svg"].get("svg_file"), threshold=100, min_area_ratio=0.000001)
+        svg_path = img_converter.extract_filled_outlines(config["primitive"].get("primitive_file"), threshold=100, min_area_ratio=0.000001)
         del img_converter
-    elif (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
-        font_parser = FontParser(config["svg"]["svg_file"])
-        texts = config["svg"]["text"]
+    elif (svg_ext in (".otf", ".ttf")) and ("text" in config["primitive"]):
+        font_parser = FontParser(config["primitive"]["primitive_file"])
+        texts = config["primitive"]["text"]
         if isinstance(texts, list):
             svg_path = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
         else:
             svg_path = str(font_parser.text_to_svg(texts, mode="opt-path"))
         del font_parser
     else:
-        svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
+        svg_path = config["primitive"].get("primitive_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
     
     print(f"SVG path: {svg_path}")
 
     # Load SVG file
     svg_loader = SVGLoader(
         svg_path=svg_path,
-        output_width=config["svg"].get("output_width", 128),
+        output_width=config["primitive"].get("output_width", 128),
         device=device
     )
     classify_svg = svg_loader.classify_svg()

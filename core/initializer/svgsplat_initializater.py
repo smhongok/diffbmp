@@ -10,11 +10,16 @@ from datetime import timedelta
 from .base_initializer import BaseInitializer
 from core.renderer.vector_renderer import VectorRenderer
 from typing import Dict, Any
+from util.constants import OPACITY_INIT_VALUE, STD_C_INIT, VARIANCE_WINDOW_SIZE, VARIANCE_BASE_PROB
 # Record the start time
 
 class StructureAwareInitializer(BaseInitializer):
     def __init__(self, init_opt:Dict[str, Any]):
         super().__init__(init_opt)
+        # Get initialization parameters from config (with constants as defaults)
+        self.std_c_init = init_opt.get("std_c_init", STD_C_INIT)
+        self.variance_window_size = init_opt.get("variance_window_size", VARIANCE_WINDOW_SIZE)
+        self.variance_base_prob = init_opt.get("variance_base_prob", VARIANCE_BASE_PROB)
 
     def initialize(self, I_target, target_binary_mask = None, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None, return_pts: bool = False):
         """
@@ -50,7 +55,7 @@ class StructureAwareInitializer(BaseInitializer):
 
         # -------------------- RGB variance-based importance map -------------------- #
         # Compute local variance for each RGB channel
-        window_size = 7  # 7x7 sliding window
+        window_size = self.variance_window_size
         half_window = window_size // 2
         
         # Ensure I_color is in correct format (H, W, 3) with values 0-1
@@ -97,7 +102,7 @@ class StructureAwareInitializer(BaseInitializer):
         sampling_prob = variance_map * valid_mask
         
         # Add base probability to ensure low-variance areas get some points
-        base_prob = 0.1
+        base_prob = self.variance_base_prob
         sampling_prob = base_prob + (1 - base_prob) * sampling_prob
         sampling_prob = sampling_prob * valid_mask
         
@@ -146,7 +151,7 @@ class StructureAwareInitializer(BaseInitializer):
         c_init = I_color[idx_y, idx_x]                  # (N,3) float32
 
         # Add slight noise to diversify parameters
-        c_init += np.random.normal(0.0, 0.02, c_init.shape)
+        c_init += np.random.normal(0.0, self.std_c_init, c_init.shape)
         c_init = np.clip(c_init, 0.0, 1.0)              # Safely clip values
         
         # -------------------- Variance-based radius initialization -------------------- #
@@ -184,7 +189,7 @@ class StructureAwareInitializer(BaseInitializer):
         r = torch.tensor(r_np, dtype=dtype, device=device, requires_grad=True)
 
         # -------------------- Initialize opacity v_i = v_0 -------- #
-        v = torch.full((num_points,), -2.0, dtype=dtype, device=device).requires_grad_(True)
+        v = torch.full((num_points,), OPACITY_INIT_VALUE, dtype=dtype, device=device).requires_grad_(True)
         
         # -------------------- Initialize opacity (layer consistent) -------- #
         #rank = torch.linspace(0.0, 1.0, steps=num_points, device=device)     # 0(bottom)→1(top)
