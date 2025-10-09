@@ -350,7 +350,7 @@ class VectorRenderer:
         sin_theta = torch.sin(theta)  # (N,)
         
         # Get primitive indices (cycling through available primitives)
-        prim_indices = torch.arange(N, device=self.device) % p  # (N,)
+        prim_indices = (N - torch.arange(N, device=self.device) - 1) % p  # (N,)
         
         # Extract bounding boxes for all primitives
         # Convert list of tuples to tensor for vectorized operations
