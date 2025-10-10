@@ -229,13 +229,13 @@ def process_combination(args):
     
     exporter.export(x, y, r, theta, v, c,
                 output_path = base_path + ".pdf",
-                svg_hollow = config["svg"].get("svg_hollow", False),
+                primitive_hollow = config["primitive"].get("primitive_hollow", False),
                 html_extra_path = "output_webpage/src/index.html",
                 export_pdf=True)
     
     # exporter.export_with_pngs(x,y,r,theta,v,c,
     #             output_folder=folder_path,
-    #             svg_hollow=config["svg"].get("svg_hollow", False))
+    #             primitive_hollow=config["primitive"].get("primitive_hollow", False))
     
     # Copy parameters to CPU before returning
     params_cpu = (
@@ -333,9 +333,9 @@ def main():
     config["initialization"]["N"] = args.n_primitives
     
     if args.svg_path != '':
-        config["svg"]["svg_file"] = args.svg_path        
+        config["primitive"]["primitive_file"] = args.svg_path        
     elif args.svg_text != '':
-        config["svg"]["text"] = args.svg_text.split(',')
+        config["primitive"]["text"] = args.svg_text.split(',')
         
         # Check if any text contains non-English characters
         def has_non_english_chars(text_list):
@@ -347,10 +347,10 @@ def main():
             return False
         
         # If non-English characters are found, use Korean font
-        if has_non_english_chars(config["svg"]["text"]):
-            config["svg"]["svg_file"] = "MaruBuri-Regular.otf"
+        if has_non_english_chars(config["primitive"]["text"]):
+            config["primitive"]["primitive_file"] = "MaruBuri-Regular.otf"
     else:
-        config["svg"]["text"] = args.primitive_type #[TODO]
+        config["primitive"]["text"] = args.primitive_type #[TODO]
         
     config["preprocessing"]["img_path"] = args.img_path
     print(f"img_path: {args.img_path}")
@@ -378,16 +378,16 @@ def main():
     )
     
     # Handle SVG file loading
-    svg_ext = os.path.splitext(config["svg"].get("svg_file"))[1].lower()
+    svg_ext = os.path.splitext(config["primitive"].get("primitive_file"))[1].lower()
     if svg_ext == ".svg":
-        svg_path = os.path.join("assets/svg", config["svg"].get("svg_file"))
+        svg_path = os.path.join("assets/svg", config["primitive"].get("primitive_file"))
     elif svg_ext in (".png", ".jpg", ".jpeg"):
         img_converter = ImageToSVG()
-        svg_path = img_converter.extract_filled_outlines(config["svg"].get("svg_file"), threshold=100, min_area_ratio=0.000001)
+        svg_path = img_converter.extract_filled_outlines(config["primitive"].get("primitive_file"), threshold=100, min_area_ratio=0.000001)
         del img_converter
-    elif (svg_ext in (".otf", ".ttf")) and ("text" in config["svg"]):
-        font_parser = FontParser(config["svg"]["svg_file"])
-        texts = config["svg"]["text"]
+    elif (svg_ext in (".otf", ".ttf")) and ("text" in config["primitive"]):
+        font_parser = FontParser(config["primitive"]["primitive_file"])
+        texts = config["primitive"]["text"]
         if isinstance(texts, list):
             svg_paths = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
         else:
@@ -395,14 +395,14 @@ def main():
         svg_path = svg_paths
         del font_parser
     else:
-        svg_path = config["svg"].get("svg_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
+        svg_path = config["primitive"].get("primitive_file", "assets/svg/MaruBuri-Bold_HELLO.svg")
     
     print(f"SVG path: {svg_path}")
 
     # Load SVG file
     svg_loader = SVGLoader(
         svg_path=svg_path,
-        output_width=config["svg"].get("output_width", 128),
+        output_width=config["primitive"].get("output_width", 128),
         device=device
     )
         
