@@ -8,6 +8,7 @@ import cv2
 
 DEBUG_MODE = False
 DEBUG_MODE_DETAIL = False
+DEBUG_MODE_SAVE_IMAGES = False
 
 # Try to import CUDA extension, fallback to PyTorch if not available
 try:
@@ -609,7 +610,7 @@ class SimpleTileRenderer(VectorRenderer):
         blur_sigma = opt_conf.get("blur_sigma", 1.0)
         
         # Create output directory for saving images if it doesn't exist
-        save_image_intervals = [1, 5, 10, 20, 50, 100]
+        save_image_intervals = list(range(0, num_iterations))
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(self.output_path, exist_ok=True)
         
@@ -771,12 +772,13 @@ class SimpleTileRenderer(VectorRenderer):
                 print(f"      c: [{c.min():.4f}, {c.max():.4f}]")
             
             # Log progress
-            if iteration % 10 == 0 or iteration in save_image_intervals or iteration < 3:
+            if iteration % 10 == 0 or iteration < 3:
                 print(f"Iteration {iteration}: Loss = {loss.item():.6f}")
                 
                 # Save intermediate images
-                if iteration in save_image_intervals and DEBUG_MODE:
-                    img_path = os.path.join(self.output_path, f"tile_iter_{iteration:04d}_{timestamp}.png")
+                if iteration in save_image_intervals and DEBUG_MODE_SAVE_IMAGES:
+                    os.makedirs(os.path.join(self.output_path, "save_each_iter"), exist_ok=True)
+                    img_path = os.path.join(self.output_path, f"save_each_iter/tile_iter_{iteration:04d}_{timestamp}.png")
                     self.save_image_tensor(rendered, img_path)
         
         print(f"Tile-based optimization completed. Final loss: {loss.item():.6f}")
@@ -784,7 +786,8 @@ class SimpleTileRenderer(VectorRenderer):
 
     def do_prune(self, x , y , r, v, theta, c, prune_conf, adjusted_pts, target_binary_mask, target_image) -> None:
         """
-        Prune the low-opacity primitives and re-initialize them using adjusted_pts.
+        Prune the low-opacity primitives and re-initialize them using the same variance-based method 
+        as StructureAwareInitializer from svgsplat_initializater.py.
         
         Args:
             x, y, r, v, theta, c: Primitive parameters
@@ -793,6 +796,8 @@ class SimpleTileRenderer(VectorRenderer):
             target_binary_mask: Binary mask for target regions
             target_image: Target image tensor for color sampling
         """
+        from util.constants import OPACITY_INIT_VALUE, STD_C_INIT, VARIANCE_WINDOW_SIZE, VARIANCE_BASE_PROB
+        
         prune_threshold = prune_conf.get("prune_threshold", 0.3)
         
         # Calculate opacity from visibility parameters
@@ -811,22 +816,121 @@ class SimpleTileRenderer(VectorRenderer):
         # Get indices of primitives to prune
         prune_indices = torch.where(low_opacity_mask)[0]
         
-        # 1. Position initialization: Random sampling from adjusted_pts
-        if adjusted_pts is not None and len(adjusted_pts) > 0:
-            # Convert to numpy if tensor
-            adjusted_pts_np = adjusted_pts.cpu().numpy() if isinstance(adjusted_pts, torch.Tensor) else adjusted_pts
-            num_adjusted_pts = len(adjusted_pts_np)
-            
-            # Random sampling from adjusted_pts (with replacement if needed)
-            sample_indices = np.random.choice(num_adjusted_pts, num_to_prune, replace=True)
-            new_positions = adjusted_pts_np[sample_indices]
-            print(f"Sampled {num_to_prune} positions from {num_adjusted_pts} adjusted points")
-        else:
-            # Fallback to random positions within canvas bounds
-            new_positions = np.random.rand(num_to_prune, 2) * np.array([self.W, self.H])
-            print("No adjusted_pts available, using random positions")
+        # ==================== MODERN VARIANCE-BASED INITIALIZATION ==================== #
+        # Same method as StructureAwareInitializer.initialize()
         
-        # Re-initialize pruned primitives
+        if target_image is not None:
+            # Extract image dimensions and convert to numpy
+            I_target = target_image.detach().cpu().numpy()
+            if I_target.ndim == 3:
+                H, W, C = I_target.shape
+                # Handle 4-channel (RGBA) images by taking only RGB channels
+                if C == 4:
+                    I_color = I_target[:, :, :3]  # Remove alpha channel
+                else:
+                    I_color = I_target
+                # Convert to grayscale for structure analysis
+                I_np = np.mean(I_color, axis=2)
+            else:
+                H, W = I_target.shape
+                I_np = I_target
+                I_color = np.stack([I_np] * 3, axis=2)  # Convert to RGB
+            
+            # Ensure image is in correct format for ORB
+            if I_np.dtype != np.uint8:
+                I_np = (I_np * 255).astype(np.uint8)
+            
+            # Ensure I_color is in correct format (H, W, 3) with values 0-1
+            if I_color.max() > 1.0:
+                I_color_normalized = I_color / 255.0
+            else:
+                I_color_normalized = I_color
+            
+            # -------------------- RGB variance-based importance map -------------------- #
+            # Compute local variance for each RGB channel
+            window_size = VARIANCE_WINDOW_SIZE
+            variance_map = np.zeros((H, W), dtype=np.float32)
+            
+            for channel in range(3):  # R, G, B
+                channel_img = I_color_normalized[:, :, channel]
+                
+                # Use cv2.boxFilter for efficient local mean computation
+                local_mean = cv2.boxFilter(channel_img, -1, (window_size, window_size), normalize=True)
+                local_mean_sq = cv2.boxFilter(channel_img**2, -1, (window_size, window_size), normalize=True)
+                
+                # Variance = E[X^2] - E[X]^2
+                channel_variance = local_mean_sq - local_mean**2
+                variance_map += channel_variance
+            
+            # Normalize variance map to [0, 1]
+            if variance_map.max() > 0:
+                variance_map = variance_map / variance_map.max()
+            
+            # -------------------- Stratified sampling based on variance -------------------- #
+            # Apply background mask if provided
+            valid_mask = np.ones((H, W), dtype=np.float32)
+            if target_binary_mask is not None:
+                if hasattr(target_binary_mask, 'detach'):
+                    mask_np = target_binary_mask.detach().cpu().numpy()
+                else:
+                    mask_np = target_binary_mask
+                valid_mask = 1 - mask_np  # 1 = foreground, 0 = background
+            
+            # Create sampling probability map: higher variance = higher probability
+            sampling_prob = variance_map * valid_mask
+            
+            # Add base probability to ensure low-variance areas get some points
+            base_prob = VARIANCE_BASE_PROB
+            sampling_prob = base_prob + (1 - base_prob) * sampling_prob
+            sampling_prob = sampling_prob * valid_mask
+            
+            # Flatten and normalize
+            sampling_prob_flat = sampling_prob.flatten()
+            if sampling_prob_flat.sum() > 0:
+                sampling_prob_flat = sampling_prob_flat / sampling_prob_flat.sum()
+            else:
+                print("Warning: No valid sampling probabilities. Using uniform distribution.")
+                sampling_prob_flat = valid_mask.flatten()
+                sampling_prob_flat = sampling_prob_flat / sampling_prob_flat.sum()
+            
+            # Sample points based on variance probability
+            all_coords = np.array([(y, x) for y in range(H) for x in range(W)])
+            sampled_indices = np.random.choice(len(all_coords), size=num_to_prune, replace=False, p=sampling_prob_flat)
+            sampled_coords = all_coords[sampled_indices]
+            
+            # Get variance values at sampled points for sorting
+            sampled_variances = variance_map[sampled_coords[:, 0], sampled_coords[:, 1]]
+            
+            # Sort by variance (use detail_first=True as default, like initializer)
+            detail_first = True
+            if detail_first:
+                # Detail-first (East Asian style): low variance first (background), high variance last (foreground)
+                sort_indices = np.argsort(sampled_variances)
+            else:
+                # Background-first (Western style): high variance first (foreground), low variance last (background)
+                sort_indices = np.argsort(sampled_variances)[::-1]
+            
+            sampled_coords = sampled_coords[sort_indices]
+            sampled_variances = sampled_variances[sort_indices]
+            
+            # Convert from (y, x) to (x, y) format
+            new_positions = sampled_coords[:, [1, 0]].astype(np.float32)
+            
+            print(f"Re-initialized {num_to_prune} positions using variance-based sampling")
+            
+        else:
+            # Fallback: use adjusted_pts or random positions
+            if adjusted_pts is not None and len(adjusted_pts) > 0:
+                adjusted_pts_np = adjusted_pts.cpu().numpy() if isinstance(adjusted_pts, torch.Tensor) else adjusted_pts
+                num_adjusted_pts = len(adjusted_pts_np)
+                sample_indices = np.random.choice(num_adjusted_pts, num_to_prune, replace=True)
+                new_positions = adjusted_pts_np[sample_indices]
+                print(f"Fallback: sampled {num_to_prune} positions from {num_adjusted_pts} adjusted points")
+            else:
+                new_positions = np.random.rand(num_to_prune, 2) * np.array([self.W, self.H])
+                print("Fallback: using random positions")
+        
+        # ==================== RE-INITIALIZE PRUNED PRIMITIVES ==================== #
         with torch.no_grad():
             # 1. Update positions (x, y)
             x.data[prune_indices] = torch.tensor(new_positions[:, 0], 
@@ -834,34 +938,22 @@ class SimpleTileRenderer(VectorRenderer):
             y.data[prune_indices] = torch.tensor(new_positions[:, 1], 
                                                dtype=y.dtype, device=y.device)
             
-            # 2. Visibility initialization (same as svgsplat_initializater.py)
-            v.data[prune_indices] = torch.full((num_to_prune,), -2.0, device=v.device)
+            # 2. Opacity initialization using constant from svgsplat_initializater.py
+            v.data[prune_indices] = torch.full((num_to_prune,), OPACITY_INIT_VALUE, device=v.device)
             
             # 3. Rotation initialization (same as svgsplat_initializater.py)
             theta.data[prune_indices] = torch.rand(num_to_prune, device=theta.device) * 2 * np.pi
             
             # 4. Color initialization (same as svgsplat_initializater.py)
             if target_image is not None:
-                I_np = target_image.detach().cpu().numpy()
-                
-                if I_np.ndim == 3:
-                    H, W, C = I_np.shape
-                    # Handle 4-channel (RGBA) images by taking only RGB channels
-                    if C == 4:
-                        I_np = I_np[:, :, :3]  # Remove alpha channel
-                    I_color = I_np  # (H, W, 3)
-                else:
-                    # Grayscale case
-                    H, W = I_np.shape
-                    I_color = np.stack([I_np] * 3, axis=2)  # Convert to RGB
-                
-                # Sample pixel colors at new positions (same as svgsplat_initializater.py)
+                # Sample pixel colors at new positions
+                H, W = I_color.shape[:2]
                 idx_x = np.clip(np.round(new_positions[:, 0]).astype(int), 0, W - 1)
                 idx_y = np.clip(np.round(new_positions[:, 1]).astype(int), 0, H - 1)
                 c_init = I_color[idx_y, idx_x]  # (num_to_prune, 3)
                 
                 # Add slight noise to diversify parameters (same as svgsplat_initializater.py)
-                c_init += np.random.normal(0.0, 0.02, c_init.shape)
+                c_init += np.random.normal(0.0, STD_C_INIT, c_init.shape)
                 c_init = np.clip(c_init, 0.0, 1.0)  # Safely clip values
                 
                 c.data[prune_indices] = torch.tensor(c_init, dtype=c.dtype, device=c.device)
@@ -870,50 +962,25 @@ class SimpleTileRenderer(VectorRenderer):
                 new_colors = torch.rand(num_to_prune, 3, device=c.device) * 0.8 + 0.1
                 c.data[prune_indices] = new_colors
             
-            # 5. Radius initialization: distance-based only (distance_factor = 1.0)
-            if target_image is not None:
-                I_np = target_image.detach().cpu().numpy()
-                if I_np.ndim == 3:
-                    # Convert to grayscale for edge detection
-                    I_gray = np.mean(I_np, axis=2)
-                else:
-                    I_gray = I_np.copy()
+            # 5. Variance-based radius initialization (same as svgsplat_initializater.py)
+            if target_image is not None and 'sampled_variances' in locals():
+                # Get radius range like in svgsplat_initializater.py
+                radii_min = getattr(self, 'radii_min', 2.0)
+                min_radius = radii_min
+                max_radius = max(min(H, W) / 16, min_radius + 0.1)
                 
-                # Ensure correct format for edge detection
-                if I_gray.dtype != np.uint8:
-                    I_gray = (I_gray * 255).astype(np.uint8)
+                # Map variance [0, 1] to radius [max, min]
+                # variance 0 → max_radius, variance 1 → min_radius
+                r_np = max_radius - sampled_variances * (max_radius - min_radius)
                 
-                # Same radius calculation as svgsplat_initializater.py
-                H, W = I_gray.shape
-                max_radius = min(H, W) / 4
-                
-                # Get min_radius from base initializer (similar to svgsplat_initializater.py)
-                # Assuming radii_min is available, otherwise use default
-                min_radius = getattr(self, 'radii_min', 2)
-                
-                # Calculate Canny edges and distance transform (same as svgsplat_initializater.py)
-                edges = cv2.Canny(I_gray, 100, 200)
-                inverted_edges = cv2.bitwise_not(edges)
-                distance_map = cv2.distanceTransform(inverted_edges, cv2.DIST_L2, 5)
-                
-                # Sample distance at each new position
-                idx_x = np.clip(np.round(new_positions[:, 0]).astype(int), 0, W - 1)
-                idx_y = np.clip(np.round(new_positions[:, 1]).astype(int), 0, H - 1)
-                point_distances = distance_map[idx_y, idx_x]
-                
-                # Normalize distances (0 = on edge, 1 = farthest from edge)
-                max_distance = np.max(distance_map) if np.max(distance_map) > 0 else 1.0
-                normalized_distances = point_distances / max_distance
-                
-                # Pure distance-based radius (distance_factor = 1.0)
-                distance_based_radius = min_radius + normalized_distances * (max_radius - min_radius)
-                
-                # Add noise for variety (same as svgsplat_initializater.py)
-                noise_scale = 0.01
-                noise = np.random.normal(0, noise_scale * (max_radius - min_radius), num_to_prune)
-                r_np = np.clip(distance_based_radius + noise, min_radius, max_radius)
+                # Add noise for variety
+                noise_scale = 0.1 * (max_radius - min_radius)
+                noise = np.random.normal(0, noise_scale, num_to_prune)
+                r_np = np.clip(r_np + noise, min_radius, max_radius)
                 
                 r.data[prune_indices] = torch.tensor(r_np, dtype=r.dtype, device=r.device)
+                
+                print(f"Radius distribution: min={r_np.min():.2f}, max={r_np.max():.2f}, mean={r_np.mean():.2f}")
             else:
                 # Fallback: random radius between min and max
                 min_radius = min(self.H, self.W) / 200
@@ -921,7 +988,7 @@ class SimpleTileRenderer(VectorRenderer):
                 new_radii = min_radius + torch.rand(num_to_prune, device=r.device) * (max_radius - min_radius)
                 r.data[prune_indices] = new_radii
         
-        print(f"Re-initialized {num_to_prune} primitives using svgsplat_initializater.py initialization method")
+        print(f"Re-initialized {num_to_prune} primitives using updated StructureAwareInitializer method")
     
     def save_image_tensor(self, image_tensor: torch.Tensor, path: str):
         """Save image tensor to file."""
@@ -1019,9 +1086,6 @@ class SimpleTileRenderer(VectorRenderer):
                 color_loss = torch.tensor(0.0, device=rendered.device, requires_grad=True)
             
             alpha_loss = F.mse_loss(rendered_alpha, target_alpha)
-
-            print(f"color loss : {color_loss.item()}")
-            print(f"alpha loss : {alpha_loss.item()}")
 
             return color_loss_weight*color_loss + alpha_loss_weight*alpha_loss
 

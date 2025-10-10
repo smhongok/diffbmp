@@ -209,12 +209,26 @@ class Preprocessor:
     def load_image_8bit_color_opacity(self, config):
         """
         Load image as 8-bit color and opacity(RGBA), and if large, apply CenterCrop → White Padding → resize to final size.
+        Prevents overshooting by applying low-pass filter (Gaussian blur) before resizing,
+        then applying thresholding after resizing.
+        
         Returns:
             arr (np.ndarray): Processed image array.
-            binary_image (np.ndarray): Binary mask of the alpha channel.
+            binary_image (np.ndarray): Binary mask of the alpha channel with anti-aliasing prevention.
         """
         img = Image.open(config["img_path"]).convert('RGBA')  # 8-bit color with alpha
-        binary_image = (1-(np.array(img)[:, :, 3] > 0).astype(np.uint8)) * 255
+        config = config.get("prevent_overshooting", {})
+        # Set RGB values to 255 (white) for pixels where alpha is 0 (transparent)
+        img_arr = np.array(img, dtype=np.uint8)
+        transparent_mask = img_arr[:, :, 3] == 0  # Alpha channel is 0
+        img_arr[transparent_mask, :3] = 255  # Set RGB to white for transparent pixels
+        img = Image.fromarray(img_arr, mode='RGBA')
+        
+        # Extract alpha channel for processing
+        alpha_channel = np.array(img)[:, :, 3]
+        # Create initial binary mask (inverted: 1 for transparent, 0 for opaque)
+        binary_image = (1-(alpha_channel > 0).astype(np.uint8)) * 255
+        
         w, h = img.size
         self.width = w
         self.height = h
@@ -223,13 +237,14 @@ class Preprocessor:
             # Not yet implemented
             raise NotImplementedError("trim=True is not yet implemented.")
 
-        # 1) CenterCrop (if too large)
+        # 1) CenterCrop (if too large) - Apply to both image and mask
         if w > self.width or h > self.height:
             crop_w = min(w, self.width)
             crop_h = min(h, self.height)
             left = (w - crop_w) // 2
             top = (h - crop_h) // 2
             img = img.crop((left, top, left + crop_w, top + crop_h))
+            binary_image = binary_image[top:top + crop_h, left:left + crop_w]
             w, h = img.size
 
         # 2) Padding (white=255, alpha=0 for transparent background)
@@ -245,28 +260,57 @@ class Preprocessor:
         left = (pad_w - img_w) // 2
         top = (pad_h - img_h) // 2
         padded_arr[top:top + img_h, left:left + img_w, :] = img_arr
+        
+        # Pad binary mask as well
+        padded_binary = np.full((pad_h, pad_w), fill_value=255, dtype=np.uint8)  # Default to transparent (255)
+        padded_binary[top:top + img_h, left:left + img_w] = binary_image
 
-        # 3) Resize to final_width x final_width (aspect ratio is enforced here)
+        # 3) Anti-aliasing preprocessing for mask before resizing
+        # Apply Gaussian blur to prevent overshooting (mask only)
+        blur_sigma = config.get("anti_aliasing_sigma", 1.0)  # Default sigma for Gaussian blur
+        binary_image_pil = Image.fromarray(padded_binary, mode='L')
         padded_img = Image.fromarray(padded_arr, mode='RGBA')
+               
+        # Apply Gaussian blur to mask only
+        blurred_mask = binary_image_pil.filter(ImageFilter.GaussianBlur(radius=blur_sigma))
+      
+        # 4) Resize image (without blur) and blurred mask to final dimensions
         w, h = padded_img.size
         ratio = self.final_width / float(w)
         new_w = self.final_width
         new_h = int(h * ratio)
         self.final_width = new_w
         self.final_height = new_h
+        
+        # Resize original image (no blur applied)
         resized_img = padded_img.resize((new_w, new_h), Image.LANCZOS)
-
-        binary_image = Image.fromarray(binary_image, mode='L')  # Convert binary image to PIL Image
-        binary_image = binary_image.resize((new_w, new_h), Image.BICUBIC)  # Resize binary image to match resized_img
-
+        
+        # Resize blurred mask
+        resized_mask = blurred_mask.resize((new_w, new_h), Image.LANCZOS)
+        
+        # 5) Post-resize thresholding to create clean binary mask
+        threshold = config.get("binary_threshold", 100)  # Default threshold
+        binary_image = np.array(resized_mask, dtype=np.uint8)
+        binary_image = (binary_image > threshold) * 255
+        binary_image = binary_image.astype(np.uint8)
+        
+        # Convert final image to array
         arr = np.array(resized_img, dtype=np.uint8)
 
-        binary_image = np.array(binary_image, dtype=np.uint8)
-        binary_image = (binary_image>0) * 255
-        binary_image = binary_image.astype(np.uint8)
+        # Set RGB values to 255 (white) for pixels where binary_image indicates transparency
+        # binary_image: 255 = transparent, 0 = opaque
+        transparent_mask = (binary_image != 0)  # Where binary_image is 255 (transparent areas)
+        color_for_background = config.get("color_for_background", "random")
+        if color_for_background == "white":
+            arr[transparent_mask, :3] = 255  # Set RGB to white for transparent pixels
+        elif color_for_background == "black":
+            arr[transparent_mask, :3] = 0    # Set RGB to black for transparent pixels
+        elif color_for_background == "random":
+            arr[transparent_mask, :3] = np.random.randint(0, 256, size=(transparent_mask.sum(), 3), dtype=np.uint8)  # Set RGB to random colors for transparent pixels
+        
+        arr[transparent_mask, 3] = 0    # Set alpha to 0 for transparent pixels
 
         return arr, binary_image
-
 
     def _fm_halftone_transform(self, image):
         """

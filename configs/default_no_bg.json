@@ -4,24 +4,29 @@
             256
         ],
         "img_path": [
-            "images/person/pororo_no_background.png"
+            "images/obj_centric/Imagen4_no_bg_very_clear.png"
         ],
-        "exist_bg": false
+        "exist_bg" : false,
+        "debug_save_intermediates" : true,
+        "prevent_overshooting" : {
+            "color_for_background": "random",
+            "anti_aliasing_sigma": 3,
+            "binary_threshold" : 80
+        }
     },
     "primitive": {
-        "primitive_file": "arial.ttf",
-        "text": "S",
-        "primitive_hollow": false,
+        "primitive_file": "paw_complicated.png",
+        "convert_to_svg": false,
+        "svg_hollow": false,
         "output_width": 128
     },
     "initialization": {
         "initializer": "structure_aware",
         "N": [
-            2000
+            3000
         ],
         "radii_min": 2,
-        "debug_mode": true,
-        "distance_factor": 0.7
+        "debug_mode": true
     },
     "optimization": {
         "use_fp16": false,
@@ -29,18 +34,18 @@
         "num_iterations": 300,
         "learning_rate": {
             "default": 0.1,
-            "gain_v": 3
+            "gain_v":5.0
         },
         "loss_weights": {
             "color_loss_weight": 1.0,
-            "alpha_loss_weight": 2.0
+            "alpha_loss_weight": 0.3
         },
-        "pruning": {
-            "do_pruning": true,
-            "prune_iterations": 10,
-            "no_prune_last_iterations": 50,
-            "no_prune_warmup_iterations": 200,
-            "prune_threshold": 0.3
+        "pruning":{
+            "do_pruning" : true,
+            "prune_iterations" : 50,
+            "no_prune_last_iterations" : 99,
+            "no_prune_warmup_iterations" : 199,
+            "prune_threshold" : 0.3
         },
         "do_decay": true,
         "do_gaussian_blur": true
@@ -48,6 +53,6 @@
     "postprocessing": {
         "output_folder": "outputs/",
         "compute_psnr": true,
-        "export_psd": true
+        "export_psd": false
     }
-}
+} 

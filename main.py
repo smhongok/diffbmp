@@ -29,6 +29,9 @@ from core.initializer.random_initializater import RandomInitializer
 # Route visualization flag - set to True to enable primitive movement visualization
 ENABLE_ROUTE_VISUALIZATION = False
 
+# Debug flags
+DEBUG_PRIM_DISTRIBUTION = False
+
 # Import our modules
 from core.preprocessing import Preprocessor
 from util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
@@ -627,7 +630,13 @@ for img_idx, img_path in enumerate(img_paths):
                 from torch.amp import autocast
                 with autocast('cuda'):
                     rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
-                    
+                    if DEBUG_PRIM_DISTRIBUTION:
+                        prim_distribution = (rendered_alpha.detach().cpu().numpy()>0).astype(np.uint8)
+                        alpha_uint8 = (rendered_alpha.detach().cpu().numpy() * 255).astype(np.uint8)
+                        alpha_uint8[(alpha_uint8 < 128) & (alpha_uint8 > 0)] = 128  # Set values between 0 and 128 to 128
+                        Image.fromarray(alpha_uint8, mode='L').save(output_path.replace('.png', '_alpha.png'))
+                        Image.fromarray(prim_distribution*255, mode='L').save(output_path.replace('.png', '_prim_distribution.png'))
+
                     # Save rendered image directly from rendered tensor 
                     rendered_np = rendered.detach().cpu().numpy()
                     rendered_np = (rendered_np * 255).astype(np.uint8)
@@ -636,6 +645,12 @@ for img_idx, img_path in enumerate(img_paths):
             else:
                 # Still render final PNG for preview/compatibility
                 rendered, output_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
+                if DEBUG_PRIM_DISTRIBUTION:
+                    prim_distribution = (output_alpha.detach().cpu().numpy()>0).astype(np.uint8)
+                    alpha_uint8 = (output_alpha.detach().cpu().numpy() * 255).astype(np.uint8)
+                    alpha_uint8[(alpha_uint8 < 128) & (alpha_uint8 > 0)] = 128  # Set values between 0 and 128 to 128
+                    Image.fromarray(alpha_uint8, mode='L').save(output_path.replace('.png', '_alpha.png'))
+                    Image.fromarray(prim_distribution*255, mode='L').save(output_path.replace('.png', '_prim_distribution.png'))
 
                 # Save rendered image directly from rendered tensor 
                 rendered_np = rendered.detach().cpu().numpy()
