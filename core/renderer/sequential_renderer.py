@@ -31,11 +31,12 @@ class SequentialFrameRenderer(SimpleTileRenderer):
     Inherits from MseRenderer but uses warmup scheduling for loss.
     """
     
-    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None, tile_size=32):
+    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None, tile_size=32, sigma = 1.0):
         # Pass parameters to SimpleTileRenderer using keyword arguments
         super().__init__(canvas_size, S, tile_size=tile_size, 
                         alpha_upper_bound=alpha_upper_bound, device=device, 
-                        use_fp16=use_fp16, gamma=gamma, output_path=output_path)
+                        use_fp16=use_fp16, gamma=gamma, output_path=output_path,
+                        sigma = sigma)
     
     def compute_loss_with_warmup(self, 
                                rendered: torch.Tensor, 
@@ -288,9 +289,12 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         tile_width = canvas_width // tile_cols
         
         # Compute gradient magnitudes once for ranking (always computed now)
-        gradient_magnitudes = self._compute_per_pixel_gradient_magnitude(
-            x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted, target_image, adaptive_config
-        )
+        if gradient_ranking_enabled:
+            gradient_magnitudes = self._compute_per_pixel_gradient_magnitude(
+                x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted, target_image, adaptive_config
+            )
+        else:
+            gradient_magnitudes = None
         
         # Process each tile
         for row in range(tile_rows):

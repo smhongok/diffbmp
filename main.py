@@ -276,7 +276,8 @@ if sequential_config.get("enabled", False):
         use_fp16=use_fp16,
         gamma=config["optimization"].get("gamma", 1.0),
         output_path=config["postprocessing"].get("output_folder", "./outputs/"),
-        tile_size=sequential_config.get("tile_size", 32)
+        tile_size=sequential_config.get("tile_size", 32),
+        sigma = 1.0
     )
     print(f"Using SequentialFrameRenderer with tile-based rendering (tile_size: {sequential_config.get('tile_size', 32)})")
     
@@ -319,31 +320,32 @@ if sequential_config.get("enabled", False):
             adaptive_control_config = sequential_config.get("adaptive_control", {})
             optimization_config["adaptive_control"] = adaptive_control_config
             
-            combined_loss_config = sequential_config.get("combined_loss", {})
-            optimization_config["combined_loss"] = combined_loss_config
 
-            if combined_loss_config.get("enabled", False):  
-                print(f"Using combined loss with weights - grayscale: {combined_loss_config.get('grayscale_weight', 0.7)}, color: {combined_loss_config.get('color_weight', 0.3)}, canny: {combined_loss_config.get('canny_weight', 0.1) }")
-            else:
-                print("Using standard loss")
-
-            if adaptive_control_config.get("enabled", False):
+            if adaptive_control_config.get("enabled", False) and not sequential_config.get("seperate_init", False):
                 print("Using adaptive control")
-                color_nerf_config = adaptive_control_config.get("color_nerf", {})
-                if color_nerf_config.get("enabled", False):
-                    mode = color_nerf_config.get("mode", "mean")
-                    print(f"Using color nerf (mode: {mode})")
-                else:
-                    print("Not using color nerf")
-            else:
-                print("Not using adaptive control")
+            
+            if sequential_config.get("seperate_init", False):
+                
+                print("seperately initializing for every frame")
+                
+                x, y, r, v, theta, c = sequential_renderer.initialize_parameters(initializer, I_target_frame)
+                
+                start_time_frame = time.time()
+                x, y, r, v, theta, c = renderer.optimize_parameters(
+                x, y, r, v, theta, c,
+                I_target_frame, 
+                opt_conf=frame_opt_conf
+                )
 
-            # Choose optimization strategy
-            start_time_frame = time.time()
-            x, y, r, v, theta, c = sequential_renderer.optimize_parameters_full_temporal(
-                x, y, r, v, theta, c, I_target_frame, prev_params, optimization_config
-            )
-            end_time_frame = time.time()
+                end_time_frame = time.time()
+            else:
+                print("initializing from previous frame")
+                # Choose optimization strategy
+                start_time_frame = time.time()
+                x, y, r, v, theta, c = sequential_renderer.optimize_parameters_full_temporal(
+                    x, y, r, v, theta, c, I_target_frame, prev_params, optimization_config
+                )
+                end_time_frame = time.time()
         
         # Render final frame for export
         with torch.no_grad():
@@ -694,9 +696,10 @@ if config['postprocessing'].get('compute_psnr', False):
             for frame_idx, (frame_result, I_target_frame) in enumerate(zip(frame_results, I_targets)):
                 # Render frame for metrics using tile-based rendering
                 with torch.no_grad():
+                    white_bg = torch.ones((renderer.H, renderer.W, 3), device=renderer.device)
                     rendered_frame = renderer.render_from_params(
                         frame_result['x'], frame_result['y'], frame_result['r'], frame_result['theta'],
-                        frame_result['v'], frame_result['c'], sigma=0.0, is_final=True
+                        frame_result['v'], frame_result['c'], I_bg=white_bg, sigma=0.0, is_final=True
                     )
                 
                 # Convert to tensor format for metrics
