@@ -633,7 +633,8 @@ for img_idx, img_path in enumerate(img_paths):
                     if DEBUG_PRIM_DISTRIBUTION:
                         prim_distribution = (rendered_alpha.detach().cpu().numpy()>0).astype(np.uint8)
                         alpha_uint8 = (rendered_alpha.detach().cpu().numpy() * 255).astype(np.uint8)
-                        alpha_uint8[(alpha_uint8 < 128) & (alpha_uint8 > 0)] = 128  # Set values between 0 and 128 to 128
+                        alpha_uint8 = 255 - alpha_uint8  # Invert alpha for visualization
+                        # alpha_uint8[(alpha_uint8 < 128) & (alpha_uint8 > 0)] = 128  # Set values between 0 and 128 to 128
                         Image.fromarray(alpha_uint8, mode='L').save(output_path.replace('.png', '_alpha.png'))
                         Image.fromarray(prim_distribution*255, mode='L').save(output_path.replace('.png', '_prim_distribution.png'))
 
@@ -648,7 +649,8 @@ for img_idx, img_path in enumerate(img_paths):
                 if DEBUG_PRIM_DISTRIBUTION:
                     prim_distribution = (output_alpha.detach().cpu().numpy()>0).astype(np.uint8)
                     alpha_uint8 = (output_alpha.detach().cpu().numpy() * 255).astype(np.uint8)
-                    alpha_uint8[(alpha_uint8 < 128) & (alpha_uint8 > 0)] = 128  # Set values between 0 and 128 to 128
+                    alpha_uint8 = 255 - alpha_uint8  # Invert alpha for visualization
+                    # alpha_uint8[(alpha_uint8 < 128) & (alpha_uint8 > 0)] = 128  # Set values between 0 and 128 to 128
                     Image.fromarray(alpha_uint8, mode='L').save(output_path.replace('.png', '_alpha.png'))
                     Image.fromarray(prim_distribution*255, mode='L').save(output_path.replace('.png', '_prim_distribution.png'))
 
