@@ -26,11 +26,18 @@
             "default": 0.1
         },
         "do_decay": true,
-        "do_gaussian_blur": true
+        "do_gaussian_blur": true,
+        "loss_config": {
+            "type": "combined",
+            "components": [
+                {"name": "mse", "weight": 1.0},
+                {"name": "perceptual", "weight": 0.2}
+            ]
+        }
     },
     "postprocessing": {
         "output_folder": "outputs/",
         "compute_psnr": true,
-        "export_psd": true
+        "export_psd": false
     }
 } 

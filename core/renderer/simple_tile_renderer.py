@@ -1,10 +1,13 @@
 import torch
 import torch.nn.functional as F
 from typing import Tuple, List, Optional
-from .vector_renderer import VectorRenderer
-from util.utils import gaussian_blur
+from core.renderer.vector_renderer import VectorRenderer
+import time
+import matplotlib.pyplot as plt
 import numpy as np
+import os
 import cv2
+from util.loss_functions import LossComposer
 
 DEBUG_MODE = False
 DEBUG_MODE_DETAIL = False
@@ -60,6 +63,9 @@ class SimpleTileRenderer(VectorRenderer):
         
         # Compute bounding boxes for each primitive in self.S
         self.primitive_bboxes = self._compute_primitive_bboxes()
+        
+        # Initialize loss composer (will be set later with config)
+        self.loss_composer = None
 
     def _clamp_params_inplace(self, x, y, r):
         # VectorRenderer와 동일 정책: r ∈ [2, min(H,W)//4]
@@ -597,6 +603,11 @@ class SimpleTileRenderer(VectorRenderer):
         
         is_no_bg_mode = target_image.shape[2] == 4
         
+        # Initialize loss composer from config
+        loss_config = opt_conf.get("loss_config", {"type": "mse"})
+        self.loss_composer = LossComposer(loss_config, device=self.device)
+        print(f"Using loss configuration: {loss_config}")
+        
         # Get optimization parameters from config
         num_iterations = opt_conf.get("num_iterations", 100)
         lr_conf = opt_conf["learning_rate"]
@@ -680,8 +691,7 @@ class SimpleTileRenderer(VectorRenderer):
                     
                     # Compute loss
                     loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c, 
-                            rendered_alpha = rendered_alpha,
-                            loss_w_conf=opt_conf.get("loss_weights", None))
+                            rendered_alpha=rendered_alpha)
                     
                 # Scale the loss and call backward
                 scaler.scale(loss).backward()
@@ -704,8 +714,7 @@ class SimpleTileRenderer(VectorRenderer):
                 
                 # Compute loss
                 loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c, 
-                                         rendered_alpha = rendered_alpha,
-                                         loss_w_conf=opt_conf.get("loss_weights", None))
+                                         rendered_alpha=rendered_alpha)
                 
                 # Backward pass
                 loss.backward()
@@ -770,9 +779,19 @@ class SimpleTileRenderer(VectorRenderer):
                 print(f"      theta: [{theta.min():.4f}, {theta.max():.4f}]")
                 print(f"      c: [{c.min():.4f}, {c.max():.4f}]")
             
-            # Log progress
+            # Log progress with loss components
             if iteration % 10 == 0 or iteration in save_image_intervals or iteration < 3:
-                print(f"Iteration {iteration}: Loss = {loss.item():.6f}")
+                # Get loss components for detailed logging
+                _, loss_components = self.compute_loss(
+                    rendered, target_image, x, y, r, v, theta, c, 
+                    rendered_alpha=rendered_alpha,
+                    epoch=iteration,
+                    return_components=True
+                )
+                
+                # Format loss components string
+                components_str = ", ".join([f"{name}={val:.6f}" for name, val in loss_components.items()])
+                print(f"Iteration {iteration}: Total={loss.item():.6f} ({components_str})")
                 
                 # Save intermediate images
                 if iteration in save_image_intervals and DEBUG_MODE:
@@ -951,94 +970,76 @@ class SimpleTileRenderer(VectorRenderer):
                     c: torch.Tensor,
                     rendered_alpha: torch.Tensor = None,
                     loss_w_conf = None,
-                    epoch = None) -> torch.Tensor:
+                    epoch = None,
+                    return_components: bool = False):
         """
-        Compute MSE loss between rendered and target images.
+        Compute loss using flexible loss function system.
         
         Args:
-            rendered: Rendered image tensor (H, W, 3)
+            rendered: Rendered RGB image tensor (H, W, 3)
             target: Target image tensor (H, W, 3) or (H, W, 4) if it has an alpha channel
-            cached_masks: Generated masks (B, H, W)
             x, y, r, v, theta, c: Current parameter values
             rendered_alpha: Optional alpha channel tensor (H, W) if available
+            loss_w_conf: Deprecated, kept for compatibility
+            epoch: Current epoch number
+            return_components: If True, return (loss, components_dict)
             
         Returns:
-            MSE loss value
+            Loss value, or (loss, components_dict) if return_components=True
         """
-        # If target has an alpha channel, use it as a mask for loss calculation
-        # In this case, we only compute loss for pixels where alpha > 0 (foreground pixels)
-        # and include both RGB and alpha channel in the loss calculation
+        # Ensure loss composer is initialized
+        if self.loss_composer is None:
+            raise RuntimeError("Loss composer not initialized. Call _optimize_parameters_whole first.")
+        
+        # Ensure consistent precision
+        if self.use_fp16:
+            if target.dtype == torch.float32:
+                rendered = rendered.float()
+                if rendered_alpha is not None:
+                    rendered_alpha = rendered_alpha.float()
+            elif rendered.dtype == torch.float16 and target.dtype != torch.float16:
+                target = target.half()
+        else:
+            rendered = rendered.float()
+            target = target.float()
+            if rendered_alpha is not None:
+                rendered_alpha = rendered_alpha.float()
+        
+        # Handle target with alpha channel
         if target.shape[2] == 4:
-            assert rendered_alpha is not None, "Rendered alpha channel must be provided when target has an alpha channel."
-            assert loss_w_conf is not None, "Loss weights must be provided when target has an alpha channel."
-
-            color_loss_weight = loss_w_conf.get('color_loss_weight', 1.0)
-            alpha_loss_weight = loss_w_conf.get('alpha_loss_weight', 1.0)
-
-            # Handle rendered_alpha shape: could be (H, W) or (H, W, 1)
-            if rendered_alpha.dim() == 3 and rendered_alpha.shape[2] == 1:
-                rendered_alpha = rendered_alpha.squeeze(-1)  # (H, W, 1) -> (H, W)
-
-            # Extract alpha channel once and create mask
+            # Extract RGB and alpha
+            target_rgb = target[:, :, :3]     # Shape: (H, W, 3)
             target_alpha = target[:, :, 3]    # Shape: (H, W)
+            
+            # Handle rendered_alpha shape: could be (H, W) or (H, W, 1)
+            if rendered_alpha is not None:
+                if rendered_alpha.dim() == 3 and rendered_alpha.shape[2] == 1:
+                    rendered_alpha = rendered_alpha.squeeze(-1)  # (H, W, 1) -> (H, W)
+            
+            # Create foreground mask
             alpha_mask = target_alpha > 0     # Shape: (H, W), boolean mask
             
-            # Only compute loss for pixels where alpha > 0
-            if alpha_mask.any():
-                # Extract RGB channels
-                target_rgb = target[:, :, :3]     # Shape: (H, W, 3)
-                
-                # Ensure consistent precision before masking to avoid unnecessary conversions
-                if self.use_fp16:
-                    if target_rgb.dtype == torch.float32:
-                        rendered = rendered.float()
-                        rendered_alpha = rendered_alpha.float()
-                    elif rendered.dtype == torch.float16 and target_rgb.dtype != torch.float16:
-                        target_rgb = target_rgb.half()
-                        target_alpha = target_alpha.half()
-                else:
-                    rendered = rendered.float()
-                    rendered_alpha = rendered_alpha.float()
-                    target_rgb = target_rgb.float()
-                    target_alpha = target_alpha.float()
-                
-                # Apply mask to all tensors
-                rendered_masked = rendered[alpha_mask]              # Shape: (N_valid, 3)
-                rendered_alpha_masked = rendered_alpha[alpha_mask]  # Shape: (N_valid,)
-                target_rgb_masked = target_rgb[alpha_mask]          # Shape: (N_valid, 3)
-                target_alpha_masked = target_alpha[alpha_mask]      # Shape: (N_valid,)
-                
-                # Combine RGB and alpha channels for single MSE computation
-                # Concatenate along last dimension: RGB (3) + Alpha (1) = 4 channels
-                rendered_combined = torch.cat([rendered_masked, rendered_alpha_masked.unsqueeze(-1)], dim=-1)  # (N_valid, 4)
-                target_combined = torch.cat([target_rgb_masked, target_alpha_masked.unsqueeze(-1)], dim=-1)    # (N_valid, 4)
-                
-                color_loss = F.mse_loss(rendered_combined, target_combined)
-            else:
-                # If no valid pixels, return zero loss
-                color_loss = torch.tensor(0.0, device=rendered.device, requires_grad=True)
-            
-            alpha_loss = F.mse_loss(rendered_alpha, target_alpha)
-
-            print(f"color loss : {color_loss.item()}")
-            print(f"alpha loss : {alpha_loss.item()}")
-
-            return color_loss_weight*color_loss + alpha_loss_weight*alpha_loss
-
+            # Use loss composer
+            result = self.loss_composer.compute_loss(
+                rendered=rendered,
+                target=target_rgb,
+                rendered_alpha=rendered_alpha,
+                target_alpha=target_alpha,
+                mask=alpha_mask,
+                return_components=return_components
+            )
         else:
-            # Original behavior for 3-channel targets
-            # Ensure tensors are in consistent precision
-            if self.use_fp16:
-                if target.dtype == torch.float32:
-                    rendered = rendered.float()
-                elif rendered.dtype == torch.float16 and target.dtype != torch.float16:
-                    target = target.half()
-            else:
-                rendered = rendered.float()
-                target = target.float()
-
-
-            return F.mse_loss(rendered, target)    
+            # 3-channel target (with background)
+            result = self.loss_composer.compute_loss(
+                rendered=rendered,
+                target=target,
+                rendered_alpha=None,
+                target_alpha=None,
+                mask=None,
+                return_components=return_components
+            )
+        
+        return result    
          
     def _render_tile(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                      theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,

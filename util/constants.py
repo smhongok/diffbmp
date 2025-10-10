@@ -80,6 +80,19 @@ DEFAULT_TILE_SIZE = 32
 SEQUENTIAL_ENABLED_DEFAULT = False
 SEQUENTIAL_INPUT_TYPE_DEFAULT = "gif"
 
+# Loss function defaults
+DEFAULT_LOSS_CONFIG = {
+    "type": "mse",  # Single loss type: "mse", "l1", "huber", "perceptual", "ssim", "edge", or "combined"
+}
+
+DEFAULT_LOSS_CONFIG_NO_BG = {
+    "type": "combined",
+    "components": [
+        {"name": "mse", "weight": 1.0},
+        {"name": "alpha", "weight": 2.0}
+    ]
+}
+
 
 def apply_constants_to_config(config: dict) -> dict:
     """
@@ -125,6 +138,13 @@ def apply_constants_to_config(config: dict) -> dict:
         config["optimization"].setdefault("decay_rate", DECAY_RATE)
         config["optimization"].setdefault("renderer_type", DEFAULT_RENDERER_TYPE)
         config["optimization"].setdefault("tile_size", DEFAULT_TILE_SIZE)
+        
+        # Apply loss config based on whether background exists
+        exist_bg = config.get("preprocessing", {}).get("exist_bg", True)
+        if exist_bg:
+            config["optimization"].setdefault("loss_config", DEFAULT_LOSS_CONFIG)
+        else:
+            config["optimization"].setdefault("loss_config", DEFAULT_LOSS_CONFIG_NO_BG)
         
         if "learning_rate" not in config["optimization"]:
             config["optimization"]["learning_rate"] = {}

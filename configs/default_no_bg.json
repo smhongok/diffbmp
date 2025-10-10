@@ -29,11 +29,14 @@
         "num_iterations": 300,
         "learning_rate": {
             "default": 0.1,
-            "gain_v": 3
+            "gain_v": 5
         },
-        "loss_weights": {
-            "color_loss_weight": 1.0,
-            "alpha_loss_weight": 2.0
+        "loss_config": {
+            "type": "combined",
+            "components": [
+                {"name": "mse", "weight": 1.0},
+                {"name": "alpha", "weight": 2.0}
+            ]
         },
         "pruning": {
             "do_pruning": true,
