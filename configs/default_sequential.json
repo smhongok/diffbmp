@@ -4,7 +4,7 @@
             256
         ],
         "img_path": [
-            "images/gif/pororo_monkey_crop_first2.gif"
+            "images/gif/nevergonnagiveyouup.gif"
         ]
     },
     "primitive": {
@@ -41,6 +41,7 @@
         "enabled": true,
         "input_type": "gif",
         "max_frames": null,
+        "seperate_init": true,
         "optimization": {
             "num_iterations": 100,
             "learning_rate": {
@@ -57,9 +58,10 @@
             "opacity_threshold": 0.7,
             "opacity_reduction_factor": 0.4,
             "max_primitives_per_tile": 4,
-            "apply_epochs": [20, 40, 60, 80],
+            "apply_epochs": [20, 45, 70],
             "gradient_ranking": {
-                "enabled": false,
+                "enabled": true,
+                "process_all_pixels": true,
                 "pixels_per_tile": 64
             }
         },
@@ -71,11 +73,11 @@
         }
     },
     "postprocessing": {
-        "output_folder": "./outputs/reduce_code/pororo_monkey/",
+        "output_folder": "./outputs/topk_ranking/nevergonnagiveyouup/all_pixel",
         "hires_export": false,
         "hires_scale_factor": 4.0,
         "compute_psnr": true,
-        "export_psd": true
+        "export_psd": false
     },
     "seed": 42
 }
