@@ -30,11 +30,12 @@
         },
         "do_decay": true,
         "do_gaussian_blur": true,
-        "first_frame": {
-            "num_iterations": 100,
-            "learning_rate": {
-                "default": 0.1
-            }
+        "loss_config": {
+            "type": "combined",
+            "components": [
+                {"name": "mse", "weight": 1.0},
+                {"name": "perceptual", "weight": 0.2}
+            ]
         }
     },
     "sequential": {
@@ -48,7 +49,14 @@
                 "default": 0.1
             },
             "decay_rate": 0.98,
-            "warmup_steps": 10
+            "warmup_steps": 10,
+            "loss_config": {
+                "type": "combined",
+                "components": [
+                    {"name": "mse", "weight": 1.0},
+                    {"name": "perceptual", "weight": 0.2}
+                ]
+            }
         },
         "adaptive_control": {
             "enabled": true,

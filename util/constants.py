@@ -19,6 +19,7 @@ VARIANCE_BASE_PROB = 0.1  # Base probability for low-variance areas
 # V_INIT_SLOPE = 3.0
 
 # ==================== Optimization Constants ====================
+LR_DEFAULT = 0.1
 # Learning rate gains (relative to base learning rate)
 LR_GAIN_X = 10.0
 LR_GAIN_Y = 10.0
@@ -148,6 +149,8 @@ def apply_constants_to_config(config: dict) -> dict:
         
         if "learning_rate" not in config["optimization"]:
             config["optimization"]["learning_rate"] = {}
+        
+        config["optimization"]["learning_rate"].setdefault("default", LR_DEFAULT)
         config["optimization"]["learning_rate"].setdefault("gain_x", LR_GAIN_X)
         config["optimization"]["learning_rate"].setdefault("gain_y", LR_GAIN_Y)
         config["optimization"]["learning_rate"].setdefault("gain_r", LR_GAIN_R)

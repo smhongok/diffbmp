@@ -276,17 +276,12 @@ for frame_idx, I_target_frame in enumerate(I_targets):
         print("First frame: initializing from scratch with MseRenderer")
         x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target_frame)
         
-        # Use first frame optimization settings
-        frame_opt_conf = opt_conf.copy()
-        #first_frame_conf = config["optimization"].get("first_frame", {})
-        #frame_opt_conf.update(first_frame_conf)
-        
-        # Optimize with standard renderer
+        # Optimize with standard renderer using optimization config
         start_time_frame = time.time()
         x, y, r, v, theta, c = renderer.optimize_parameters(
             x, y, r, v, theta, c,
             I_target_frame, 
-            opt_conf=frame_opt_conf
+            opt_conf=opt_conf
         )
         end_time_frame = time.time()
         

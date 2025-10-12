@@ -131,6 +131,12 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         if opt_conf is None:
             opt_conf = {"num_iterations": 50, "learning_rate": {"default": 0.005}, "decay_rate": 0.95}
         
+        # Initialize loss composer from config
+        from util.loss_functions import LossComposer
+        loss_config = opt_conf.get("loss_config", {"type": "mse"})
+        self.loss_composer = LossComposer(loss_config, device=self.device)
+        print(f"Using loss configuration: {loss_config}")
+        
         # Ensure all parameters are leaf tensors with gradients enabled
         x.requires_grad_(True)
         y.requires_grad_(True)
