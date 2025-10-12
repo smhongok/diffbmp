@@ -19,7 +19,7 @@
         "detail_first": false
     },
     "optimization": {
-        "use_fp16": false,
+        "use_fp16": true,
         "renderer_type": "tile",
         "num_iterations": 100,
         "learning_rate": {
