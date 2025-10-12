@@ -82,12 +82,6 @@ use_fp16 = opt_conf.get("use_fp16", False)  # Default to False for CPU compatibi
 
 exist_bg = pp_conf.get("exist_bg", True)
 
-# Check if sequential processing is enabled
-sequential_config = config["sequential"]
-
-if not exist_bg and sequential_config["enabled"]:
-    raise NotImplementedError("Sequential processing is not supported for images without background. Please set 'exist_bg' to True in the config.")
-
 # Handle primitive file loading (same for all images)
 primitive_file_config = config["primitive"].get("primitive_file")
 
@@ -193,42 +187,16 @@ for img_idx, img_path in enumerate(img_paths):
         transform_mode=pp_conf.get("transform", "none"),
     )
     
-    if sequential_config["enabled"]:
-        # Load frames for sequential processing
-        input_path = config["preprocessing"]["img_path"]
-        input_type = sequential_config["input_type"]
-        max_frames = sequential_config.get("max_frames", None)
-        
-        print(f"Loading {input_type} frames from: {input_path}")
-        
-        if input_type == "gif":
-            frames = preprocessor.load_gif_frames(input_path, config["preprocessing"])
-        elif input_type == "video":
-            frames = preprocessor.load_video_frames(input_path, config["preprocessing"], max_frames)
-        elif input_type == "sequence":
-            frames = preprocessor.load_image_sequence(input_path, config["preprocessing"])
-        else:
-            raise ValueError(f"Unsupported input_type: {input_type}")
-        
-        print(f"Loaded {len(frames)} frames")
-        
-        # Convert frames to tensors
-        I_targets = []
-        for frame in frames:
-            frame_tensor = torch.tensor(frame.astype(np.float32) / 255.0, device=device)  # (H, W, 3)
-            I_targets.append(frame_tensor)
-        print("There are {} frames in the input".format(len(I_targets)))
-        
+    # Load single image
+    if exist_bg:
+        print("Target image has background")
+        I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
     else:
-        if exist_bg:
-            print("Target image has background")
-            I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
-        else:
-            print("Target image has no background, using color and opacity")
-            I_target,target_binary_mask_np = preprocessor.load_image_8bit_color_opacity(config["preprocessing"])
-            I_target = I_target.astype(np.float32) / 255.0
+        print("Target image has no background, using color and opacity")
+        I_target,target_binary_mask_np = preprocessor.load_image_8bit_color_opacity(config["preprocessing"])
+        I_target = I_target.astype(np.float32) / 255.0
 
-        I_target = torch.tensor(I_target, device=device)  # (H, W, 3) or (H, W, 4) if no background
+    I_target = torch.tensor(I_target, device=device)  # (H, W, 3) or (H, W, 4) if no background
 
     # Initialize renderer based on loss type
     renderer_type = opt_conf["renderer_type"]
@@ -274,141 +242,30 @@ for img_idx, img_path in enumerate(img_paths):
     else:
         raise ValueError(f"Invalid initializer: {init_conf.get('initializer', 'none')}")
 
-    if sequential_config.get("enabled", False):
-        # Sequential frame-by-frame optimization
-        print("Starting sequential frame-by-frame optimization...")
-        
-        # Create sequential renderer for subsequent frames
-        sequential_renderer = SequentialFrameRenderer(
-            canvas_size=(H, W), 
-            S=bmp_tensor,
-            alpha_upper_bound=config["optimization"]["alpha_upper_bound"],
-            device=device,
-            use_fp16=use_fp16,
-            gamma=config["optimization"].get("gamma", 1.0),
-            output_path=config["postprocessing"]["output_folder"],
-            tile_size=sequential_config["tile_size"]
-        )
-        print(f"Using SequentialFrameRenderer with tile-based rendering (tile_size: {sequential_config['tile_size']})")
-        
-        # Store optimized parameters for each frame
-        frame_results = []
-        prev_params = None
-        
-        for frame_idx, I_target_frame in enumerate(I_targets):
-            print(f"\nOptimizing frame {frame_idx + 1}/{len(I_targets)}...")
-            
-            if frame_idx == 0:
-                # First frame: initialize from scratch using standard MseRenderer
-                print("First frame: initializing from scratch with MseRenderer")
-                x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target_frame)
-                
-                # Use first frame optimization settings
-                frame_opt_conf = opt_conf.copy()
-                first_frame_conf = config["optimization"].get("first_frame", {})
-                frame_opt_conf.update(first_frame_conf)
-                
-                # Optimize with standard renderer
-                start_time_frame = time.time()
-                x, y, r, v, theta, c = renderer.optimize_parameters(
-                    x, y, r, v, theta, c,
-                    I_target_frame, 
-                    opt_conf=frame_opt_conf
-                )
-                end_time_frame = time.time()
-                
-                # No need for neighbor computation with simple anchoring loss
-                
-            else:
-                # Subsequent frames: use SequentialFrameRenderer with temporal consistency
-                print(f"Subsequent frame: initializing from frame {frame_idx} with SequentialFrameRenderer")
-                
-                # Use sequential optimization settings and include adaptive control
-                optimization_config = sequential_config.get("optimization", {}) 
-                
-                # Add adaptive control configuration to optimization config
-                adaptive_control_config = sequential_config.get("adaptive_control", {})
-                optimization_config["adaptive_control"] = adaptive_control_config
-                
-                combined_loss_config = sequential_config.get("combined_loss", {})
-                optimization_config["combined_loss"] = combined_loss_config
+    # Single image optimization
+    # Initialize parameters
 
-                if combined_loss_config.get("enabled", False):  
-                    print(f"Using combined loss with weights - grayscale: {combined_loss_config.get('grayscale_weight', 0.7)}, color: {combined_loss_config.get('color_weight', 0.3)}, canny: {combined_loss_config.get('canny_weight', 0.1) }")
-                else:
-                    print("Using standard loss")
+    # Generate distance masks if requested
+    target_binary_mask = None # 1 at backgorund, 0 at foreground
 
-                if adaptive_control_config.get("enabled", False):
-                    print("Using adaptive control")
-                    color_nerf_config = adaptive_control_config.get("color_nerf", {})
-                    if color_nerf_config.get("enabled", False):
-                        mode = color_nerf_config.get("mode", "mean")
-                        print(f"Using color nerf (mode: {mode})")
-                    else:
-                        print("Not using color nerf")
-                else:
-                    print("Not using adaptive control")
+    if not exist_bg:
+        target_binary_mask = torch.from_numpy(target_binary_mask_np[:,:]>0).to(device)
+        x, y, r, v, theta, c, adjusted_pts = renderer.initialize_parameters(initializer, I_target, target_binary_mask, return_pts = True)
 
-                # Choose optimization strategy
-                start_time_frame = time.time()
-                x, y, r, v, theta, c = sequential_renderer.optimize_parameters_full_temporal(
-                    x, y, r, v, theta, c, I_target_frame, prev_params, optimization_config
-                )
-                end_time_frame = time.time()
-            
-            # Render final frame for export
-            with torch.no_grad():
-                white_bg = torch.ones((sequential_renderer.H, sequential_renderer.W, 3), device=sequential_renderer.device)
-                frame_rendered = sequential_renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0, is_final=True)
-            
-            # Store results for this frame
-            current_params = {
-                'x': x.clone(),
-                'y': y.clone(), 
-                'r': r.clone(),
-                'v': v.clone(),
-                'theta': theta.clone(),
-                'c': c.clone(),
-                'rendered_frame': frame_rendered.clone()
-            }
-            
-            frame_results.append({
-                **current_params,
-                'optimization_time': end_time_frame - start_time_frame
-            })
-            
-            # Update previous parameters for next frame
-            prev_params = current_params
-            
-            print(f"Frame {frame_idx + 1} optimization completed in {end_time_frame - start_time_frame:.2f}s")
-        
-        print(f"\nSequential optimization completed for {len(frame_results)} frames")
-        
     else:
-        # Single image optimization (original behavior)
-        # Initialize parameters
+        x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target, target_binary_mask)
+        adjusted_pts = None
 
-        # Generate distance masks if requested
-        target_binary_mask = None # 1 at backgorund, 0 at foreground
-
-        if not exist_bg:
-            target_binary_mask = torch.from_numpy(target_binary_mask_np[:,:]>0).to(device)
-            x, y, r, v, theta, c, adjusted_pts = renderer.initialize_parameters(initializer, I_target, target_binary_mask, return_pts = True)
-
-        else:
-            x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target, target_binary_mask)
-            adjusted_pts = None
-
-        bmp_image_tensor = svg_loader.load_alpha_bitmap()
-        
-        # Optimize parameters
-        x, y, r, v, theta, c = renderer.optimize_parameters(
-            x, y, r, v, theta, c,
-            I_target, 
-            opt_conf=opt_conf,
-            target_binary_mask=target_binary_mask,
-            adjusted_pts=adjusted_pts
-        )
+    bmp_image_tensor = svg_loader.load_alpha_bitmap()
+    
+    # Optimize parameters
+    x, y, r, v, theta, c = renderer.optimize_parameters(
+        x, y, r, v, theta, c,
+        I_target, 
+        opt_conf=opt_conf,
+        target_binary_mask=target_binary_mask,
+        adjusted_pts=adjusted_pts
+    )
 
     if not exist_bg:
         I_target = I_target[..., :3]  # Remove alpha channel if exists
@@ -425,331 +282,117 @@ for img_idx, img_path in enumerate(img_paths):
     else:
         output_suffix = ""
 
-    if sequential_config.get("enabled", False):
-        # Sequential export: create frame sequence, GIF, and MP4
-        print("\nExporting sequential frames...")
-        
-        # Create subdirectory for frame sequence
-        frames_dir = os.path.join(output_dir, f'frames_{timestamp}{output_suffix}')
-        os.makedirs(frames_dir, exist_ok=True)
-        
-        # Export individual frames
-        exported_frames = []
-        for frame_idx, frame_result in enumerate(frame_results):
-            print(f"Exporting frame {frame_idx + 1}/{len(frame_results)}...")
-            
-            # Get the already rendered frame
-            rendered_frame = frame_result['rendered_frame']
-            
-            # Extract parameters for individual frame saving
-            x_frame = frame_result['x']
-            y_frame = frame_result['y']
-            r_frame = frame_result['r']
-            v_frame = frame_result['v']
-            theta_frame = frame_result['theta']
-            c_frame = frame_result['c']
-            
-
-            # Still render final PNG for preview/compatibility using tile-based rendering
-            with torch.no_grad():
-                white_bg = torch.ones((sequential_renderer.H, sequential_renderer.W, 3), device=sequential_renderer.device)
-                frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, I_bg=white_bg, sigma=0.0, is_final=True)
-            # Save rendered frame directly
-            frame_rendered_np = frame_rendered.detach().cpu().numpy()
-            frame_rendered_np = (frame_rendered_np * 255).astype(np.uint8)
-            frame_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}.png')
-            Image.fromarray(frame_rendered_np).save(frame_path)
-            
-            # Store rendered frame for GIF/MP4 export
-            frame_np = rendered_frame.cpu().numpy()
-            frame_np = (frame_np * 255).astype(np.uint8)
-            exported_frames.append(frame_np)
-            
-            # Check if PSD export is requested
-            psd_export = config.get('postprocessing', {}).get('export_psd', False)
-            
-            if psd_export:
-                # Export PSD layers using util/psd_exporter.py with batched processing
-                from util.psd_exporter import PSDExporter
-                
-                psd_path = frame_path.replace('.png', '.psd')
-                psd_scale_factor = config['postprocessing']['psd_scale_factor']
-                exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
-                
-                # Use batched processing - all data preparation handled internally
-                exporter.add_layers_batch_optimized(
-                    renderer.S, x, y, r, theta, v, c
-                )
-                    
-                # Export PSD file
-                exporter.export_psd(psd_path)
-            
-        
-        # Generate route visualization if enabled (after all frames are processed)
-        if ENABLE_ROUTE_VISUALIZATION and len(frame_results) >= 2:
-            print("\nGenerating primitive movement route visualization...")
-            route_viz_path = os.path.join(output_dir, f'primitive_routes_{timestamp}{output_suffix}.png')
-            try:
-                create_route_visualization(
-                    frame_results=frame_results,
-                    output_path=route_viz_path,
-                    line_width=1.5,
-                    alpha=0.7,
-                    max_primitives=1000,
-                    color_scheme='rainbow',
-                    interpolation_points=10
-                )
-                print(f"Route visualization saved to: {route_viz_path}")
-            except Exception as e:
-                print(f"Warning: Failed to generate route visualization: {e}")
-        
-        # Export GIF
-        export_config = sequential_config.get("export", {})
-        if export_config.get("export_gif", True):
-            gif_path = os.path.join(output_dir, f'output_{timestamp}{output_suffix}.gif')
-            print(f"Creating GIF: {gif_path}")
-            
-            # Convert frames to PIL Images
-            pil_frames = [Image.fromarray(frame) for frame in exported_frames]
-            
-            # Save as GIF
-            frame_duration = export_config.get("frame_duration", 100)  # milliseconds
-            pil_frames[0].save(
-                gif_path,
-                save_all=True,
-                append_images=pil_frames[1:],
-                duration=frame_duration,
-                loop=0
-            )
-            print(f"GIF saved: {gif_path}")
-        
-        # Export MP4
-        if export_config.get("export_mp4", True):
-            mp4_path = os.path.join(output_dir, f'output_{timestamp}{output_suffix}.mp4')
-            print(f"Creating MP4: {mp4_path}")
-            
-            # Use OpenCV to create MP4
-            fps = 1000.0 / export_config.get("frame_duration", 100)  # Convert ms to fps
-            height, width = exported_frames[0].shape[:2]
-            
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(mp4_path, fourcc, fps, (width, height))
-            
-            for frame in exported_frames:
-                # Convert RGB to BGR for OpenCV
-                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                out.write(frame_bgr)
-            
-            out.release()
-            print(f"MP4 saved: {mp4_path}")
-        
-        print(f"Sequential export completed. {len(exported_frames)} frames exported.")
-        
-    else:
-        # Single image export (original behavior)
-        output_path = os.path.join(output_dir, f'output_{timestamp}{output_suffix}.png')
+    # Single image export
+    output_path = os.path.join(output_dir, f'output_{timestamp}{output_suffix}.png')
 
     # Standard PDF export for SVG-only primitives (if no raster primitives)
     if not (primitive_loader and primitive_loader.has_raster_primitives()):
-        if sequential_config.get("enabled", False):
-            # For sequential processing, export PDF for the last frame
-            if frame_results:
-                pdf_path = os.path.join(output_dir, f'output_{timestamp}_final_frame{output_suffix}.pdf')
-                last_frame = frame_results[-1]
-                exporter = PDFExporter(
-                    svg_loader.svg_path, 
-                    canvas_size=(W, H),
-                    viewbox_size=svg_loader.get_svg_size(),
-                    alpha_upper_bound=config["optimization"]["alpha_upper_bound"],
-                    stroke_width=config["postprocessing"]["linewidth"]
-                )
-                
-                # Use sequential-specific HTML path and export sequence
-                lastframe_html_path = "output_webpage/src/index.html"
-                
-                # Choose sequential HTML path based on text file type
-                if 'text_ext' in locals() and (text_ext == ".txt" or text_ext == ".lrc"):
-                    sequential_html_path = "output_webpage/src_sequential_lyrics/index.html"
-                else:
-                    sequential_html_path = "output_webpage/src_sequential/index.html"
-                
-                # Export PDF for the last frame
-                exporter.export(last_frame['x'], last_frame['y'], last_frame['r'], 
-                              last_frame['theta'], last_frame['v'], last_frame['c'],
-                              output_path=pdf_path,
-                              svg_hollow=config["primitive"].get("primitive_hollow", False),
-                              html_extra_path=lastframe_html_path,
-                              export_pdf=True,
-                              html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
-                )
-                
-                # Export HTML sequence animation
-                export_config = sequential_config.get("export", {})
-                sequence_fps = export_config.get("sequence_fps", 24)
-                
-                print(f"\nExporting HTML sequence animation...")
-                exporter.export_sequence(
-                    frame_results=frame_results,
-                    output_html_path=sequential_html_path,
-                    svg_hollow=config["primitive"].get("primitive_hollow", False),
-                    fps=sequence_fps,
-                    html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
-                )
-                print(f"HTML sequence exported: {sequential_html_path}")
-        else:
-            # Single image PDF export (original behavior)
-            pdf_path = os.path.join(output_dir, f'output_{timestamp}{output_suffix}.pdf')
-            exporter = PDFExporter(
-                svg_loader.svg_path, 
-                canvas_size=(W, H),
-                viewbox_size=svg_loader.get_svg_size(),
-                alpha_upper_bound=config["optimization"]["alpha_upper_bound"],
-                stroke_width=config["postprocessing"]["linewidth"]
-            )
-            
-            exporter.export(x, y, r, theta, v, c,
-                            output_path=pdf_path,
-                            svg_hollow=config["primitive"].get("primitive_hollow", False),
-                            html_extra_path = "output_webpage/src/index.html" if html_extra_path_special is None else html_extra_path_special,
-                            export_pdf=True,
-                            html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
-            )
-    if not sequential_config.get("enabled", False):
-        # Single image final rendering and export (original behavior)
-        with torch.no_grad():
-            white_bg = torch.ones((renderer.H, renderer.W, 3), device=renderer.device)
-            
-            # Check if PSD export is requested
-            psd_export = config.get('postprocessing', {}).get('export_psd', False)
+        # Single image PDF export
+        pdf_path = os.path.join(output_dir, f'output_{timestamp}{output_suffix}.pdf')
+        exporter = PDFExporter(
+            svg_loader.svg_path, 
+            canvas_size=(W, H),
+            viewbox_size=svg_loader.get_svg_size(),
+            alpha_upper_bound=config["optimization"]["alpha_upper_bound"],
+            stroke_width=config["postprocessing"]["linewidth"]
+        )
+        
+        exporter.export(x, y, r, theta, v, c,
+                        output_path=pdf_path,
+                        svg_hollow=config["primitive"].get("primitive_hollow", False),
+                        html_extra_path = "output_webpage/src/index.html" if html_extra_path_special is None else html_extra_path_special,
+                        export_pdf=True,
+                        html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
+        )
+    # Single image final rendering and export
+    with torch.no_grad():
+        white_bg = torch.ones((renderer.H, renderer.W, 3), device=renderer.device)
+        
+        # Check if PSD export is requested
+        psd_export = config.get('postprocessing', {}).get('export_psd', False)
 
-            # Convert parameters to FP16 for final rendering if using FP16 renderer
-            if renderer.use_fp16:
-                from torch.amp import autocast
-                with autocast('cuda'):
-                    rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
-                    
-                    # Save rendered image directly from rendered tensor 
-                    rendered_np = rendered.detach().cpu().numpy()
-                    rendered_np = (rendered_np * 255).astype(np.uint8)
-                    Image.fromarray(rendered_np).save(output_path)
-
-            else:
-                # Still render final PNG for preview/compatibility
-                rendered, output_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
-
+        # Convert parameters to FP16 for final rendering if using FP16 renderer
+        if renderer.use_fp16:
+            from torch.amp import autocast
+            with autocast('cuda'):
+                rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
+                
                 # Save rendered image directly from rendered tensor 
                 rendered_np = rendered.detach().cpu().numpy()
                 rendered_np = (rendered_np * 255).astype(np.uint8)
                 Image.fromarray(rendered_np).save(output_path)
 
-            if psd_export:
-                # Export PSD layers using util/psd_exporter.py with batched processing
-                from util.psd_exporter import PSDExporter
-                
-                psd_path = output_path.replace('.png', '.psd')
-                psd_scale_factor = config['postprocessing']['psd_scale_factor']
-                exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
-                
-                # Use batched processing - all data preparation handled internally
-                exporter.add_layers_batch_optimized(
-                    renderer.S, x, y, r, theta, v, c
-                )
-                    
-                # Export PSD file
-                exporter.export_psd(psd_path)
-        
+        else:
+            # Still render final PNG for preview/compatibility
+            rendered, output_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
 
-            if config['postprocessing'].get('export_mp4', False):
-                video_path = os.path.join(output_dir, f'output_{timestamp}{output_suffix}.mp4')
-                # Warning: this takes a long time. TODO: fix this
-                renderer.render_export_mp4(x, y, r, theta, v, c, video_path=video_path)
+            # Save rendered image directly from rendered tensor 
+            rendered_np = rendered.detach().cpu().numpy()
+            rendered_np = (rendered_np * 255).astype(np.uint8)
+            Image.fromarray(rendered_np).save(output_path)
+
+        if psd_export:
+            # Export PSD layers using util/psd_exporter.py with batched processing
+            from util.psd_exporter import PSDExporter
+            
+            psd_path = output_path.replace('.png', '.psd')
+            psd_scale_factor = config['postprocessing']['psd_scale_factor']
+            exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
+            
+            # Use batched processing - all data preparation handled internally
+            exporter.add_layers_batch_optimized(
+                renderer.S, x, y, r, theta, v, c
+            )
+                
+            # Export PSD file
+            exporter.export_psd(psd_path)
+    
+
+        if config['postprocessing'].get('export_mp4', False):
+            video_path = os.path.join(output_dir, f'output_{timestamp}{output_suffix}.mp4')
+            # Warning: this takes a long time. TODO: fix this
+            renderer.render_export_mp4(x, y, r, theta, v, c, video_path=video_path)
 
     # Compute metrics if requested
     if config['postprocessing'].get('compute_psnr', False):
         try:
             import piq
             
-            if sequential_config.get("enabled", False):
-                # Compute metrics for each frame in sequential processing
-                print("\nComputing metrics for sequential frames...")
-                total_psnr = 0
-                total_ssim = 0
-                total_vif = 0
-                total_lpips = 0
+            # Single image metrics
+            # Convert rendered image to tensor format for metrics
                 
-                for frame_idx, (frame_result, I_target_frame) in enumerate(zip(frame_results, I_targets)):
-                    # Render frame for metrics using tile-based rendering
-                    with torch.no_grad():
-                        rendered_frame = renderer.render_from_params(
-                            frame_result['x'], frame_result['y'], frame_result['r'], frame_result['theta'],
-                            frame_result['v'], frame_result['c'], sigma=0.0, is_final=True
-                        )
-                    
-                    # Convert to tensor format for metrics
-                    rendered_t = rendered_frame.permute(2, 0, 1).unsqueeze(0)
-                    target_t = I_target_frame.permute(2, 0, 1).unsqueeze(0)
-                    
-                    rendered_t_f32 = rendered_t.float()
-                    target_t_f32 = target_t.float()
+            rendered_t = rendered.permute(2, 0, 1).unsqueeze(0)
+            target_t = I_target.permute(2, 0, 1).unsqueeze(0)
+            
+            # If no background, apply mask
+            # Evaluate only foreground pixels
+            if not exist_bg:
+                foreground_mask = (target_binary_mask_np ==0)
+                mask_tensor = torch.tensor(foreground_mask, device=device, dtype=torch.float32)
+                mask_tensor = mask_tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+                mask_tensor = mask_tensor.expand(-1, 3, -1, -1)  # (1, 3, H, W)
 
-                    # Compute metrics for this frame
-                    psnr_val = piq.psnr(rendered_t_f32, target_t_f32, data_range=1.0)
-                    ssim_val = piq.ssim(rendered_t_f32, target_t_f32, data_range=1.0)
-                    vif_val = piq.vif_p(rendered_t_f32, target_t_f32, data_range=1.0)
-                    lpips_val = piq.LPIPS()(rendered_t_f32, target_t_f32)
-                    
-                    print(f"Frame {frame_idx + 1}: PSNR: {psnr_val.item():.2f} dB, SSIM: {ssim_val.item():.4f}, VIF: {vif_val.item():.4f}, LPIPS: {lpips_val.item():.4f}")
-                    
-                    total_psnr += psnr_val.item()
-                    total_ssim += ssim_val.item()
-                    total_vif += vif_val.item()
-                    total_lpips += lpips_val.item()
-                
-                # Print average metrics
-                num_frames = len(frame_results)
-                print(f"\nAverage metrics across {num_frames} frames:")
-                print(f"PSNR: {total_psnr / num_frames:.2f} dB")
-                print(f"SSIM: {total_ssim / num_frames:.4f}")
-                print(f"VIF: {total_vif / num_frames:.4f}")
-                print(f"LPIPS: {total_lpips / num_frames:.4f}")
-                print(f"Number of splats: {len(frame_results[0]['x'])}")
-                
-            else:
-                # Single image metrics (original behavior)
-                # Convert rendered image to tensor format for metrics
-                    
-                rendered_t = rendered.permute(2, 0, 1).unsqueeze(0)
-                target_t = I_target.permute(2, 0, 1).unsqueeze(0)
-                
-                # If no background, apply mask
-                # Evaluate only foreground pixels
-                if not exist_bg:
-                    foreground_mask = (target_binary_mask_np ==0)
-                    mask_tensor = torch.tensor(foreground_mask, device=device, dtype=torch.float32)
-                    mask_tensor = mask_tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
-                    mask_tensor = mask_tensor.expand(-1, 3, -1, -1)  # (1, 3, H, W)
+                rendered_t = rendered_t * mask_tensor
+                target_t = target_t * mask_tensor
 
-                    rendered_t = rendered_t * mask_tensor
-                    target_t = target_t * mask_tensor
+            # Compute metrics
+            rendered_t_f32 = rendered_t.float()
+            target_t_f32 = target_t.float()
+            
+            # Clip values to [0, 1] range to avoid PSNR calculation errors
+            rendered_t_f32 = torch.clamp(rendered_t_f32, 0.0, 1.0)
+            target_t_f32 = torch.clamp(target_t_f32, 0.0, 1.0)
 
-                # Compute metrics
-                rendered_t_f32 = rendered_t.float()
-                target_t_f32 = target_t.float()
-                
-                # Clip values to [0, 1] range to avoid PSNR calculation errors
-                rendered_t_f32 = torch.clamp(rendered_t_f32, 0.0, 1.0)
-                target_t_f32 = torch.clamp(target_t_f32, 0.0, 1.0)
-
-                psnr_val = piq.psnr(rendered_t_f32, target_t_f32, data_range=1.0)
-                ssim_val = piq.ssim(rendered_t_f32, target_t_f32, data_range=1.0)
-                vif_val = piq.vif_p(rendered_t_f32, target_t_f32, data_range=1.0)
-                lpips_val = piq.LPIPS()(rendered_t_f32, target_t_f32)
-                
-                print(f"PSNR: {psnr_val.item():.2f} dB")
-                print(f"SSIM: {ssim_val.item():.4f}")
-                print(f"VIF: {vif_val.item():.4f}")
-                print(f"LPIPS: {lpips_val.item():.4f}")
-                print(f"Number of splats: {len(x)}")
+            psnr_val = piq.psnr(rendered_t_f32, target_t_f32, data_range=1.0)
+            ssim_val = piq.ssim(rendered_t_f32, target_t_f32, data_range=1.0)
+            vif_val = piq.vif_p(rendered_t_f32, target_t_f32, data_range=1.0)
+            lpips_val = piq.LPIPS()(rendered_t_f32, target_t_f32)
+            
+            print(f"PSNR: {psnr_val.item():.2f} dB")
+            print(f"SSIM: {ssim_val.item():.4f}")
+            print(f"VIF: {vif_val.item():.4f}")
+            print(f"LPIPS: {lpips_val.item():.4f}")
+            print(f"Number of splats: {len(x)}")
                 
         except ImportError as e:
             print(f"Required library missing: {e}. Cannot compute metrics.")

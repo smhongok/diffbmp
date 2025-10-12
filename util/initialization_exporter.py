@@ -37,7 +37,7 @@ from util.utils import set_global_seed
 
 # Preprocessing configuration
 PREPROCESSING_CONFIG = {
-    "img_path": "./images/person/hwar_bus.jpg",  # Change this to your target image
+    "img_path": "./images/personal_trial/box.png",  # Change this to your target image
     "final_width": 256,
     "trim": False,
     "FM_halftone": False,
@@ -120,7 +120,7 @@ OPTIMIZATION_CONFIG = {
 
 # Output configuration
 OUTPUT_CONFIG = {
-    "output_folder": "./outputs/initialization_test001/",
+    "output_folder": "./outputs/box/initialization_test001/",
     "save_format": "png"
 }
 
@@ -496,7 +496,7 @@ def main():
             
             # Analyze edge proximity of initialized primitives
             closest_indices = analyze_edge_proximity(
-                x, y, I_target, output_dir, timestamp, method_name, top_k=5
+                x, y, I_target, output_dir, timestamp, method_name, top_k=10
             )
             
             # Create GradientVisualizer and visualize gradients for closest primitives
@@ -507,7 +507,7 @@ def main():
                 color_spectrum="full",
                 background_color=(1.0, 1.0, 1.0),  # White background
                 enable_logging=True,
-                center_dot_radius=2,
+                center_dot_radius=1,
             )
             
             # Visualize per-pixel gradients for closest-to-edge primitives

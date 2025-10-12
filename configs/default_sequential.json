@@ -16,7 +16,7 @@
     "initialization": {
         "initializer": "structure_aware",
         "N": [
-            4000
+            2000
         ],
         "radii_min": 2,
         "debug_mode": true
@@ -41,6 +41,7 @@
         "enabled": true,
         "input_type": "gif",
         "max_frames": null,
+        "seperate_init": false,
         "optimization": {
             "num_iterations": 100,
             "learning_rate": {
@@ -57,24 +58,25 @@
             "opacity_threshold": 0.7,
             "opacity_reduction_factor": 0.4,
             "max_primitives_per_tile": 4,
-            "apply_every_n_iterations": 20,
+            "apply_epochs": [20, 45, 70],
             "gradient_ranking": {
                 "enabled": true,
+                "process_all_pixels": false,
                 "pixels_per_tile": 64
             }
         },
         "export": {
             "export_frames": true,
-            "export_gif": false,
+            "export_gif": true,
             "export_mp4": true,
             "frame_duration": 100
         }
     },
     "postprocessing": {
-        "output_folder": "./outputs/reduce_code/pororo_monkey/",
+        "output_folder": "./outputs/new_main_test/1",
         "hires_export": false,
         "hires_scale_factor": 4.0,
-        "compute_psnr": false,
+        "compute_psnr": true,
         "export_psd": false
     },
     "seed": 42
