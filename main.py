@@ -17,7 +17,6 @@ import json
 import argparse
 import cv2
 from datetime import datetime
-from core.renderer.mse_renderer import MseRenderer
 from core.renderer.sequential_renderer import SequentialFrameRenderer
 from core.renderer.simple_tile_renderer import SimpleTileRenderer
 from util.svg_loader import SVGLoader
@@ -198,15 +197,8 @@ for img_idx, img_path in enumerate(img_paths):
 
     I_target = torch.tensor(I_target, device=device)  # (H, W, 3) or (H, W, 4) if no background
 
-    # Initialize renderer based on loss type
-    renderer_type = opt_conf["renderer_type"]
-    renderer_class = {
-        "mse": MseRenderer,
-        "tile": SimpleTileRenderer,
-    }.get(renderer_type.lower())
-
-    if renderer_class is None:
-        raise ValueError(f"Invalid renderer type: {renderer_type}")
+    # Initialize renderer (always use SimpleTileRenderer)
+    renderer_class = SimpleTileRenderer
 
     bmp_tensor = svg_loader.load_alpha_bitmap()
     if use_fp16:

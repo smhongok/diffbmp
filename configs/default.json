@@ -20,7 +20,6 @@
     },
     "optimization": {
         "use_fp16": true,
-        "renderer_type": "tile",
         "num_iterations": 100,
         "learning_rate": {
             "default": 0.1

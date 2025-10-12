@@ -28,7 +28,7 @@ USE_CUDA_GRADIENT_COMPUTATION = False
 class SequentialFrameRenderer(SimpleTileRenderer):
     """
     Specialized renderer for subsequent frames in sequential optimization.
-    Inherits from MseRenderer but uses warmup scheduling for loss.
+    Inherits from SimpleTileRenderer and uses warmup scheduling for loss.
     """
     
     def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None, tile_size=32, sigma = 1.0):

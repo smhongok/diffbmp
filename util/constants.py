@@ -74,7 +74,6 @@ CONVERT_TO_SVG_DEFAULT = True
 REMOVE_PUNCTUATION_DEFAULT = False
 
 # Renderer defaults
-DEFAULT_RENDERER_TYPE = "tile"
 DEFAULT_TILE_SIZE = 32
 
 # Sequential processing defaults
@@ -137,7 +136,6 @@ def apply_constants_to_config(config: dict) -> dict:
         config["optimization"].setdefault("alpha_upper_bound", ALPHA_UPPER_BOUND)
         config["optimization"].setdefault("blur_sigma", BLUR_SIGMA)
         config["optimization"].setdefault("decay_rate", DECAY_RATE)
-        config["optimization"].setdefault("renderer_type", DEFAULT_RENDERER_TYPE)
         config["optimization"].setdefault("tile_size", DEFAULT_TILE_SIZE)
         
         # Apply loss config based on whether background exists
