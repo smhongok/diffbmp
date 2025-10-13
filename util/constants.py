@@ -19,6 +19,7 @@ VARIANCE_BASE_PROB = 0.1  # Base probability for low-variance areas
 # V_INIT_SLOPE = 3.0
 
 # ==================== Optimization Constants ====================
+LR_DEFAULT = 0.1
 # Learning rate gains (relative to base learning rate)
 LR_GAIN_X = 10.0
 LR_GAIN_Y = 10.0
@@ -73,12 +74,24 @@ CONVERT_TO_SVG_DEFAULT = True
 REMOVE_PUNCTUATION_DEFAULT = False
 
 # Renderer defaults
-DEFAULT_RENDERER_TYPE = "tile"
 DEFAULT_TILE_SIZE = 32
 
 # Sequential processing defaults
 SEQUENTIAL_ENABLED_DEFAULT = False
 SEQUENTIAL_INPUT_TYPE_DEFAULT = "gif"
+
+# Loss function defaults
+DEFAULT_LOSS_CONFIG = {
+    "type": "mse",  # Single loss type: "mse", "l1", "huber", "perceptual", "ssim", "edge", or "combined"
+}
+
+DEFAULT_LOSS_CONFIG_NO_BG = {
+    "type": "combined",
+    "components": [
+        {"name": "mse", "weight": 1.0},
+        {"name": "alpha", "weight": 2.0}
+    ]
+}
 
 
 def apply_constants_to_config(config: dict) -> dict:
@@ -123,11 +136,19 @@ def apply_constants_to_config(config: dict) -> dict:
         config["optimization"].setdefault("alpha_upper_bound", ALPHA_UPPER_BOUND)
         config["optimization"].setdefault("blur_sigma", BLUR_SIGMA)
         config["optimization"].setdefault("decay_rate", DECAY_RATE)
-        config["optimization"].setdefault("renderer_type", DEFAULT_RENDERER_TYPE)
         config["optimization"].setdefault("tile_size", DEFAULT_TILE_SIZE)
+        
+        # Apply loss config based on whether background exists
+        exist_bg = config.get("preprocessing", {}).get("exist_bg", True)
+        if exist_bg:
+            config["optimization"].setdefault("loss_config", DEFAULT_LOSS_CONFIG)
+        else:
+            config["optimization"].setdefault("loss_config", DEFAULT_LOSS_CONFIG_NO_BG)
         
         if "learning_rate" not in config["optimization"]:
             config["optimization"]["learning_rate"] = {}
+        
+        config["optimization"]["learning_rate"].setdefault("default", LR_DEFAULT)
         config["optimization"]["learning_rate"].setdefault("gain_x", LR_GAIN_X)
         config["optimization"]["learning_rate"].setdefault("gain_y", LR_GAIN_Y)
         config["optimization"]["learning_rate"].setdefault("gain_r", LR_GAIN_R)

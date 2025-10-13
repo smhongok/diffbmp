@@ -28,7 +28,7 @@ USE_CUDA_GRADIENT_COMPUTATION = False
 class SequentialFrameRenderer(SimpleTileRenderer):
     """
     Specialized renderer for subsequent frames in sequential optimization.
-    Inherits from MseRenderer but uses warmup scheduling for loss.
+    Inherits from SimpleTileRenderer and uses warmup scheduling for loss.
     """
     
     def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None, tile_size=32, sigma = 1.0):
@@ -130,6 +130,12 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         """
         if opt_conf is None:
             opt_conf = {"num_iterations": 50, "learning_rate": {"default": 0.005}, "decay_rate": 0.95}
+        
+        # Initialize loss composer from config
+        from util.loss_functions import LossComposer
+        loss_config = opt_conf.get("loss_config", {"type": "mse"})
+        self.loss_composer = LossComposer(loss_config, device=self.device)
+        print(f"Using loss configuration: {loss_config}")
         
         # Ensure all parameters are leaf tensors with gradients enabled
         x.requires_grad_(True)

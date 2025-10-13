@@ -17,7 +17,6 @@ import json
 import argparse
 import cv2
 from datetime import datetime
-from core.renderer.mse_renderer import MseRenderer
 from core.renderer.sequential_renderer import SequentialFrameRenderer
 from core.renderer.simple_tile_renderer import SimpleTileRenderer
 from util.svg_loader import SVGLoader
@@ -202,15 +201,8 @@ except Exception as e:
     )
     primitive_loader = None
 
-# Initialize renderer based on loss type
-renderer_type = opt_conf["renderer_type"]
-renderer_class = {
-    "mse": MseRenderer,
-    "tile": SimpleTileRenderer,
-}.get(renderer_type.lower())
-
-if renderer_class is None:
-    raise ValueError(f"Invalid renderer type: {renderer_type}")
+# Initialize renderer (always use SimpleTileRenderer)
+renderer_class = SimpleTileRenderer
 
 bmp_tensor = svg_loader.load_alpha_bitmap()
 if use_fp16:
@@ -272,21 +264,16 @@ for frame_idx, I_target_frame in enumerate(I_targets):
     print(f"\nOptimizing frame {frame_idx + 1}/{len(I_targets)}...")
     
     if frame_idx == 0:
-        # First frame: initialize from scratch using standard MseRenderer
-        print("First frame: initializing from scratch with MseRenderer")
+        # First frame: initialize from scratch using standard renderer
+        print("First frame: initializing from scratch with SimpleTileRenderer")
         x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target_frame)
         
-        # Use first frame optimization settings
-        frame_opt_conf = opt_conf.copy()
-        #first_frame_conf = config["optimization"].get("first_frame", {})
-        #frame_opt_conf.update(first_frame_conf)
-        
-        # Optimize with standard renderer
+        # Optimize with standard renderer using optimization config
         start_time_frame = time.time()
         x, y, r, v, theta, c = renderer.optimize_parameters(
             x, y, r, v, theta, c,
             I_target_frame, 
-            opt_conf=frame_opt_conf
+            opt_conf=opt_conf
         )
         end_time_frame = time.time()
         
