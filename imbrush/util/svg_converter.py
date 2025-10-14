@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
 import cv2
 
-base_folder = Path(__file__).resolve().parent.parent
+base_folder = Path(__file__).resolve().parent.parent.parent
 font_folder = os.path.join(base_folder, "assets", "font") # .ttf or .otf path
 svg_folder = os.path.join(base_folder, "assets", "svg") # svg path
 

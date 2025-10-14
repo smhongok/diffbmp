@@ -37,6 +37,6 @@
     "postprocessing": {
         "output_folder": "outputs/",
         "compute_psnr": true,
-        "export_psd": false
+        "export_psd": true
     }
 } 
