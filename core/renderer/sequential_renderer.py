@@ -24,6 +24,11 @@ USE_CUDA_GRADIENT_COMPUTATION = False
 
 # =============================================================================
 
+DIFF_MASK_EXPORT_PATH = "./outputs/vis_class/diff_mask_sequential"  # Directory to save diff mask images
+
+
+
+# =============================================================================
 
 class SequentialFrameRenderer(SimpleTileRenderer):
     """
@@ -115,7 +120,9 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                                         c: torch.Tensor,
                                         target: torch.Tensor,
                                         prev_params: dict,
-                                        opt_conf: dict = None) -> tuple:
+                                        opt_conf: dict = None,
+                                        previous_target: torch.Tensor = None
+                                        ) -> tuple:
         """
         Optimize all parameters for subsequent frames with warmup scheduling.
         
@@ -166,6 +173,33 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         # Read explicit epochs at which to apply adaptive control
         # Expect a list of iteration indices (0-based) in config under 'apply_epochs'
         apply_epochs = set(adaptive_config.get('apply_epochs', []))
+        
+        # Extract selective parameter optimization config
+        selective_parameter_optimization_config = opt_conf.get('selective_parameter_optimization', {})
+        
+        # Compute diff_mask once for selective parameter optimization
+        diff_mask_for_freeze = None
+        if selective_parameter_optimization_config.get('enabled', False) and previous_target is not None:
+            with torch.no_grad():
+                import os
+                from torchvision.utils import save_image
+                # Compute absolute difference between target and next_target
+                diff = torch.abs(target - previous_target)
+                diff_magnitude = torch.mean(diff, dim=2)  # [H, W]
+                
+                # Create binary mask of changed regions (threshold at 0.1 for robustness)
+                diff_mask_for_freeze = diff_magnitude > 0.1  # [H, W]
+                
+                # Save diff mask for visualization
+                if DIFF_MASK_EXPORT_PATH is not None:
+                    os.makedirs(DIFF_MASK_EXPORT_PATH, exist_ok=True)
+                    # Use frame index from self if available, otherwise use a counter
+                    frame_idx = getattr(self, 'current_frame_idx', 0)
+                    diff_mask_path = os.path.join(DIFF_MASK_EXPORT_PATH, f"diff_mask_frame_{frame_idx:04d}.png")
+                    # Convert boolean mask to float and add batch/channel dimensions for save_image
+                    diff_mask_float = diff_mask_for_freeze.float().unsqueeze(0)  # [1, H, W]
+                    save_image(diff_mask_float, diff_mask_path)
+                    print(f"[Selective Freeze] Saved diff mask to: {diff_mask_path}")
         
         pbar = tqdm(range(num_iter), desc="Optimizing with warmup scheduling")
         
@@ -228,6 +262,18 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             )
             
             loss.backward()
+
+            if selective_parameter_optimization_config.get("enabled", False) and diff_mask_for_freeze is not None:
+                freeze_mask = self.select_primitives_2_freeze(x, y, diff_mask_for_freeze, selective_parameter_optimization_config)
+            
+                with torch.no_grad():
+                    x.grad[freeze_mask] = 0
+                    y.grad[freeze_mask] = 0
+                    r.grad[freeze_mask] = 0
+                    v.grad[freeze_mask] = 0
+                    theta.grad[freeze_mask] = 0
+                    c.grad[freeze_mask] = 0
+            
             optimizer.step()
             scheduler.step()
             
@@ -239,6 +285,74 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         
         return x, y, r, v, theta, c
     
+
+    def select_primitives_2_freeze(self,
+                                   x: torch.Tensor,
+                                   y: torch.Tensor,
+                                   diff_mask: torch.Tensor,
+                                   config: dict) -> torch.Tensor:
+        """
+        Select primitives to freeze based on pre-computed diff_mask.
+        
+        Primitives are frozen if their (x, y) position is NOT within freeze_distance_threshold
+        of regions where the diff_mask is True (indicating changes between frames).
+        
+        Args:
+            x, y: Primitive position parameters [N]
+            diff_mask: Pre-computed boolean mask of changed regions [H, W]
+            config: Configuration dict with 'freeze_distance_threshold' parameter
+            
+        Returns:
+            freeze_mask: Boolean tensor [N] where True indicates primitive should be frozen
+        """
+        # Extract configuration
+        freeze_distance_threshold = config.get('freeze_distance_threshold', 12.0)
+        gradual_freeze_config = config.get('gradual_freeze', {})
+        use_gradual_freeze = gradual_freeze_config.get('enabled', False)
+        
+        with torch.no_grad():
+            # Find coordinates of all changed pixels
+            changed_coords = torch.nonzero(diff_mask, as_tuple=False)  # [M, 2] where M is number of changed pixels
+            
+            if changed_coords.shape[0] == 0:
+                # No changes detected, freeze all primitives
+                print("[Selective Freeze] No changes detected between frames, freezing all primitives")
+                return torch.ones(x.shape[0], dtype=torch.bool, device=x.device)
+            
+            # Convert primitive positions from normalized coordinates to pixel coordinates
+            # x, y are in range [0, W-1] and [0, H-1]
+            prim_x_pixel = x  # Already in pixel coordinates
+            prim_y_pixel = y  # Already in pixel coordinates
+            
+            # Stack primitive coordinates [N, 2]
+            prim_coords = torch.stack([prim_y_pixel, prim_x_pixel], dim=1)  # [N, 2] (y, x order to match image)
+            
+            # Compute distance from each primitive to all changed pixels
+            # Using broadcasting: [N, 1, 2] - [1, M, 2] = [N, M, 2]
+            distances = torch.cdist(prim_coords.float(), changed_coords.float())  # [N, M]
+            
+            # Find minimum distance from each primitive to any changed pixel
+            min_distances, _ = torch.min(distances, dim=1)  # [N]
+            
+            # Create freeze mask: freeze primitives that are FARTHER than threshold from changes
+            # (i.e., keep optimizing primitives that are close to changed regions)
+            freeze_mask = min_distances > freeze_distance_threshold*self.W
+            
+            # Log statistics
+            num_frozen = torch.sum(freeze_mask).item()
+            num_optimized = x.shape[0] - num_frozen
+            print(f"[Selective Freeze] Freeze threshold: {freeze_distance_threshold:.1f}px")
+            print(f"[Selective Freeze] Changed pixels: {changed_coords.shape[0]}")
+            print(f"[Selective Freeze] Frozen primitives: {num_frozen}/{x.shape[0]} ({100*num_frozen/x.shape[0]:.1f}%)")
+            print(f"[Selective Freeze] Optimized primitives: {num_optimized}/{x.shape[0]} ({100*num_optimized/x.shape[0]:.1f}%)")
+            
+            # Optional: gradual freeze based on distance
+            if use_gradual_freeze:
+                # Not implemented in this version - would require gradient scaling instead of masking
+                print("[Selective Freeze] Note: gradual_freeze is enabled but not yet implemented")
+        
+        return freeze_mask
+
 
     def apply_adaptive_control(self, 
                              x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 

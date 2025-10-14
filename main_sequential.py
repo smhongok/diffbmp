@@ -289,6 +289,10 @@ for frame_idx, I_target_frame in enumerate(I_targets):
         # Add adaptive control configuration to optimization config
         adaptive_control_config = sequential_config.get("adaptive_control", {})
         optimization_config["adaptive_control"] = adaptive_control_config
+
+        # Add selective parameter optimization configuration to optimization config
+        selective_parameter_optimization_config = sequential_config.get("selective_parameter_optimization", {})
+        optimization_config["selective_parameter_optimization"] = selective_parameter_optimization_config
         
 
         if adaptive_control_config.get("enabled", False) and not sequential_config.get("seperate_init", False):
@@ -311,9 +315,17 @@ for frame_idx, I_target_frame in enumerate(I_targets):
         else:
             print("initializing from previous frame")
             # Choose optimization strategy
+
+            if (frame_idx > 0) and sequential_config.get("selective_parameter_optimization").get("enabled", False):
+                print("Using selective parameter optimization")
+                previous_frame = I_targets[frame_idx-1]
+            else:
+                print("Using full parameter optimization")
+                previous_frame = None
+
             start_time_frame = time.time()
             x, y, r, v, theta, c = sequential_renderer.optimize_parameters_full_temporal(
-                x, y, r, v, theta, c, I_target_frame, prev_params, optimization_config
+                x, y, r, v, theta, c, I_target_frame, prev_params, optimization_config, previous_frame
             )
             end_time_frame = time.time()
     
