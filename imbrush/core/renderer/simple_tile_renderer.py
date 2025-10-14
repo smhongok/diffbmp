@@ -1,13 +1,13 @@
 import torch
 import torch.nn.functional as F
 from typing import Tuple, List, Optional
-from core.renderer.vector_renderer import VectorRenderer
+from imbrush.core.renderer.vector_renderer import VectorRenderer
 import time
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 import cv2
-from util.loss_functions import LossComposer
+from imbrush.util.loss_functions import LossComposer
 
 DEBUG_MODE = False
 DEBUG_MODE_DETAIL = False

@@ -8,9 +8,9 @@ import os
 import time
 from datetime import timedelta
 from .base_initializer import BaseInitializer
-from core.renderer.vector_renderer import VectorRenderer
+from imbrush.core.renderer.vector_renderer import VectorRenderer
 from typing import Dict, Any
-from util.constants import OPACITY_INIT_VALUE, STD_C_INIT, VARIANCE_WINDOW_SIZE, VARIANCE_BASE_PROB
+from imbrush.util.constants import OPACITY_INIT_VALUE, STD_C_INIT, VARIANCE_WINDOW_SIZE, VARIANCE_BASE_PROB
 # Record the start time
 
 class StructureAwareInitializer(BaseInitializer):

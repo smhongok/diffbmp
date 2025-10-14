@@ -6,7 +6,7 @@ import time
 import traceback
 from datetime import timedelta
 from abc import ABC, abstractmethod
-from core.renderer.vector_renderer import VectorRenderer
+from imbrush.core.renderer.vector_renderer import VectorRenderer
 from typing import Dict, Any
 
 class BaseInitializer(ABC):

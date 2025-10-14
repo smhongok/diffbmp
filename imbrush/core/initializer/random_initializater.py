@@ -8,7 +8,7 @@ import os
 import time
 from datetime import timedelta
 from .base_initializer import BaseInitializer
-from core.renderer.vector_renderer import VectorRenderer
+from imbrush.core.renderer.vector_renderer import VectorRenderer
 from typing import Dict, Any
 
 class RandomInitializer(BaseInitializer):

@@ -23,13 +23,13 @@ from gradient_visualizer import GradientVisualizer
 # Add the parent directory to the path to import modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.preprocessing import Preprocessor
-from core.initializer.svgsplat_initializater import StructureAwareInitializer
-from core.initializer.random_initializater import RandomInitializer
-from core.renderer.simple_tile_renderer import SimpleTileRenderer
-from util.svg_loader import SVGLoader
-from util.primitive_loader import PrimitiveLoader
-from util.utils import set_global_seed
+from imbrush.core.preprocessing import Preprocessor
+from imbrush.core.initializer.svgsplat_initializater import StructureAwareInitializer
+from imbrush.core.initializer.random_initializater import RandomInitializer
+from imbrush.core.renderer.simple_tile_renderer import SimpleTileRenderer
+from imbrush.util.svg_loader import SVGLoader
+from imbrush.util.primitive_loader import PrimitiveLoader
+from imbrush.util.utils import set_global_seed
 
 # ============================================================================
 # CONFIGURATION CONSTANTS

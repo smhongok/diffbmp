@@ -8,8 +8,8 @@ import cv2
 import numpy as np
 from typing import Tuple, Optional, List, Dict, Any
 from tqdm import tqdm
-from util.utils import gaussian_blur, make_batch_indices
-from util.loss_functions import LossComposer
+from imbrush.util.utils import gaussian_blur, make_batch_indices
+from imbrush.util.loss_functions import LossComposer
 import os
 import gc
 import pkg_resources
