@@ -139,7 +139,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             opt_conf = {"num_iterations": 50, "learning_rate": {"default": 0.005}, "decay_rate": 0.95}
         
         # Initialize loss composer from config
-        from util.loss_functions import LossComposer
+        from imbrush.util.loss_functions import LossComposer
         loss_config = opt_conf.get("loss_config", {"type": "mse"})
         self.loss_composer = LossComposer(loss_config, device=self.device)
         print(f"Using loss configuration: {loss_config}")
@@ -853,7 +853,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         """
         import os
         from datetime import datetime
-        from util.gradient_visualizer import GradientVisualizer
+        from imbrush.util.gradient_visualizer import GradientVisualizer
         
         if adaptive_config is None or not adaptive_config.get('enabled', False):
             return (x, y, r, v, theta, c), []

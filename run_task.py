@@ -14,11 +14,11 @@ from itertools import product
 import gc
 import pandas as pd
 
-from core.preprocessing import Preprocessor
-from util.svg_loader import SVGLoader
-from util.svg_converter import FontParser, ImageToSVG
-from util.utils import set_global_seed, gaussian_blur
-from util.pdf_exporter import PDFExporter
+from imbrush.core.preprocessing import Preprocessor
+from imbrush.util.svg_loader import SVGLoader
+from imbrush.util.svg_converter import FontParser, ImageToSVG
+from imbrush.util.utils import set_global_seed, gaussian_blur
+from imbrush.util.pdf_exporter import PDFExporter
 
 # Enable gradient checkpointing for memory efficiency
 torch.backends.cudnn.benchmark = True
@@ -96,7 +96,7 @@ def process_combination(args):
     
     # Create renderer only when needed - defer instantiation
     if renderer_name == "MseRenderer":
-        from core.renderer.mse_renderer import MseRenderer
+        from imbrush.core.renderer.mse_renderer import MseRenderer
         renderer = MseRenderer((H, W), S=bmp_tensor, 
                             alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
                             device=device,
@@ -263,16 +263,16 @@ def run(initializers_config, renderer_name, config, I_target, svg_loader, device
     init_name, init_config = initializers_config
     # Create initializer
     if init_name == "StructureAwareInitializer":
-        from core.initializer.svgsplat_initializater import StructureAwareInitializer
+        from imbrush.core.initializer.svgsplat_initializater import StructureAwareInitializer
         initializer = StructureAwareInitializer(init_config)
     elif init_name == "RandomInitializer":
-        from core.initializer.random_initializater import RandomInitializer
+        from imbrush.core.initializer.random_initializater import RandomInitializer
         initializer = RandomInitializer(init_config)
     elif init_name == "MultiLevelInitializer":
-        from core.initializer.multilevel_initializer import MultiLevelInitializer
+        from imbrush.core.initializer.multilevel_initializer import MultiLevelInitializer
         initializer = MultiLevelInitializer(init_config)
     elif init_name == "SequentialInitializer":
-        from core.initializer.sequnetial_initializater import SequentialInitializer
+        from imbrush.core.initializer.sequnetial_initializater import SequentialInitializer
         initializer = SequentialInitializer(init_config)
     else:
         raise ValueError(f"Unknown initializer: {init_name}")
@@ -286,7 +286,7 @@ def run(initializers_config, renderer_name, config, I_target, svg_loader, device
     
     # Generate initialization parameters
     if "LevelInitializer" in init_name:
-        from core.renderer.vector_renderer import VectorRenderer
+        from imbrush.core.renderer.vector_renderer import VectorRenderer
         vec_renderer = VectorRenderer((H, W), S=bmp_tensor, 
                                 alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
                                 device=device,

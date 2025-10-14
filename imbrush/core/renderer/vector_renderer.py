@@ -506,7 +506,7 @@ class VectorRenderer:
         """
         from contextlib import nullcontext
         from torch.amp import autocast
-        from util.utils import gaussian_blur
+        from imbrush.util.utils import gaussian_blur
         
         num_primitives = x.shape[0]
         tile_h, tile_w = tile_X.shape[1], tile_X.shape[2]
