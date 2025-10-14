@@ -1,5 +1,5 @@
 """
-Global constants for circle_art project.
+Global constants for image-as-brush project.
 These values are fixed across all experiments and should not be changed per-config.
 """
 

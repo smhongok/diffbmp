@@ -9,7 +9,7 @@ CUDA-GDB가 성공적으로 `tile_rasterize_forward_kernel` 함수를 찾고 브
 ### 1. 대화형 CUDA-GDB 시작
 ```bash
 source /home/sonic/anaconda3/bin/activate svgsplat
-cd /home/sonic/ICL_SMH/Research_compass_aftersubmit/circle_art
+cd /home/sonic/ICL_SMH/Research_compass_aftersubmit/image-as-brush
 cuda-gdb python test_cuda_forward.py
 ```
 

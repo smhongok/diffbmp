@@ -1643,7 +1643,7 @@ if __name__ == "__main__":
     # print(f"SVG is classified as: {classify_svg}")
     
     # img_converter = ImageToSVG()
-    # img_path = "/data/jameskim/repos/circle_art/assets/image/elec_stamp.png"
+    # img_path = "/data/jameskim/repos/image-as-brush/assets/image/elec_stamp.png"
     # #traced_svg = img_converter.trace_image(img_path, color_mode="color", quantize=True, simplify=False, num_colors=8)
     
     # #outline_svg = img_converter.extract_all_outlines(img_path, threshold=100, min_area_ratio=0.000001)

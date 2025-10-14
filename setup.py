@@ -16,10 +16,10 @@ with open('README.md', 'r', encoding='utf-8') as f:
 setup(
     name='image-as-brush',  # pip install name (can use dash)
     version='0.1.0',
-    description='2D Splatting with Arbitrary Primitives - Differentiable Renderer for Image Synthesis',
+    description='Fast Differentiable Painting with Any Image Primitives',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    author='ICL_SMH Team',
+    author='anonymous',
     author_email='',
     url='https://github.com/your-repo/image-as-brush',
     
