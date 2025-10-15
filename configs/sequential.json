@@ -75,6 +75,7 @@
         "selective_parameter_optimization":{
             "enabled": true,
             "freeze_distance_threshold": 0.05,
+            "diff_magnitude_threshold": 0.1,
             "gradual_freeze": {
                 "enabled": false,
                 "strength": 0.5

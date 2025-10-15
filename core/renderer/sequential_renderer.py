@@ -188,7 +188,9 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 diff_magnitude = torch.mean(diff, dim=2)  # [H, W]
                 
                 # Create binary mask of changed regions (threshold at 0.1 for robustness)
-                diff_mask_for_freeze = diff_magnitude > 0.1  # [H, W]
+                diff_magnitude_threshold = selective_parameter_optimization_config.get('diff_magnitude_threshold', 0.1)
+                print(f"Diff magnitude threshold: {diff_magnitude_threshold}")
+                diff_mask_for_freeze = diff_magnitude > diff_magnitude_threshold  # [H, W]
                 
                 # Save diff mask for visualization
                 if DIFF_MASK_EXPORT_PATH is not None:
