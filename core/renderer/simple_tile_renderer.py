@@ -204,6 +204,9 @@ class SimpleTileRenderer(VectorRenderer):
                                  is_final: bool = False,
                                  return_alpha: bool = False) -> torch.Tensor:
         """Sequential tile processing (original method)."""
+        if return_alpha:
+            alpha = torch.zeros((self.H, self.W), device=self.device, dtype=output.dtype)
+        
         for tile_y in range(self.tiles_h):
             for tile_x in range(self.tiles_w):
                 # Calculate tile boundaries
@@ -223,16 +226,24 @@ class SimpleTileRenderer(VectorRenderer):
                 
                 # Render this tile with selected primitives only
                 tile_result = self._render_tile(
-                    x, y, r, theta, v, c, tile_primitive_indices,
+                    x, y, r, theta, v, c, c_blend, tile_primitive_indices,
                     x_start, x_end, y_start, y_end, sigma, I_bg,
                     global_bmp_sel=global_bmp_sel, is_final=is_final,
                     return_alpha=return_alpha
                 )
                 
                 # Place result in output canvas
-                output[y_start:y_end, x_start:x_end] = tile_result
+                if return_alpha:
+                    tile_result, tile_alpha = tile_result
+                    output[y_start:y_end, x_start:x_end] = tile_result
+                    alpha[y_start:y_end, x_start:x_end] = tile_alpha
+                else:
+                    output[y_start:y_end, x_start:x_end] = tile_result
         
-        return output
+        if return_alpha:
+            return output, alpha
+        else:
+            return output
     
     def _process_tiles_parallel(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                                theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
@@ -290,6 +301,9 @@ class SimpleTileRenderer(VectorRenderer):
                 pass
         
         # Fallback: Process tiles with primitives (sequential)
+        if return_alpha:
+            alpha = torch.zeros((self.H, self.W), device=self.device, dtype=output.dtype)
+        
         for tile_idx in range(total_tiles):
             # Get primitives affecting this tile
             tile_mask = primitive_tile_masks[tile_idx]
@@ -303,15 +317,25 @@ class SimpleTileRenderer(VectorRenderer):
                 x, y, r, theta, v, c, primitive_indices,
                 x_starts[tile_idx].item(), x_ends[tile_idx].item(),
                 y_starts[tile_idx].item(), y_ends[tile_idx].item(),
-                sigma, I_bg, global_bmp_sel=global_bmp_sel
+                sigma, I_bg, global_bmp_sel=global_bmp_sel, is_final=is_final,
+                return_alpha=return_alpha
             )
             
             # Place result in output canvas
             y_start, y_end = y_starts[tile_idx].item(), y_ends[tile_idx].item()
             x_start, x_end = x_starts[tile_idx].item(), x_ends[tile_idx].item()
-            output[y_start:y_end, x_start:x_end] = tile_result
+            
+            if return_alpha:
+                tile_result, tile_alpha = tile_result
+                output[y_start:y_end, x_start:x_end] = tile_result
+                alpha[y_start:y_end, x_start:x_end] = tile_alpha
+            else:
+                output[y_start:y_end, x_start:x_end] = tile_result
         
-        return output
+        if return_alpha:
+            return output, alpha
+        else:
+            return output
     
     def _cuda_process_all_tiles(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                                theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
@@ -328,7 +352,19 @@ class SimpleTileRenderer(VectorRenderer):
             rotations = theta  # (N,)
             opacities = v  # (N,)
             colors = c  # (N, 3)
+            
+            # Use instance variables for c_o and c_blend
+            if self.c_o is not None:
+                # Use primitive-specific color maps based on global_bmp_sel
+                # self.c_o shape: (num_primitives, H, W, 3)
+                # global_bmp_sel shape: (N,)
+                # We need to select the color map for each primitive
+                c_o = self.c_o[global_bmp_sel]  # (N, H, W, 3) - select color maps for each primitive
+            else:
+                print(f"❌ Debug - self.c_o is None")
+                return None
 
+            c_blend = self.c_blend  # Use config value
 
             if self.S_blurred is None:
                 primitive_templates = self.S  # Use original templates for optimization
@@ -415,8 +451,8 @@ class SimpleTileRenderer(VectorRenderer):
             # Use FP16 version if available and use_fp16 is True
             # Use TileRasterizer class-based version (already created above)
             cuda_color, cuda_alpha = self.cuda_rasterizer(
-                means2D, radii, rotations, opacities, colors,
-                primitive_templates, global_bmp_sel,
+                means2D, radii, rotations, opacities, colors, c_o,
+                primitive_templates, global_bmp_sel, c_blend,
                 lr_config_tensor, tile_primitive_mapping
             )
             
@@ -965,7 +1001,7 @@ class SimpleTileRenderer(VectorRenderer):
                      primitive_indices: List[int], x_start: int, x_end: int,
                      y_start: int, y_end: int, sigma: float,
                      I_bg: torch.Tensor, global_bmp_sel: torch.Tensor = None, 
-                     is_final: bool = False) -> torch.Tensor:
+                     is_final: bool = False, return_alpha: bool = False) -> torch.Tensor:
         """
         Render a single tile with only the selected primitives.
         
@@ -999,10 +1035,19 @@ class SimpleTileRenderer(VectorRenderer):
         tile_theta = theta[indices]
         tile_v = v[indices]
         tile_c = c[indices]
+        if self.c_o is not None:
+            # Use primitive-specific color maps based on global_bmp_sel for this tile
+            tile_global_bmp_sel = global_bmp_sel[indices]  # (num_primitives_in_tile,)
+            tile_c_o = self.c_o[tile_global_bmp_sel]  # (num_primitives_in_tile, H, W, 3) - select color maps for each primitive
+        else:
+            print(f"❌ Debug - self.c_o is None")
+            return None
+        tile_c_blend = self.c_blend  # Use config value
         
         # Create coordinate grid for this tile
         tile_X = self.X[:, y_start:y_end, x_start:x_end]  # (1, tile_h, tile_w)
         tile_Y = self.Y[:, y_start:y_end, x_start:x_end]  # (1, tile_h, tile_w)
+        tile_h, tile_w = tile_X.shape[1], tile_X.shape[2]
         
         # Try CUDA acceleration if available
         if CUDA_AVAILABLE and len(primitive_indices) > 0:
@@ -1044,6 +1089,11 @@ class SimpleTileRenderer(VectorRenderer):
                 alpha = torch.sigmoid(tile_v) * self.alpha_upper_bound
                 rgb = torch.sigmoid(tile_c)
                 
+                # Apply c_o and c_blend
+                c_o_sigmoid = torch.sigmoid(tile_c_o)
+                c_blend_sigmoid = torch.sigmoid(tile_c_blend)
+                rgb = rgb * (1 - c_blend_sigmoid) + c_o_sigmoid * c_blend_sigmoid
+                
                 # Apply alpha to masks
                 a = tile_masks * alpha.view(-1, 1, 1)
                 
@@ -1064,6 +1114,11 @@ class SimpleTileRenderer(VectorRenderer):
             alpha = torch.sigmoid(tile_v) * self.alpha_upper_bound
             rgb = torch.sigmoid(tile_c)
             
+            # Apply c_o and c_blend
+            c_o_sigmoid = torch.sigmoid(tile_c_o)
+            c_blend_sigmoid = torch.sigmoid(tile_c_blend)
+            rgb = rgb * (1 - c_blend_sigmoid) + c_o_sigmoid * c_blend_sigmoid
+            
             # Apply alpha to masks
             a = tile_masks * alpha.view(-1, 1, 1)
             
@@ -1080,7 +1135,10 @@ class SimpleTileRenderer(VectorRenderer):
             bg_tile = I_bg[y_start:y_end, x_start:x_end]
             result = comp_m + (1 - comp_a.unsqueeze(-1)) * bg_tile
         
-        return result
+        if return_alpha:
+            return result, comp_a
+        else:
+            return result
     
     def _generate_tile_masks(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                             theta: torch.Tensor, tile_X: torch.Tensor, tile_Y: torch.Tensor,

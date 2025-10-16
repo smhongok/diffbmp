@@ -39,7 +39,9 @@ class VectorRenderer:
                  gamma: float = 1.0,
                  output_path: str = None,
                  tile_size: int = 32,
-                 sigma: float = 0.0):
+                 sigma: float = 0.0,
+                 c_blend: float = 0.0,
+                 primitive_colors: torch.Tensor = None):
         """
         Initialize the vector renderer.
         
@@ -56,6 +58,8 @@ class VectorRenderer:
         self.use_fp16 = use_fp16
         self.gamma = gamma
         self.output_path = output_path
+        self.c_blend = c_blend
+        self.c_o = primitive_colors.clone().to(device)  # (num_primitives, H, W, 3) - original color maps for each primitive
         
         # Tile rendering parameters
         self.tile_size = tile_size
@@ -236,9 +240,9 @@ class VectorRenderer:
         return output
     
     def _process_tiles_sequential(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
-                             theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
-                             sigma: float, I_bg: torch.Tensor, no_background: bool,
-                             global_bmp_sel: torch.Tensor, output: torch.Tensor) -> torch.Tensor:
+                                 theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
+                                 sigma: float, I_bg: torch.Tensor, no_background: bool,
+                                 global_bmp_sel: torch.Tensor, output: torch.Tensor) -> torch.Tensor:
         """Sequential tile processing using unified primitive assignment."""
         
         # Pre-compute all tile boundaries
@@ -463,7 +467,15 @@ class VectorRenderer:
         
         # Convert logits to actual values
         alpha = torch.sigmoid(tile_v) * self.alpha_upper_bound
-        rgb = torch.sigmoid(tile_c)
+        
+        # Color blending: (1-c_blend)*c_i + c_blend*c_o
+        c_i = torch.sigmoid(tile_c)
+        if self.c_o is not None and self.c_blend > 0.0:
+            tile_c_o = self.c_o[indices]
+            c_o_eff = torch.sigmoid(tile_c_o)
+            rgb = (1.0 - self.c_blend) * c_i + self.c_blend * c_o_eff
+        else:
+            rgb = c_i
         
         # Apply alpha to masks
         a = tile_masks * alpha.view(-1, 1, 1)
@@ -759,7 +771,14 @@ class VectorRenderer:
             # 1. per-primitive alpha & color
             v_alpha = self.alpha_upper_bound * torch.sigmoid(v).view(N, 1, 1)
             a = v_alpha * cached_masks                     # (N, H, W)
-            c_eff = torch.sigmoid(c).view(N, 1, 1, 3)      # (N, 1, 1, 3)
+            
+            # Color blending: (1-c_blend)*c_i + c_blend*c_o
+            c_i = torch.sigmoid(c).view(N, 1, 1, 3)       # (N, 1, 1, 3)
+            if self.c_o is not None and self.c_blend > 0.0:
+                c_o_eff = self.c_o.view(N, 1, 1, 3)            # (N, 1, 1, 3)
+                c_eff = (1.0 - self.c_blend) * c_i + self.c_blend * c_o_eff
+            else:
+                c_eff = c_i
             
             # Create color tensor with minimal memory overhead
             m = a.unsqueeze(-1) * c_eff                    # (N, H, W, 3)
@@ -805,7 +824,7 @@ class VectorRenderer:
         cached_masks: torch.Tensor,  # (N, H, W)
         v: torch.Tensor,             # (N,)
         c: torch.Tensor,             # (N, 3)
-        video_path: str,
+        video_path: str = None,
         fps: int = 60
     ):
         """
@@ -825,7 +844,15 @@ class VectorRenderer:
             # 1.1 per-primitive alpha & color
             v_alpha = self.alpha_upper_bound * torch.sigmoid(v).view(-1, 1, 1)    # (N,1,1)
             a_all   = v_alpha * cached_masks                                       # (N,H,W)
-            c_eff   = torch.sigmoid(c).view(-1, 1, 1, 3)                           # (N,1,1,3)
+            
+            # Color blending: (1-c_blend)*c_i + c_blend*c_o
+            c_i = torch.sigmoid(c).view(-1, 1, 1, 3)                              # (N,1,1,3)
+            if self.c_o is not None and self.c_blend > 0.0:
+                c_o_eff = self.c_o.view(-1, 1, 1, 3)                                   # (N,1,1,3)
+                c_eff = (1.0 - self.c_blend) * c_i + self.c_blend * c_o_eff
+            else:
+                c_eff = c_i
+            
             m_all   = a_all.unsqueeze(-1) * c_eff                                  # (N,H,W,3)
 
         # --- 2. 비디오 초기화를 위한 첫 프레임 계산 ---

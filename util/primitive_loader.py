@@ -233,6 +233,169 @@ class PrimitiveLoader:
     def has_raster_primitives(self) -> bool:
         """Check if any loaded primitives are raster (PNG/JPG)"""
         return any(ptype == 'raster' for ptype in self.primitive_types)
+    
+    def get_primitive_colors(self) -> torch.Tensor:
+        """
+        Extract representative colors for each primitive.
+        Returns tensor of shape (num_primitives, 3) with RGB values in [0, 1].
+        """
+        colors = []
+        
+        for i, (ptype, data) in enumerate(zip(self.primitive_types, self.primitive_data)):
+            if ptype == 'svg':
+                # For SVG, extract color from the rendered bitmap
+                color = self._extract_svg_color(data)
+            else:  # raster
+                # For raster images, extract dominant color
+                color = self._extract_raster_color(data)
+            
+            colors.append(color)
+        
+        return torch.stack(colors, dim=0).to(self.device)
+    
+    def _extract_svg_color(self, data: dict) -> torch.Tensor:
+        """Extract representative color from SVG primitive"""
+        path = data['path']
+        svg_bytes = Path(path).read_bytes()
+        
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=True) as tmp:
+            svg2png(bytestring=svg_bytes, write_to=tmp.name, 
+                   output_width=self.output_width, output_height=self.output_width)
+            img = Image.open(tmp.name).convert('RGBA')
+            arr = np.array(img)
+        
+        # Extract color from non-transparent pixels
+        alpha = arr[:, :, 3]
+        mask = alpha > 0
+        
+        if np.any(mask):
+            # Get RGB values of non-transparent pixels
+            rgb_pixels = arr[mask, :3]  # (N, 3)
+            # Calculate mean color
+            mean_color = np.mean(rgb_pixels, axis=0) / 255.0  # Normalize to [0, 1]
+        else:
+            # Fallback: use black if no visible pixels
+            mean_color = np.array([0.0, 0.0, 0.0])
+        
+        return torch.tensor(mean_color, dtype=torch.float32)
+    
+    def _extract_raster_color(self, data: dict) -> torch.Tensor:
+        """Extract full color information from raster primitive"""
+        img = data['image']
+        
+        # Resize to manageable size for color extraction
+        img.thumbnail((128, 128), Image.Resampling.LANCZOS)
+        arr = np.array(img)
+        
+        # Handle RGBA images properly
+        if arr.shape[2] == 4:  # RGBA
+            # Only consider non-transparent pixels
+            alpha = arr[:, :, 3]
+            non_transparent = alpha > 0
+            
+            if np.any(non_transparent):
+                # Get RGB values of non-transparent pixels
+                rgb_pixels = arr[non_transparent, :3]  # (N, 3)
+                mean_color = np.mean(rgb_pixels, axis=0) / 255.0  # Normalize to [0, 1]
+            else:
+                # All pixels are transparent, use black as fallback
+                print("All pixels are transparent, using black as fallback")
+                mean_color = np.array([0.0, 0.0, 0.0])
+        else:  # RGB
+            # For RGB images, use mean color
+            mean_color = np.mean(arr, axis=(0, 1)) / 255.0  # Normalize to [0, 1]
+        
+        return torch.tensor(mean_color, dtype=torch.float32)
+    
+    def get_primitive_color_maps(self) -> torch.Tensor:
+        """Get full color maps for each primitive (H, W, 3)"""
+        color_maps = []
+        
+        for i, (primitive_type, data) in enumerate(zip(self.primitive_types, self.primitive_data)):
+            if primitive_type == 'svg':
+                color_map = self._extract_svg_color_map(data)
+            else:  # raster
+                color_map = self._extract_raster_color_map(data)
+            color_maps.append(color_map)
+        
+        return torch.stack(color_maps, dim=0)  # (num_primitives, H, W, 3)
+    
+    def _extract_raster_color_map(self, data: dict) -> torch.Tensor:
+        """Extract full color map from raster primitive"""
+        img = data['image']
+        
+        # Use same resizing logic as _load_raster_bitmap to maintain consistency
+        img.thumbnail((self.output_width, self.output_width), Image.Resampling.LANCZOS)
+        arr = np.array(img)
+        
+        # Handle RGBA images properly
+        if arr.shape[2] == 4:  # RGBA
+            # Extract RGB and alpha channels
+            alpha = arr[:, :, 3] / 255.0    # (H, W)
+            rgb = arr[:, :, :3] / 255.0     # (H, W, 3)
+            
+            # For transparent regions, use the mean color of visible regions
+            # This prevents black artifacts in transparent areas
+            visible_mask = alpha > 0.1  # Consider pixels with alpha > 0.1 as visible
+            if visible_mask.any():
+                # Compute mean color from visible pixels
+                mean_color = rgb[visible_mask].mean(axis=0)  # (3,)
+                # Fill transparent regions with mean color
+                color_map = rgb.copy()
+                for c in range(3):
+                    color_map[:, :, c] = np.where(visible_mask, rgb[:, :, c], mean_color[c])
+            else:
+                # Fallback: if no visible pixels, use RGB as-is
+                color_map = rgb
+        else:  # RGB
+            color_map = arr / 255.0  # Normalize to [0, 1]
+        
+        # Pad to square using EXACTLY same logic as _load_raster_bitmap
+        h, w = color_map.shape[:2]
+        new_size = max(h, w, self.output_width)  # Must match _load_raster_bitmap!
+        pad_h = (new_size - h) // 2
+        pad_w = (new_size - w) // 2
+        
+        # Compute mean color for padding (avoid black borders)
+        mean_color = color_map.mean(axis=(0, 1))  # (3,)
+        
+        # Create padded array filled with mean color
+        padded = np.ones((new_size, new_size, 3)) * mean_color
+        # Place original color map in center
+        padded[pad_h:pad_h+h, pad_w:pad_w+w, :] = color_map
+        
+        return torch.tensor(padded, dtype=torch.float32)
+    
+    def _extract_svg_color_map(self, data: dict) -> torch.Tensor:
+        """Extract full color map from SVG primitive"""
+        path = data['path']
+        svg_bytes = Path(path).read_bytes()
+        
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=True) as tmp:
+            svg2png(bytestring=svg_bytes, write_to=tmp.name, 
+                   output_width=128, output_height=128)
+            img = Image.open(tmp.name).convert('RGBA')
+            arr = np.array(img)
+        
+        # Handle RGBA images properly
+        if arr.shape[2] == 4:  # RGBA
+            # Extract RGB and alpha channels
+            alpha = arr[:, :, 3] / 255.0    # (H, W)
+            rgb = arr[:, :, :3] / 255.0     # (H, W, 3)
+            
+            # For transparent regions, use the mean color of visible regions
+            visible_mask = alpha > 0.1
+            if visible_mask.any():
+                mean_color = rgb[visible_mask].mean(axis=0)
+                color_map = rgb.copy()
+                for c in range(3):
+                    color_map[:, :, c] = np.where(visible_mask, rgb[:, :, c], mean_color[c])
+            else:
+                color_map = rgb
+        else:  # RGB
+            color_map = arr / 255.0  # Normalize to [0, 1]
+        
+        return torch.tensor(color_map, dtype=torch.float32)
 
     # Backward compatibility methods
     def get_svg_size(self):

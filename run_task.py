@@ -284,13 +284,24 @@ def run(initializers_config, renderer_name, config, I_target, svg_loader, device
     else:
         bmp_tensor = bmp_tensor.to(dtype=torch.float32)
     
+    # Extract primitive colors for c_o initialization
+    if hasattr(svg_loader, 'get_primitive_color_maps'):
+        primitive_colors = svg_loader.get_primitive_color_maps()
+        print(f"Extracted primitive colors: {primitive_colors.shape}")
+    else:
+        num_primitives = bmp_tensor.shape[0] if bmp_tensor.ndim == 3 else 1
+        primitive_colors = torch.zeros(num_primitives, 3, device=device)
+        print("Using default colors for primitives")
+    
     # Generate initialization parameters
     if "LevelInitializer" in init_name:
         from core.renderer.vector_renderer import VectorRenderer
         vec_renderer = VectorRenderer((H, W), S=bmp_tensor, 
                                 alpha_upper_bound=config["optimization"].get("alpha_upper_bound", 0.5), 
                                 device=device,
-                                use_fp16=config["optimization"].get("use_fp16", False))
+                                use_fp16=config["optimization"].get("use_fp16", False),
+                                c_blend=config["optimization"].get("c_blend", 0.0),
+                                primitive_colors=primitive_colors)
         params = initializer.initialize(I_tar=I_target, renderer=vec_renderer, opt_conf=config["optimization"])
         del vec_renderer
     else:

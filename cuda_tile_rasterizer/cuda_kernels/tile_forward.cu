@@ -10,6 +10,81 @@
 #define DEBUG_CUDA_KERNELS 0
 #define DEBUG_SEQUENTIAL 0  // Set to 1 for sequential debugging, 0 for parallel execution
 
+// Color map sampling function
+__device__ __forceinline__ float3 sample_color_map(
+    const float* color_map, int map_h, int map_w, 
+    float x, float y, float radius, float rotation) {
+    
+    // Transform coordinates to color map space
+    // 1. Normalize by primitive radius to get [-1, 1] range
+    float r_inv = radius > 1e-6f ? (1.0f / radius) : 1e6f;
+    float norm_x = x * r_inv;
+    float norm_y = y * r_inv;
+    
+    // 2. Rotate
+    float cos_theta = cosf(rotation);
+    float sin_theta = sinf(rotation);
+    float rot_x =  cos_theta * norm_x + sin_theta * norm_y;
+    float rot_y = -sin_theta * norm_x + cos_theta * norm_y;
+    
+    // 3. Convert normalized [-1, 1] coordinates to color map pixel coordinates [0, W-1], [0, H-1]
+    float coord_x = (rot_x + 1.0f) * 0.5f * (map_w - 1);
+    float coord_y = (rot_y + 1.0f) * 0.5f * (map_h - 1);
+    
+    // Clamp coordinates
+    coord_x = fmaxf(0.0f, fminf(map_w - 1, coord_x));
+    coord_y = fmaxf(0.0f, fminf(map_h - 1, coord_y));
+    
+    // Bilinear interpolation
+    int x0 = (int)coord_x;
+    int y0 = (int)coord_y;
+    int x1 = min(x0 + 1, map_w - 1);
+    int y1 = min(y0 + 1, map_h - 1);
+    
+    float fx = coord_x - x0;
+    float fy = coord_y - y0;
+    
+    // Sample colors
+    float3 c00 = make_float3(
+        color_map[3 * (y0 * map_w + x0) + 0],
+        color_map[3 * (y0 * map_w + x0) + 1],
+        color_map[3 * (y0 * map_w + x0) + 2]
+    );
+    float3 c01 = make_float3(
+        color_map[3 * (y1 * map_w + x0) + 0],
+        color_map[3 * (y1 * map_w + x0) + 1],
+        color_map[3 * (y1 * map_w + x0) + 2]
+    );
+    float3 c10 = make_float3(
+        color_map[3 * (y0 * map_w + x1) + 0],
+        color_map[3 * (y0 * map_w + x1) + 1],
+        color_map[3 * (y0 * map_w + x1) + 2]
+    );
+    float3 c11 = make_float3(
+        color_map[3 * (y1 * map_w + x1) + 0],
+        color_map[3 * (y1 * map_w + x1) + 1],
+        color_map[3 * (y1 * map_w + x1) + 2]
+    );
+    
+    // Interpolate
+    float3 c0 = make_float3(
+        c00.x * (1.0f - fx) + c10.x * fx,
+        c00.y * (1.0f - fx) + c10.y * fx,
+        c00.z * (1.0f - fx) + c10.z * fx
+    );
+    float3 c1 = make_float3(
+        c01.x * (1.0f - fx) + c11.x * fx,
+        c01.y * (1.0f - fx) + c11.y * fx,
+        c01.z * (1.0f - fx) + c11.z * fx
+    );
+    
+    return make_float3(
+        c0.x * (1.0f - fy) + c1.x * fy,
+        c0.y * (1.0f - fy) + c1.y * fy,
+        c0.z * (1.0f - fy) + c1.z * fy
+    );
+}
+
 // Forward kernel:
 // - Per pixel: iterate tile's primitive list (global ids)
 // - Push into per-pixel caches (alpha, color, T placeholder) in the SAME order as forward condition
@@ -177,9 +252,33 @@ __global__ void tile_rasterize_forward_kernel(
 
         // Alpha and color for this primitive at this pixel
         const float a_k = alpha_max * s_op * mask_value;          // α_k
-        const float sr  = sigmoidf_safe(inputs.colors[3*n + 0]);  // c_k (premult src)
-        const float sg  = sigmoidf_safe(inputs.colors[3*n + 1]);
-        const float sb  = sigmoidf_safe(inputs.colors[3*n + 2]);
+        
+        // Color blending: (1-c_blend)*c_i + c_blend*c_o
+        const float c_i_r = sigmoidf_safe(inputs.colors[3*n + 0]);
+        const float c_i_g = sigmoidf_safe(inputs.colors[3*n + 1]);
+        const float c_i_b = sigmoidf_safe(inputs.colors[3*n + 2]);
+        
+        float sr, sg, sb;
+        if (inputs.colors_orig != nullptr && inputs.c_blend > 0.0f) {
+            // Sample color from color map at current pixel position
+            float3 c_o = sample_color_map(
+                inputs.colors_orig + n * prim_config.template_height * prim_config.template_width * 3,
+                prim_config.template_height, prim_config.template_width,
+                (float)x - inputs.means2D[2*n + 0], (float)y - inputs.means2D[2*n + 1],
+                inputs.radii[n], inputs.rotations[n]
+            );
+            // c_o is already in [0, 1] range, no need for sigmoid
+            const float c_o_r = c_o.x;
+            const float c_o_g = c_o.y;
+            const float c_o_b = c_o.z;
+            sr = (1.0f - inputs.c_blend) * c_i_r + inputs.c_blend * c_o_r;
+            sg = (1.0f - inputs.c_blend) * c_i_g + inputs.c_blend * c_o_g;
+            sb = (1.0f - inputs.c_blend) * c_i_b + inputs.c_blend * c_o_b;
+        } else {
+            sr = c_i_r;
+            sg = c_i_g;
+            sb = c_i_b;
+        }
 
         const int idx = base + local_k;
         
@@ -403,9 +502,33 @@ __global__ void tile_rasterize_forward_kernel_debug(
 
                 // Alpha and color for this primitive at this pixel
                 const float a_k = alpha_max * s_op * mask_value;          // α_k
-                const float sr  = sigmoidf_safe(inputs.colors[3*n + 0]);  // c_k (premult src)
-                const float sg  = sigmoidf_safe(inputs.colors[3*n + 1]);
-                const float sb  = sigmoidf_safe(inputs.colors[3*n + 2]);
+                
+                // Color blending: (1-c_blend)*c_i + c_blend*c_o
+                const float c_i_r = sigmoidf_safe(inputs.colors[3*n + 0]);
+                const float c_i_g = sigmoidf_safe(inputs.colors[3*n + 1]);
+                const float c_i_b = sigmoidf_safe(inputs.colors[3*n + 2]);
+                
+                float sr, sg, sb;
+                if (inputs.colors_orig != nullptr && inputs.c_blend > 0.0f) {
+                    // Sample color from color map at current pixel position
+                    float3 c_o = sample_color_map(
+                        inputs.colors_orig + n * prim_config.template_height * prim_config.template_width * 3,
+                        prim_config.template_height, prim_config.template_width,
+                        (float)x - inputs.means2D[2*n + 0], (float)y - inputs.means2D[2*n + 1],
+                        inputs.radii[n], inputs.rotations[n]
+                    );
+                    // c_o is already in [0, 1] range, no need for sigmoid
+                    const float c_o_r = c_o.x;
+                    const float c_o_g = c_o.y;
+                    const float c_o_b = c_o.z;
+                    sr = (1.0f - inputs.c_blend) * c_i_r + inputs.c_blend * c_o_r;
+                    sg = (1.0f - inputs.c_blend) * c_i_g + inputs.c_blend * c_o_g;
+                    sb = (1.0f - inputs.c_blend) * c_i_b + inputs.c_blend * c_o_b;
+                } else {
+                    sr = c_i_r;
+                    sg = c_i_g;
+                    sb = c_i_b;
+                }
 
                 const int idx = base + local_k;
                 

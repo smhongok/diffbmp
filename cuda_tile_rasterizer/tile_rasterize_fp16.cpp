@@ -300,8 +300,10 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizerFP16::forward(
     torch::Tensor rotations,
     torch::Tensor opacities,
     torch::Tensor colors,
+    torch::Tensor colors_orig,
     torch::Tensor primitive_templates,
     torch::Tensor global_bmp_sel,
+    float c_blend,
     torch::Tensor tile_primitive_mapping) {
     
     // Check if memory is allocated
@@ -434,8 +436,10 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizerFP16::forward(
             reinterpret_cast<const __half*>(rotations.data_ptr()),
             reinterpret_cast<const __half*>(opacities.data_ptr()),
             reinterpret_cast<const __half*>(colors.data_ptr()),
+            reinterpret_cast<const __half*>(colors_orig.data_ptr()),
             reinterpret_cast<const __half*>(primitive_templates.data_ptr()),
-            global_bmp_sel.data_ptr<int>()
+            global_bmp_sel.data_ptr<int>(),
+            c_blend
         ),
         OutputTensorsFP16(
             out_color,
@@ -490,8 +494,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     torch::Tensor rotations,
     torch::Tensor opacities,
     torch::Tensor colors,
+    torch::Tensor colors_orig,
     torch::Tensor primitive_templates,
     torch::Tensor global_bmp_sel,
+    float c_blend,
     torch::Tensor lr_config) {
     
     // Check if memory is allocated
@@ -529,8 +535,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
             reinterpret_cast<const __half*>(rotations.data_ptr()),
             reinterpret_cast<const __half*>(opacities.data_ptr()),
             reinterpret_cast<const __half*>(colors.data_ptr()),
+            reinterpret_cast<const __half*>(colors_orig.data_ptr()),
             reinterpret_cast<const __half*>(primitive_templates.data_ptr()),
-            global_bmp_sel.data_ptr<int>()
+            global_bmp_sel.data_ptr<int>(),
+            c_blend
         ),
         OutputTensorsFP16(
             out_color,
@@ -618,8 +626,10 @@ std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForwardFP16(
     torch::Tensor rotations,
     torch::Tensor opacities,
     torch::Tensor colors,
+    torch::Tensor colors_orig,
     torch::Tensor primitive_templates,
     torch::Tensor global_bmp_sel,
+    float c_blend,
     torch::Tensor tile_primitive_mapping,
     int image_height,
     int image_width,
@@ -656,7 +666,7 @@ std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForwardFP16(
 #endif
     }
     
-    return global_tile_rasterizer_fp16->forward(means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, tile_primitive_mapping);
+    return global_tile_rasterizer_fp16->forward(means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, tile_primitive_mapping);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> CudaRasterizeTilesBackwardFP16(
@@ -667,8 +677,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     torch::Tensor rotations,
     torch::Tensor opacities,
     torch::Tensor colors,
+    torch::Tensor colors_orig,
     torch::Tensor primitive_templates,
     torch::Tensor global_bmp_sel,  // [num_primitives] - template selection indices
+    float c_blend,
     torch::Tensor lr_config_tensor,
     int image_height,
     int image_width,
@@ -681,5 +693,5 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     }
     
     return global_tile_rasterizer_fp16->backward(grad_out_color, grad_out_alpha, means2D, radii, rotations, 
-                                           opacities, colors, primitive_templates, global_bmp_sel, lr_config_tensor);
+                                           opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, lr_config_tensor);
 }
