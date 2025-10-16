@@ -8,8 +8,8 @@ import cv2
 import numpy as np
 from typing import Tuple, Optional, List, Dict, Any
 from tqdm import tqdm
-from util.utils import gaussian_blur, make_batch_indices
-from util.loss_functions import LossComposer
+from imbrush.util.utils import gaussian_blur, make_batch_indices
+from imbrush.util.loss_functions import LossComposer
 import os
 import gc
 import pkg_resources
@@ -506,7 +506,7 @@ class VectorRenderer:
         """
         from contextlib import nullcontext
         from torch.amp import autocast
-        from util.utils import gaussian_blur
+        from imbrush.util.utils import gaussian_blur
         
         num_primitives = x.shape[0]
         tile_h, tile_w = tile_X.shape[1], tile_X.shape[2]

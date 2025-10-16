@@ -15,8 +15,8 @@ Usage:
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from core.renderer.simple_tile_renderer import SimpleTileRenderer
-from core.renderer.vector_renderer import VectorRenderer
+from imbrush.core.renderer.simple_tile_renderer import SimpleTileRenderer
+from imbrush.core.renderer.vector_renderer import VectorRenderer
 import json
 import os
 

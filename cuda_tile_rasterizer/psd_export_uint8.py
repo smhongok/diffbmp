@@ -8,6 +8,11 @@ from psd_tools.api.layers import PixelLayer
 
 # Try to import the compiled CUDA extension
 try:
+    # Add cuda_tile_rasterizer directory to path if not already present
+    cuda_dir = os.path.dirname(os.path.abspath(__file__))
+    if cuda_dir not in sys.path:
+        sys.path.insert(0, cuda_dir)
+    
     import psd_export_cuda
     CUDA_AVAILABLE = True
 except ImportError:
