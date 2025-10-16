@@ -1,6 +1,6 @@
 import numpy as np
 from PIL import Image, ImageOps, ImageFilter
-from util.target_masks import binary_mask
+from imbrush.util.target_masks import binary_mask
 import cv2
 import os
 class Preprocessor:

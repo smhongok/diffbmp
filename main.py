@@ -17,26 +17,26 @@ import json
 import argparse
 import cv2
 from datetime import datetime
-from core.renderer.sequential_renderer import SequentialFrameRenderer
-from core.renderer.simple_tile_renderer import SimpleTileRenderer
-from util.svg_loader import SVGLoader
-from util.primitive_loader import PrimitiveLoader
-from util.svg_converter import FontParser, ImageToSVG
-from core.initializer.svgsplat_initializater import StructureAwareInitializer
-from core.initializer.random_initializater import RandomInitializer
+from imbrush.core.renderer.sequential_renderer import SequentialFrameRenderer
+from imbrush.core.renderer.simple_tile_renderer import SimpleTileRenderer
+from imbrush.util.svg_loader import SVGLoader
+from imbrush.util.primitive_loader import PrimitiveLoader
+from imbrush.util.svg_converter import FontParser, ImageToSVG
+from imbrush.core.initializer.svgsplat_initializater import StructureAwareInitializer
+from imbrush.core.initializer.random_initializater import RandomInitializer
 
 # Route visualization flag - set to True to enable primitive movement visualization
 ENABLE_ROUTE_VISUALIZATION = False
 
 # Import our modules
-from core.preprocessing import Preprocessor
-from util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
-from util.pdf_exporter import PDFExporter
-import util.target_masks as target_masks
+from imbrush.core.preprocessing import Preprocessor
+from imbrush.util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
+from imbrush.util.pdf_exporter import PDFExporter
+import imbrush.util.target_masks as target_masks
 
 # Conditional import for route visualization
 if ENABLE_ROUTE_VISUALIZATION:
-    from util.route_visualizer import create_route_visualization
+    from imbrush.util.route_visualizer import create_route_visualization
 
 
 
@@ -54,7 +54,7 @@ with open(config_path, "r", encoding="utf-8") as f:
     config = json.load(f)
 
 # Apply constants as default values
-from util.constants import apply_constants_to_config
+from imbrush.util.constants import apply_constants_to_config
 config = apply_constants_to_config(config)
 # After import or after loading config
 set_global_seed(config["seed"])
@@ -337,7 +337,7 @@ for img_idx, img_path in enumerate(img_paths):
 
         if psd_export:
             # Export PSD layers using util/psd_exporter.py with batched processing
-            from util.psd_exporter import PSDExporter
+            from imbrush.util.psd_exporter import PSDExporter
             
             psd_path = output_path.replace('.png', '.psd')
             psd_scale_factor = config['postprocessing']['psd_scale_factor']

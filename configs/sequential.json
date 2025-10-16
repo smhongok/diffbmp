@@ -67,9 +67,18 @@
             "max_primitives_per_tile": 4,
             "apply_epochs": [20, 45, 70],
             "gradient_ranking": {
-                "enabled": true,
+                "enabled": false,
                 "process_all_pixels": false,
                 "pixels_per_tile": 64
+            }
+        },
+        "selective_parameter_optimization":{
+            "enabled": true,
+            "freeze_distance_threshold": 0.05,
+            "diff_magnitude_threshold": 0.1,
+            "gradual_freeze": {
+                "enabled": false,
+                "strength": 0.5
             }
         },
         "export": {
@@ -80,7 +89,7 @@
         }
     },
     "postprocessing": {
-        "output_folder": "./outputs/new_main_test/1",
+        "output_folder": "./outputs/freeze_test/proro/2",
         "hires_export": false,
         "hires_scale_factor": 4.0,
         "compute_psnr": true,

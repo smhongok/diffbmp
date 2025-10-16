@@ -23,13 +23,13 @@ from gradient_visualizer import GradientVisualizer
 # Add the parent directory to the path to import modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.preprocessing import Preprocessor
-from core.initializer.svgsplat_initializater import StructureAwareInitializer
-from core.initializer.random_initializater import RandomInitializer
-from core.renderer.simple_tile_renderer import SimpleTileRenderer
-from util.svg_loader import SVGLoader
-from util.primitive_loader import PrimitiveLoader
-from util.utils import set_global_seed
+from imbrush.core.preprocessing import Preprocessor
+from imbrush.core.initializer.svgsplat_initializater import StructureAwareInitializer
+from imbrush.core.initializer.random_initializater import RandomInitializer
+from imbrush.core.renderer.simple_tile_renderer import SimpleTileRenderer
+from imbrush.util.svg_loader import SVGLoader
+from imbrush.util.primitive_loader import PrimitiveLoader
+from imbrush.util.utils import set_global_seed
 
 # ============================================================================
 # CONFIGURATION CONSTANTS
@@ -180,7 +180,7 @@ def load_primitive_templates(device):
         svg_path = os.path.join("./assets/svg", primitive_file)
     elif svg_ext in (".png", ".jpg", ".jpeg"):
         if SVG_CONFIG.get("convert_to_svg", True):
-            from util.svg_converter import ImageToSVG
+            from imbrush.util.svg_converter import ImageToSVG
             img_converter = ImageToSVG()
             svg_path = img_converter.extract_filled_outlines(primitive_file, threshold=100, min_area_ratio=0.000001)
             del img_converter
@@ -206,7 +206,7 @@ def load_primitive_templates(device):
                 raise ValueError(f"Unsupported text_file type: {text_ext}")
         
         if texts is not None:
-            from util.svg_converter import FontParser
+            from imbrush.util.svg_converter import FontParser
             font_parser = FontParser(primitive_file)
             if isinstance(texts, list):
                 svg_paths = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
