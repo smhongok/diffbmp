@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from PIL import Image
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import os
 import sys
 from psd_tools.api.layers import PixelLayer
@@ -30,7 +30,9 @@ def export_psd_layers_cuda_uint8(
     global_bmp_sel: torch.Tensor,    # [N] template selection indices
     H: int, W: int,                  # canvas dimensions
     scale_factor: float = 1.0,       # export scaling
-    alpha_upper_bound: float = 1.0   # maximum alpha value
+    alpha_upper_bound: float = 1.0,  # maximum alpha value
+    c_blend: float = 0.0,            # color blending factor
+    primitive_colors: Optional[torch.Tensor] = None  # c_o colors for blending
 ) -> Tuple[List[np.ndarray], List[Tuple[int, int, int, int]], List[int]]:
     """
     Export PSD layers using 2-stage CUDA kernel for memory-efficient cropped output.
@@ -84,13 +86,40 @@ def export_psd_layers_cuda_uint8(
     cropped_buffer = torch.zeros(total_pixels, dtype=torch.uint8, device=device)
     layer_offsets_tensor = torch.tensor(layer_offsets, dtype=torch.int32, device=device)
     
+    # Prepare primitive colors for blending (c_o)
+    # Match PNG rendering: select color map for each primitive using global_bmp_sel
+    if primitive_colors is not None and c_blend > 0.0:
+        # primitive_colors shape: (P, H_t, W_t, 3) where P is number of primitive templates
+        P = primitive_colors.shape[0]
+        
+        if primitive_colors.dim() == 4:  # (P, H_t, W_t, 3) - full color maps
+            # Select color map for each primitive (same as PNG rendering)
+            c_o = primitive_colors.to(device).float()[global_bmp_sel]  # (N, H_t, W_t, 3)
+            # Flatten to (N * H_t * W_t * 3) for CUDA kernel
+            colors_orig = c_o.contiguous().view(-1)
+        elif primitive_colors.dim() == 2:  # (P, 3) - average colors only
+            # Expand to full color maps by repeating the average color
+            H_t = renderer_S.shape[1]
+            W_t = renderer_S.shape[2]
+            # Select colors for each primitive
+            colors_per_primitive = primitive_colors.to(device).float()[global_bmp_sel]  # (N, 3)
+            # Expand each (3,) to (H_t, W_t, 3)
+            c_o = colors_per_primitive[:, None, None, :].expand(N, H_t, W_t, 3)  # (N, H_t, W_t, 3)
+            colors_orig = c_o.contiguous().view(-1)  # Flatten to (N * H_t * W_t * 3)
+        else:
+            raise ValueError(f"Unexpected primitive_colors shape: {primitive_colors.shape}")
+    else:
+        # Create empty tensor instead of None for C++ compatibility
+        colors_orig = torch.empty(0, dtype=torch.float32, device=device)
+    
     # Stage 2: Generate cropped layers
-    # C++ binding expects: means2D, radii, rotations, colors, visibility, primitive_templates, global_bmp_sel, bounding_boxes, layer_offsets, cropped_output_buffer, H, W, scale_factor, alpha_upper_bound
+    # C++ binding expects: means2D, radii, rotations, colors, visibility, primitive_templates, global_bmp_sel, bounding_boxes, layer_offsets, cropped_output_buffer, H, W, scale_factor, alpha_upper_bound, c_blend, colors_orig
     means2D = torch.stack([x_f32, y_f32], dim=1)  # [N, 2]
     psd_export_cuda.generate_cropped_layers(
         means2D, r_f32, theta_f32, c_f32, v_f32,
         renderer_S_f32, global_bmp_sel.int(), bounding_boxes,
-        layer_offsets_tensor, cropped_buffer, H, W, scale_factor, alpha_upper_bound
+        layer_offsets_tensor, cropped_buffer, H, W, scale_factor, alpha_upper_bound,
+        c_blend, colors_orig
     )
     
     # Convert to numpy arrays and filter valid layers

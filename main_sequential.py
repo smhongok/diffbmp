@@ -423,7 +423,16 @@ for frame_idx, frame_result in enumerate(frame_results):
         
         psd_path = frame_path.replace('.png', '.psd')
         psd_scale_factor = config['postprocessing']['psd_scale_factor']
-        exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
+        
+        # Pass c_blend and primitive_colors to PSDExporter
+        c_blend = config["optimization"].get("c_blend", 0.0)
+        exporter = PSDExporter(
+            renderer.W, renderer.H, 
+            alpha_upper_bound=renderer.alpha_upper_bound, 
+            scale_factor=psd_scale_factor,
+            c_blend=c_blend,
+            primitive_colors=primitive_colors
+        )
         
         # Use batched processing - all data preparation handled internally
         exporter.add_layers_batch_optimized(

@@ -99,12 +99,19 @@ __global__ void generate_cropped_layers_kernel(
     float theta = rotations[global_prim_id];
     
     // Get RGB colors and visibility (already sigmoid applied)
-    float rgb_r = colors[global_prim_id * 3 + 0];
-    float rgb_g = colors[global_prim_id * 3 + 1];
-    float rgb_b = colors[global_prim_id * 3 + 2];
+    float c_i_r = colors[global_prim_id * 3 + 0];  // c_i colors
+    float c_i_g = colors[global_prim_id * 3 + 1];
+    float c_i_b = colors[global_prim_id * 3 + 2];
     float vis = visibility[global_prim_id];
     
     int buffer_offset = layer_offsets[global_prim_id];
+    
+    // Get color map pointer for this primitive (if using c_blend)
+    // colors_orig is already mapped per-primitive: (N, H_t, W_t, 3) flattened
+    const float* color_map_ptr = nullptr;
+    if (config.colors_orig != nullptr && config.c_blend > 0.0f) {
+        color_map_ptr = config.colors_orig + global_prim_id * config.template_height * config.template_width * 3;
+    }
     
     // Process tile region for this primitive
     int start_x = tile_x * tile_size;
@@ -143,12 +150,42 @@ __global__ void generate_cropped_layers_kernel(
                 continue;
             }
             
+            // Apply color blending per-pixel (matching PNG rendering)
+            float rgb_r, rgb_g, rgb_b;
+            if (color_map_ptr != nullptr) {
+                // Sample c_o color at this pixel's position (same as tile_forward.cu)
+                // px, py are in scaled canvas space, x, y are scaled primitive centers
+                // We need unscaled coordinates for color sampling
+                float unscaled_x = x / config.scale_factor;
+                float unscaled_y = y / config.scale_factor;
+                float unscaled_px = (float)px / config.scale_factor;
+                float unscaled_py = (float)py / config.scale_factor;
+                float unscaled_r = r / config.scale_factor;
+                
+                float3 c_o = psd_sample_color_map(
+                    color_map_ptr,
+                    config.template_height, config.template_width,
+                    unscaled_px - unscaled_x,  // Relative position in original scale
+                    unscaled_py - unscaled_y,
+                    unscaled_r, theta
+                );
+                
+                // Blend c_i and c_o
+                rgb_r = (1.0f - config.c_blend) * c_i_r + config.c_blend * c_o.x;
+                rgb_g = (1.0f - config.c_blend) * c_i_g + config.c_blend * c_o.y;
+                rgb_b = (1.0f - config.c_blend) * c_i_b + config.c_blend * c_o.z;
+            } else {
+                rgb_r = c_i_r;
+                rgb_g = c_i_g;
+                rgb_b = c_i_b;
+            }
+            
             // Calculate uint8 RGBA values with binary mask
             float mask = template_val > 0.0f ? 1.0f : 0.0f;
-            uint8_t final_r = float_to_uint8(mask*rgb_r );
-            uint8_t final_g = float_to_uint8(mask*rgb_g );
-            uint8_t final_b = float_to_uint8(mask*rgb_b );
-            uint8_t final_a = float_to_uint8(alpha_val );
+            uint8_t final_r = float_to_uint8(mask * rgb_r);
+            uint8_t final_g = float_to_uint8(mask * rgb_g);
+            uint8_t final_b = float_to_uint8(mask * rgb_b);
+            uint8_t final_a = float_to_uint8(alpha_val);
             
             // Store in cropped buffer
             int pixel_offset = (local_y * bbox_w + local_x) * 4;
@@ -205,10 +242,10 @@ void launch_generate_cropped_layers(
     const int* layer_offsets,
     uint8_t* cropped_output_buffer,
     int N, int H, int W, int template_height, int template_width,
-    float scale_factor, float alpha_upper_bound,
+    float scale_factor, float alpha_upper_bound, float c_blend, const float* colors_orig,
     int max_bbox_w, int max_bbox_h
 ) {
-    PSDExportConfig config(N, H, W, template_height, template_width, scale_factor, alpha_upper_bound);
+    PSDExportConfig config(N, H, W, template_height, template_width, scale_factor, alpha_upper_bound, c_blend, colors_orig);
     
     // Block: primitives (up to 1024 threads per block limit)
     // Grid: spatial subdivision of canvas

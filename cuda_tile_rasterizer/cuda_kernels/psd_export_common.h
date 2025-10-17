@@ -19,11 +19,14 @@ public:
     int template_width;       // Template width
     float scale_factor;       // Export scaling factor
     float alpha_upper_bound;  // Maximum alpha value (from psd_exporter.py)
+    float c_blend;            // Color blending factor
+    const float* colors_orig; // Original primitive colors (c_o) for blending
     
     __host__ __device__ PSDExportConfig(int N, int H, int W, int template_height, int template_width, 
-                                       float scale_factor = 1.0f, float alpha_upper_bound = 1.0f)
+                                       float scale_factor = 1.0f, float alpha_upper_bound = 1.0f,
+                                       float c_blend = 0.0f, const float* colors_orig = nullptr)
         : N(N), H(H), W(W), template_height(template_height), template_width(template_width),
-          scale_factor(scale_factor), alpha_upper_bound(alpha_upper_bound) {}
+          scale_factor(scale_factor), alpha_upper_bound(alpha_upper_bound), c_blend(c_blend), colors_orig(colors_orig) {}
 };
 
 // Input tensors for PSD export
@@ -115,6 +118,81 @@ __device__ __forceinline__ float safe_sigmoid(float x) {
 
 __device__ __forceinline__ uint8_t float_to_uint8(float val) {
     return (uint8_t)fmaxf(0.0f, fminf(255.0f, val * 255.0f));
+}
+
+// Color map sampling for PSD export (same as tile_forward.cu)
+__device__ __forceinline__ float3 psd_sample_color_map(
+    const float* color_map, int map_h, int map_w, 
+    float x, float y, float radius, float rotation) {
+    
+    // Transform coordinates to color map space
+    // 1. Normalize by primitive radius to get [-1, 1] range
+    float r_inv = radius > 1e-6f ? (1.0f / radius) : 1e6f;
+    float norm_x = x * r_inv;
+    float norm_y = y * r_inv;
+    
+    // 2. Rotate
+    float cos_theta = cosf(rotation);
+    float sin_theta = sinf(rotation);
+    float rot_x =  cos_theta * norm_x + sin_theta * norm_y;
+    float rot_y = -sin_theta * norm_x + cos_theta * norm_y;
+    
+    // 3. Convert normalized [-1, 1] coordinates to color map pixel coordinates [0, W-1], [0, H-1]
+    float coord_x = (rot_x + 1.0f) * 0.5f * (map_w - 1);
+    float coord_y = (rot_y + 1.0f) * 0.5f * (map_h - 1);
+    
+    // Clamp coordinates
+    coord_x = fmaxf(0.0f, fminf(map_w - 1, coord_x));
+    coord_y = fmaxf(0.0f, fminf(map_h - 1, coord_y));
+    
+    // Bilinear interpolation
+    int x0 = (int)coord_x;
+    int y0 = (int)coord_y;
+    int x1 = min(x0 + 1, map_w - 1);
+    int y1 = min(y0 + 1, map_h - 1);
+    
+    float fx = coord_x - x0;
+    float fy = coord_y - y0;
+    
+    // Sample colors
+    float3 c00 = make_float3(
+        color_map[3 * (y0 * map_w + x0) + 0],
+        color_map[3 * (y0 * map_w + x0) + 1],
+        color_map[3 * (y0 * map_w + x0) + 2]
+    );
+    float3 c01 = make_float3(
+        color_map[3 * (y1 * map_w + x0) + 0],
+        color_map[3 * (y1 * map_w + x0) + 1],
+        color_map[3 * (y1 * map_w + x0) + 2]
+    );
+    float3 c10 = make_float3(
+        color_map[3 * (y0 * map_w + x1) + 0],
+        color_map[3 * (y0 * map_w + x1) + 1],
+        color_map[3 * (y0 * map_w + x1) + 2]
+    );
+    float3 c11 = make_float3(
+        color_map[3 * (y1 * map_w + x1) + 0],
+        color_map[3 * (y1 * map_w + x1) + 1],
+        color_map[3 * (y1 * map_w + x1) + 2]
+    );
+    
+    // Interpolate
+    float3 c0 = make_float3(
+        c00.x * (1.0f - fx) + c10.x * fx,
+        c00.y * (1.0f - fx) + c10.y * fx,
+        c00.z * (1.0f - fx) + c10.z * fx
+    );
+    float3 c1 = make_float3(
+        c01.x * (1.0f - fx) + c11.x * fx,
+        c01.y * (1.0f - fx) + c11.y * fx,
+        c01.z * (1.0f - fx) + c11.z * fx
+    );
+    
+    return make_float3(
+        c0.x * (1.0f - fy) + c1.x * fy,
+        c0.y * (1.0f - fy) + c1.y * fy,
+        c0.z * (1.0f - fy) + c1.z * fy
+    );
 }
 
 #endif // PSD_EXPORT_COMMON_H
