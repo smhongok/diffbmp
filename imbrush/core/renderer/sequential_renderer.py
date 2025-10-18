@@ -181,8 +181,6 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         diff_mask_for_freeze = None
         if selective_parameter_optimization_config.get('enabled', False) and previous_target is not None:
             with torch.no_grad():
-                import os
-                from torchvision.utils import save_image
                 # Compute absolute difference between target and next_target
                 diff = torch.abs(target - previous_target)
                 diff_magnitude = torch.mean(diff, dim=2)  # [H, W]
@@ -192,8 +190,11 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 print(f"Diff magnitude threshold: {diff_magnitude_threshold}")
                 diff_mask_for_freeze = diff_magnitude > diff_magnitude_threshold  # [H, W]
                 
+                # DIFF MASK DEBUG VISUALIZATION
                 # Save diff mask for visualization
                 if DIFF_MASK_EXPORT_PATH is not None:
+                    import os
+                    from torchvision.utils import save_image
                     os.makedirs(DIFF_MASK_EXPORT_PATH, exist_ok=True)
                     # Use frame index from self if available, otherwise use a counter
                     frame_idx = getattr(self, 'current_frame_idx', 0)
@@ -209,6 +210,11 @@ class SequentialFrameRenderer(SimpleTileRenderer):
 
         # Main optimization loop
         for i in pbar:
+            # Select primitives to freeze based on diff mask
+            freeze_mask = None
+            if selective_parameter_optimization_config.get("enabled", False):
+                freeze_mask = self.select_primitives_2_freeze(x, y, diff_mask_for_freeze, selective_parameter_optimization_config)
+
             # Apply adaptive control at specified epochs if enabled
             if (adaptive_config.get('enabled', False) and i in apply_epochs):
                 
@@ -237,7 +243,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 else:
                     # Use normal adaptive control without visualization
                     x, y, r, v, theta, c = self.apply_adaptive_control(
-                        x, y, r, v, theta, c, target, adaptive_config)
+                        x, y, r, v, theta, c, target, adaptive_config, freeze_mask)
                 
                 # Update optimizer parameters with new tensors
                 optimizer.param_groups[0]['params'] = [x]
@@ -265,9 +271,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             
             loss.backward()
 
-            if selective_parameter_optimization_config.get("enabled", False) and diff_mask_for_freeze is not None:
-                freeze_mask = self.select_primitives_2_freeze(x, y, diff_mask_for_freeze, selective_parameter_optimization_config)
-            
+            if selective_parameter_optimization_config.get("enabled", False):
+                
                 with torch.no_grad():
                     x.grad[freeze_mask] = 0
                     y.grad[freeze_mask] = 0
@@ -360,7 +365,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                              x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
                              v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
                              target_image: torch.Tensor,
-                             adaptive_config: dict = None) -> tuple:
+                             adaptive_config: dict = None,
+                             freeze_mask: torch.Tensor = None) -> tuple:
         """
         Apply adaptive control to reduce artifacts by lowering opacity of problematic primitives.
         
@@ -441,7 +447,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 problematic_indices = self._find_problematic_primitives(
                     tile_indices, x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
                     scale_threshold, opacity_threshold, gradient_magnitudes, max_primitives_per_tile,
-                    gradient_ranking_enabled
+                    gradient_ranking_enabled, freeze_mask
                 )
                 
                 # Apply opacity reduction using in-place operation to maintain leaf tensor status
@@ -458,7 +464,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                            scale_threshold: float, opacity_threshold: float,
                            gradient_magnitudes: torch.Tensor = None,
                            max_primitives_per_tile: int = 16,
-                           gradient_ranking_enabled: bool = True) -> torch.Tensor:
+                           gradient_ranking_enabled: bool = True,
+                           freeze_mask: torch.Tensor = None) -> torch.Tensor:
         """
         Find problematic primitives within a tile based on three criteria,
         then select top-k by gradient magnitude or scale*opacity based on configuration.
@@ -513,7 +520,16 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         criteria_count = (large_scale_mask.float() + high_opacity_mask.float() + front_mask.float())
         problematic_mask = criteria_count >= 2.0
         
-        print(f"  - Problematic by criteria (>=2/3): {problematic_mask.sum().item()}/{len(tile_indices)}")
+        # Exclude frozen primitives from adaptive control candidates
+        if freeze_mask is not None:
+            # Extract freeze status for primitives in this tile
+            tile_freeze_mask = freeze_mask[tile_indices]
+            # Keep only primitives that are problematic AND not frozen
+            problematic_mask = problematic_mask & (~tile_freeze_mask)
+            print(f"  - Problematic by criteria (>=2/3): {(criteria_count >= 2.0).sum().item()}/{len(tile_indices)}")
+            print(f"  - After excluding frozen: {problematic_mask.sum().item()}/{len(tile_indices)}")
+        else:
+            print(f"  - Problematic by criteria (>=2/3): {problematic_mask.sum().item()}/{len(tile_indices)}")
         
         # Get indices of problematic primitives within the tile
         problematic_tile_indices = torch.where(problematic_mask)[0]
