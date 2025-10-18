@@ -558,6 +558,8 @@ if config['postprocessing'].get('compute_psnr', False):
                 metrics_fh.write(f"  opacity_threshold: {ac_conf.get('opacity_threshold', '')}\n")
                 metrics_fh.write(f"  opacity_reduction_factor: {ac_conf.get('opacity_reduction_factor', '')}\n")
                 metrics_fh.write(f"  max_primitives_per_tile: {ac_conf.get('max_primitives_per_tile', '')}\n")
+                metrics_fh.write(f"  min_criteria_count: {ac_conf.get('min_criteria_count', '')}\n")
+                metrics_fh.write(f"  front_primitives_percentile: {ac_conf.get('front_primitives_percentile', '')}\n")
                 metrics_fh.write(f"  apply_epochs: {ac_conf.get('apply_epochs', '')}\n")
                 gr_conf = ac_conf.get('gradient_ranking', {})
                 if isinstance(gr_conf, dict):
