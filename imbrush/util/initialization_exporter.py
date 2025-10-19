@@ -243,9 +243,20 @@ def load_primitive_templates(device):
         bmp_tensor = svg_loader.load_alpha_bitmap()
     
     print(f"Primitive template shape: {bmp_tensor.shape}")
-    return bmp_tensor
+    
+    # Extract primitive colors for c_o initialization (same logic as main.py)
+    if primitive_loader is not None:
+        primitive_colors = primitive_loader.get_primitive_color_maps()  # (num_primitives, 3)
+        print(f"Extracted primitive colors: {primitive_colors.shape}")
+    else:
+        # Fallback: use default colors if primitive_loader is not available
+        num_primitives = bmp_tensor.shape[0] if bmp_tensor.ndim == 3 else 1
+        primitive_colors = torch.zeros(num_primitives, 128, 128, 3, device=device)
+        print("Using default colors for primitives")
+    
+    return bmp_tensor, primitive_colors
 
-def create_renderer(H, W, bmp_tensor, device):
+def create_renderer(H, W, bmp_tensor, primitive_colors, device):
     """Create the renderer for visualization"""
     print("Creating renderer...")
     
@@ -258,6 +269,8 @@ def create_renderer(H, W, bmp_tensor, device):
         "output_path": OUTPUT_CONFIG.get("output_folder", "./outputs/"),
         "tile_size": OPTIMIZATION_CONFIG.get("tile_size", 32),
         "sigma": OPTIMIZATION_CONFIG.get("blur_sigma", 0.0) if OPTIMIZATION_CONFIG.get("do_gaussian_blur", False) else 0.0,
+        "c_blend": OPTIMIZATION_CONFIG.get("c_blend", 0.0),
+        "primitive_colors": primitive_colors,  # Pass primitive colors for c_o initialization
     }
     
     renderer = SimpleTileRenderer(**renderer_kwargs)
@@ -461,10 +474,10 @@ def main():
     I_target, H, W, preprocessor = load_and_preprocess_image(device)
     
     # Load primitive templates
-    bmp_tensor = load_primitive_templates(device)
+    bmp_tensor, primitive_colors = load_primitive_templates(device)
     
     # Create renderer
-    renderer = create_renderer(H, W, bmp_tensor, device)
+    renderer = create_renderer(H, W, bmp_tensor, primitive_colors, device)
     
     # Generate timestamp for unique filenames
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

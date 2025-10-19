@@ -17,11 +17,11 @@ __host__ __device__ PrimitiveConfig::PrimitiveConfig(int num_primitives, int num
 // Input tensor group constructors
 __host__ __device__ InputTensors::InputTensors(
     const float* means2D, const float* radii, const float* rotations,
-    const float* opacities, const float* colors, const float* primitive_templates,
-    const int* global_bmp_sel)
+    const float* opacities, const float* colors, const float* colors_orig, 
+    const float* primitive_templates, const int* global_bmp_sel, float c_blend)
     : means2D(means2D), radii(radii), rotations(rotations),
-      opacities(opacities), colors(colors), primitive_templates(primitive_templates),
-      global_bmp_sel(global_bmp_sel) {}
+      opacities(opacities), colors(colors), colors_orig(colors_orig), 
+      primitive_templates(primitive_templates), global_bmp_sel(global_bmp_sel), c_blend(c_blend) {}
 
 // Output tensor group constructors
 __host__ __device__ OutputTensors::OutputTensors(

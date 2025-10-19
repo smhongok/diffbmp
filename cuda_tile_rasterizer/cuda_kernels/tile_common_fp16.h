@@ -76,13 +76,15 @@ public:
     const __half* rotations;         // [P] - primitive rotations
     const __half* opacities;         // [P] - opacity logits
     const __half* colors;            // [P, 3] - color logits
+    const __half* colors_orig;       // [P, 3] - original color logits (no gradient)
     const __half* primitive_templates; // [T, Ht, Wt] - template masks
     const int* global_bmp_sel;      // [P] - template selection indices
+    float c_blend;                  // Color blending factor
     
     __host__ __device__ InputTensorsFP16(
         const __half* means2D, const __half* radii, const __half* rotations,
-        const __half* opacities, const __half* colors, const __half* primitive_templates,
-        const int* global_bmp_sel);
+        const __half* opacities, const __half* colors, const __half* colors_orig, 
+        const __half* primitive_templates, const int* global_bmp_sel, float c_blend);
 };
 
 // Output tensor group for gradients

@@ -209,6 +209,16 @@ for img_idx, img_path in enumerate(img_paths):
     H = preprocessor.final_height
     W = preprocessor.final_width
 
+    # Extract primitive colors for c_o initialization
+    if primitive_loader is not None:
+        primitive_colors = primitive_loader.get_primitive_color_maps()  # (num_primitives, 3)
+        print(f"Extracted primitive colors: {primitive_colors.shape}")
+    else:
+        # Fallback: use default colors if primitive_loader is not available
+        num_primitives = bmp_tensor.shape[0] if bmp_tensor.ndim == 3 else 1
+        primitive_colors = torch.zeros(num_primitives, 128, 128, 3, device=device)
+        print("Using default colors for primitives")
+
     # Create renderer only when needed - defer instantiation
     renderer_kwargs = {
         "canvas_size": (H, W),
@@ -219,6 +229,8 @@ for img_idx, img_path in enumerate(img_paths):
         "output_path": config["postprocessing"]["output_folder"],
         "tile_size": opt_conf["tile_size"],
         "sigma": opt_conf["blur_sigma"] if opt_conf.get("do_gaussian_blur", False) else 0.0,
+        "c_blend": config["optimization"].get("c_blend", 0.0),  # Pass c_blend from config
+        "primitive_colors": primitive_colors,  # Pass primitive colors for c_o initialization
     }
 
     renderer = renderer_class(**renderer_kwargs)
@@ -329,7 +341,16 @@ for img_idx, img_path in enumerate(img_paths):
             
             psd_path = output_path.replace('.png', '.psd')
             psd_scale_factor = config['postprocessing']['psd_scale_factor']
-            exporter = PSDExporter(renderer.W, renderer.H, alpha_upper_bound=renderer.alpha_upper_bound, scale_factor=psd_scale_factor)
+            
+            # Pass c_blend and primitive_colors to PSDExporter
+            c_blend = config["optimization"].get("c_blend", 0.0)
+            exporter = PSDExporter(
+                renderer.W, renderer.H, 
+                alpha_upper_bound=renderer.alpha_upper_bound, 
+                scale_factor=psd_scale_factor,
+                c_blend=c_blend,
+                primitive_colors=primitive_colors
+            )
             
             # Use batched processing - all data preparation handled internally
             exporter.add_layers_batch_optimized(

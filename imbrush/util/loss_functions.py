@@ -181,6 +181,107 @@ class LossRegistry:
             target_alpha = target_alpha.squeeze(-1)
         
         return F.mse_loss(rendered_alpha, target_alpha)
+    
+    @staticmethod
+    def _rgb_to_grayscale(image: torch.Tensor) -> torch.Tensor:
+        """
+        Convert RGB image to grayscale using standard luminance weights.
+        
+        Args:
+            image: RGB image (H, W, 3)
+            
+        Returns:
+            Grayscale image (H, W, 1)
+        """
+        # Standard RGB to grayscale conversion: Y = 0.299*R + 0.587*G + 0.114*B
+        weights = torch.tensor([0.299, 0.587, 0.114], device=image.device, dtype=image.dtype)
+        grayscale = torch.sum(image * weights, dim=-1, keepdim=True)
+        return grayscale
+    
+    @staticmethod
+    def grayscale_mse_loss(rendered: torch.Tensor, 
+                           target: torch.Tensor, 
+                           mask: Optional[torch.Tensor] = None,
+                           **kwargs) -> torch.Tensor:
+        """
+        Mean Squared Error (L2) loss on grayscale images.
+        Converts RGB to grayscale before computing loss.
+        
+        Args:
+            rendered: Rendered image (H, W, C)
+            target: Target image (H, W, C)
+            mask: Optional binary mask (H, W)
+        """
+        # Convert to grayscale
+        rendered_gray = LossRegistry._rgb_to_grayscale(rendered)
+        target_gray = LossRegistry._rgb_to_grayscale(target)
+        
+        if mask is not None:
+            rendered_masked = rendered_gray[mask]
+            target_masked = target_gray[mask]
+            if rendered_masked.numel() > 0:
+                return F.mse_loss(rendered_masked, target_masked)
+            else:
+                return torch.tensor(0.0, device=rendered.device, requires_grad=True)
+        return F.mse_loss(rendered_gray, target_gray)
+    
+    @staticmethod
+    def grayscale_l1_loss(rendered: torch.Tensor, 
+                          target: torch.Tensor, 
+                          mask: Optional[torch.Tensor] = None,
+                          **kwargs) -> torch.Tensor:
+        """
+        Mean Absolute Error (L1) loss on grayscale images.
+        Converts RGB to grayscale before computing loss.
+        More robust to outliers than grayscale MSE.
+        
+        Args:
+            rendered: Rendered image (H, W, C)
+            target: Target image (H, W, C)
+            mask: Optional binary mask (H, W)
+        """
+        # Convert to grayscale
+        rendered_gray = LossRegistry._rgb_to_grayscale(rendered)
+        target_gray = LossRegistry._rgb_to_grayscale(target)
+        
+        if mask is not None:
+            rendered_masked = rendered_gray[mask]
+            target_masked = target_gray[mask]
+            if rendered_masked.numel() > 0:
+                return F.l1_loss(rendered_masked, target_masked)
+            else:
+                return torch.tensor(0.0, device=rendered.device, requires_grad=True)
+        return F.l1_loss(rendered_gray, target_gray)
+    
+    @staticmethod
+    def grayscale_huber_loss(rendered: torch.Tensor, 
+                             target: torch.Tensor, 
+                             mask: Optional[torch.Tensor] = None,
+                             delta: float = 1.0,
+                             **kwargs) -> torch.Tensor:
+        """
+        Huber loss (smooth L1) on grayscale images.
+        Converts RGB to grayscale before computing loss.
+        Combines benefits of L1 and L2: quadratic for small errors, linear for large.
+        
+        Args:
+            rendered: Rendered image (H, W, C)
+            target: Target image (H, W, C)
+            mask: Optional binary mask (H, W)
+            delta: Threshold for switching between L1 and L2 behavior
+        """
+        # Convert to grayscale
+        rendered_gray = LossRegistry._rgb_to_grayscale(rendered)
+        target_gray = LossRegistry._rgb_to_grayscale(target)
+        
+        if mask is not None:
+            rendered_masked = rendered_gray[mask]
+            target_masked = target_gray[mask]
+            if rendered_masked.numel() > 0:
+                return F.smooth_l1_loss(rendered_masked, target_masked, beta=delta)
+            else:
+                return torch.tensor(0.0, device=rendered.device, requires_grad=True)
+        return F.smooth_l1_loss(rendered_gray, target_gray, beta=delta)
 
 
 class LossComposer:

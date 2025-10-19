@@ -1,13 +1,13 @@
 {
     "preprocessing": {
-        "final_width": [256],
+        "final_width": [512],
         "img_path": [
-            "images/artwork/seurat.jpg"
+            "images/person/vangogh1.jpg"
         ]
     },
     "primitive": {
-        "primitive_file": "arial.ttf",
-        "text": ["s","e", "u", "r", "a", "t"],
+        "primitive_file": ["kflag.png"],
+        "convert_to_svg": false,
         "primitive_hollow": false,
         "output_width": 128
     },
@@ -15,6 +15,7 @@
         "initializer": "structure_aware",
         "N": [2000],
         "radii_min": 2,
+        "radii_max": 50,
         "debug_mode": true,
         "detail_first": false
     },
@@ -26,6 +27,7 @@
         },
         "do_decay": true,
         "do_gaussian_blur": true,
+        "c_blend": 1.0,
         "loss_config": {
             "type": "combined",
             "components": [

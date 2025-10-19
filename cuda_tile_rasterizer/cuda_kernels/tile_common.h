@@ -54,13 +54,15 @@ public:
     const float* rotations;         // [P] - primitive rotations
     const float* opacities;         // [P] - opacity logits
     const float* colors;            // [P, 3] - color logits
+    const float* colors_orig;       // [P, H, W, 3] - original color map logits (no gradient)
     const float* primitive_templates; // [T, Ht, Wt] - template masks
     const int* global_bmp_sel;      // [P] - template selection indices
+    float c_blend;                  // Color blending factor
     
     __host__ __device__ InputTensors(
         const float* means2D, const float* radii, const float* rotations,
-        const float* opacities, const float* colors, const float* primitive_templates,
-        const int* global_bmp_sel);
+        const float* opacities, const float* colors, const float* colors_orig, 
+        const float* primitive_templates, const int* global_bmp_sel, float c_blend);
 };
 
 // Output tensor group for gradients

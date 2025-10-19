@@ -61,8 +61,10 @@ public:
         torch::Tensor rotations,
         torch::Tensor opacities,
         torch::Tensor colors,
+        torch::Tensor colors_orig,
         torch::Tensor primitive_templates,
         torch::Tensor global_bmp_sel,
+        float c_blend,
         torch::Tensor tile_primitive_mapping);
     
     // Backward pass
@@ -74,8 +76,10 @@ public:
         torch::Tensor rotations,
         torch::Tensor opacities,
         torch::Tensor colors,
+        torch::Tensor colors_orig,
         torch::Tensor primitive_templates,
         torch::Tensor global_bmp_sel,
+        float c_blend,
         torch::Tensor lr_config
     );
     
@@ -96,8 +100,10 @@ std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForwardFP16(
     torch::Tensor rotations,
     torch::Tensor opacities,
     torch::Tensor colors,
+    torch::Tensor colors_orig,
     torch::Tensor primitive_templates,
     torch::Tensor global_bmp_sel,
+    float c_blend,
     torch::Tensor tile_primitive_mapping,
     int image_height,
     int image_width,
@@ -112,8 +118,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     torch::Tensor rotations,
     torch::Tensor opacities,
     torch::Tensor colors,
+    torch::Tensor colors_orig,
     torch::Tensor primitive_templates,
     torch::Tensor global_bmp_sel,  // [num_primitives] - template selection indices
+    float c_blend,
     torch::Tensor lr_config_tensor,
     int image_height,
     int image_width,

@@ -28,7 +28,7 @@ extern "C" {
         const int* layer_offsets,
         uint8_t* cropped_output_buffer,
         int N, int H, int W, int template_height, int template_width,
-        float scale_factor, float alpha_upper_bound,
+        float scale_factor, float alpha_upper_bound, float c_blend, const float* colors_orig,
         int max_bbox_w, int max_bbox_h
     );
 
@@ -81,7 +81,8 @@ void generate_cropped_layers(
     torch::Tensor bounding_boxes,
     torch::Tensor layer_offsets,
     torch::Tensor cropped_output_buffer,
-    int H, int W, float scale_factor, float alpha_upper_bound
+    int H, int W, float scale_factor, float alpha_upper_bound,
+    float c_blend, torch::Tensor colors_orig
 ) {
     // Check tensor properties
     TORCH_CHECK(means2D.is_cuda(), "means2D must be a CUDA tensor");
@@ -90,6 +91,14 @@ void generate_cropped_layers(
     int N = means2D.size(0);
     int template_height = primitive_templates.size(1);
     int template_width = primitive_templates.size(2);
+    
+    // Handle colors_orig tensor (can be null)
+    const float* colors_orig_ptr = nullptr;
+    if (colors_orig.defined() && colors_orig.numel() > 0) {
+        TORCH_CHECK(colors_orig.is_cuda(), "colors_orig must be a CUDA tensor");
+        TORCH_CHECK(colors_orig.dtype() == torch::kFloat32, "colors_orig must be float32");
+        colors_orig_ptr = colors_orig.data_ptr<float>();
+    }
     
     // Calculate maximum bounding box dimensions for grid sizing
     // This is a simple approach - could be optimized by calculating per-primitive
@@ -108,7 +117,7 @@ void generate_cropped_layers(
         layer_offsets.data_ptr<int>(),
         cropped_output_buffer.data_ptr<uint8_t>(),
         N, H, W, template_height, template_width,
-        scale_factor, alpha_upper_bound,
+        scale_factor, alpha_upper_bound, c_blend, colors_orig_ptr,
         max_bbox_w, max_bbox_h
     );
 }

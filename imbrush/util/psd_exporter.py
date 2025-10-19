@@ -12,12 +12,15 @@ class PSDExporter:
     """Exports individual transformed primitives as PSD layers using psd-tools."""
     
     def __init__(self, canvas_width: int, canvas_height: int,
-                 alpha_upper_bound: float = 1.0, scale_factor: float = 1.0, use_cuda: bool = True):
+                 alpha_upper_bound: float = 1.0, scale_factor: float = 1.0, use_cuda: bool = True,
+                 c_blend: float = 0.0, primitive_colors: Optional[torch.Tensor] = None):
         self.canvas_width = canvas_width
         self.canvas_height = canvas_height
         self.alpha_upper_bound = alpha_upper_bound
         self.scale_factor = scale_factor
         self.use_cuda = use_cuda
+        self.c_blend = c_blend
+        self.primitive_colors = primitive_colors  # c_o colors for blending
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Calculate scaled dimensions for high-resolution export
@@ -77,11 +80,12 @@ class PSDExporter:
             v_tensor = torch.sigmoid(v_tensor)
             c_tensor = torch.sigmoid(c_tensor)
             
-            # Export layers using CUDA
+            # Export layers using CUDA with c_blend support
             numpy_arrays, bounds_list, valid_indices = export_psd_layers_cuda_uint8(
                 primitive_templates, x_tensor, y_tensor, r_tensor, theta_tensor,
                 v_tensor, c_tensor, global_bmp_sel,
-                self.export_height, self.export_width, self.scale_factor, self.alpha_upper_bound
+                self.export_height, self.export_width, self.scale_factor, self.alpha_upper_bound,
+                self.c_blend, self.primitive_colors
             )
             numpy_arrays.reverse()
             bounds_list.reverse()
@@ -106,15 +110,47 @@ class PSDExporter:
                 primitive_templates, x_tensor, y_tensor, r_tensor, theta_tensor
             )
             
+            # Generate global_bmp_sel
+            if primitive_templates.dim() == 2:
+                primitive_templates = primitive_templates.unsqueeze(0)
+            P = primitive_templates.shape[0]
+            if P == 1:
+                template_indices = np.zeros(N, dtype=np.int32)
+            else:
+                template_indices = ((-np.arange(N) + N - 1) % P).astype(np.int32)
+            
             # Create layers in batch
             layers = []
             for i in range(N):
                 template = transformed_templates[i]
-                rgb = torch.sigmoid(c_tensor[i])
-                vis = torch.sigmoid(v_tensor[i]) * self.alpha_upper_bound
+                c_i = torch.sigmoid(c_tensor[i]).detach().cpu().numpy()  # (3,)
+                vis = torch.sigmoid(v_tensor[i]).item() * self.alpha_upper_bound
                 
-                # Create RGBA image
-                rgba = self._create_rgba_image(template, rgb, vis)
+                # Apply color blending per-pixel if c_blend > 0
+                if self.primitive_colors is not None and self.c_blend > 0.0:
+                    template_idx = template_indices[i]
+                    c_o_map = self.primitive_colors[template_idx].detach().cpu().numpy()  # (H_t, W_t, 3)
+                    
+                    # Sample c_o for each pixel
+                    H_export, W_export = template.shape
+                    x_scaled = x_tensor[i].item() * self.scale_factor
+                    y_scaled = y_tensor[i].item() * self.scale_factor
+                    r_scaled = r_tensor[i].item() * self.scale_factor
+                    theta_val = theta_tensor[i].item()
+                    
+                    rgb_map = self._sample_color_map_numpy(
+                        c_o_map, x_scaled, y_scaled, r_scaled, theta_val, H_export, W_export
+                    )  # (H, W, 3)
+                    
+                    # Blend c_i and c_o per-pixel
+                    rgb_blended = (1.0 - self.c_blend) * c_i[None, None, :] + self.c_blend * rgb_map
+                    
+                    # Create RGBA image with per-pixel colors
+                    rgba = self._create_rgba_image_with_color_map(template, rgb_blended, vis)
+                else:
+                    # No color blending - use c_i
+                    rgb = torch.tensor(c_i)
+                    rgba = self._create_rgba_image(template, rgb, vis)
                 
                 # Convert to PIL and create layer
                 pil_image = Image.fromarray(rgba, 'RGBA')
@@ -192,7 +228,9 @@ class PSDExporter:
         return sampled.squeeze(1)
         
     def _batch_templates_to_pil_with_bounds(self, templates: torch.Tensor, c_tensor: torch.Tensor, 
-                                          v_tensor: torch.Tensor) -> tuple[List[Image.Image], List[tuple[int, int, int, int]]]:
+                                          v_tensor: torch.Tensor, x_tensor: torch.Tensor, y_tensor: torch.Tensor,
+                                          r_tensor: torch.Tensor, theta_tensor: torch.Tensor,
+                                          primitive_templates: torch.Tensor) -> tuple[List[Image.Image], List[tuple[int, int, int, int]]]:
         """
         Batch convert multiple templates to PIL images with bounds using vectorized operations.
         
@@ -200,6 +238,8 @@ class PSDExporter:
             templates: (N, H, W) transformed templates
             c_tensor: (N, 3) RGB color tensor
             v_tensor: (N,) visibility logit tensor
+            x_tensor, y_tensor, r_tensor, theta_tensor: primitive parameters for color sampling
+            primitive_templates: original templates for template selection
             
         Returns:
             List of PIL Images and list of bounds tuples
@@ -210,17 +250,51 @@ class PSDExporter:
         templates_np = templates.detach().cpu().numpy()  # (N, H, W)
         
         # Convert colors and visibility to numpy (already batched)
-        rgb_batch = torch.sigmoid(c_tensor).detach().cpu().numpy()  # (N, 3)
+        c_i = torch.sigmoid(c_tensor).detach().cpu().numpy()  # (N, 3) - c_i colors
         v_array = v_tensor.detach().cpu().numpy()  # (N,)
         visibility_batch = self.alpha_upper_bound * (1 / (1 + np.exp(-v_array)))  # (N,)
         
         # Create batch RGBA array (N, H, W, 4)
         rgba_batch = np.zeros((N, H, W, 4), dtype=np.uint8)
         
-        # Vectorized RGB channel assignment
-        template_mask = templates_np > 0  # (N, H, W)
-        for i in range(3):
-            rgba_batch[:, :, :, i] = (template_mask * rgb_batch[:, i:i+1, None] * 255).astype(np.uint8)
+        # Apply color blending per-pixel (matching PNG rendering)
+        if self.primitive_colors is not None and self.c_blend > 0.0:
+            # Get primitive parameters for color sampling
+            x_np = (x_tensor * self.scale_factor).detach().cpu().numpy()
+            y_np = (y_tensor * self.scale_factor).detach().cpu().numpy()
+            r_np = (r_tensor * self.scale_factor).detach().cpu().numpy()
+            theta_np = theta_tensor.detach().cpu().numpy()
+            
+            # Generate global_bmp_sel
+            P = primitive_templates.shape[0] if primitive_templates.dim() > 2 else 1
+            if P == 1:
+                template_indices = np.zeros(N, dtype=np.int32)
+            else:
+                template_indices = ((-np.arange(N) + N - 1) % P).astype(np.int32)
+            
+            # Process each primitive
+            for i in range(N):
+                template_idx = template_indices[i]
+                c_o_map = self.primitive_colors[template_idx].detach().cpu().numpy()  # (H_t, W_t, 3)
+                
+                # Sample c_o for each pixel using same logic as PNG rendering
+                rgb_map = self._sample_color_map_numpy(
+                    c_o_map, x_np[i], y_np[i], r_np[i], theta_np[i], H, W
+                )  # (H, W, 3)
+                
+                # Blend c_i and c_o per-pixel
+                c_i_expanded = c_i[i][None, None, :]  # (1, 1, 3)
+                rgb_blended = (1.0 - self.c_blend) * c_i_expanded + self.c_blend * rgb_map
+                
+                # Apply to RGBA batch
+                template_mask = templates_np[i] > 0  # (H, W)
+                for c in range(3):
+                    rgba_batch[i, :, :, c] = (template_mask * rgb_blended[:, :, c] * 255).astype(np.uint8)
+        else:
+            # No color blending - use c_i for all pixels
+            template_mask = templates_np > 0  # (N, H, W)
+            for i in range(3):
+                rgba_batch[:, :, :, i] = (template_mask * c_i[:, i:i+1, None] * 255).astype(np.uint8)
         
         # Vectorized alpha channel assignment
         rgba_batch[:, :, :, 3] = (templates_np * visibility_batch[:, None, None] * 255).astype(np.uint8)
@@ -287,6 +361,25 @@ class PSDExporter:
         rgba[:, :, 3] = (template_np * vis_np * 255).astype(np.uint8)
         
         return rgba
+    
+    def _create_rgba_image_with_color_map(self, template: torch.Tensor, rgb_map: np.ndarray, vis: float) -> np.ndarray:
+        """Create RGBA image from template and per-pixel color map"""
+        H, W = template.shape
+        template_np = template.detach().cpu().numpy()
+        vis_np = vis
+        
+        # Create RGBA array
+        rgba = np.zeros((H, W, 4), dtype=np.uint8)
+        
+        # Set RGB channels where template is non-zero (using per-pixel colors)
+        template_mask = template_np > 0
+        for i in range(3):
+            rgba[:, :, i] = (template_mask * rgb_map[:, :, i] * 255).astype(np.uint8)
+        
+        # Set alpha channel
+        rgba[:, :, 3] = (template_np * vis_np * 255).astype(np.uint8)
+        
+        return rgba
         
     def _precompute_coordinate_grids(self):
         """Pre-compute coordinate grids and expansions to avoid redundant calculations."""
@@ -306,10 +399,72 @@ class PSDExporter:
         # Pre-compute expanded grids for B=1 (since we always process one primitive at a time)
         self.X_exp = self.X.expand(1, H, W)
         self.Y_exp = self.Y.expand(1, H, W)
-        
-        
     
+    def _sample_color_map_numpy(self, color_map: np.ndarray, center_x: float, center_y: float,
+                                radius: float, rotation: float, H: int, W: int) -> np.ndarray:
+        """
+        Sample color from color map for each pixel (matching PNG rendering).
         
+        Args:
+            color_map: (H_t, W_t, 3) color map
+            center_x, center_y: primitive center position
+            radius: primitive radius
+            rotation: primitive rotation
+            H, W: output dimensions
+            
+        Returns:
+            (H, W, 3) sampled colors
+        """
+        H_t, W_t = color_map.shape[:2]
+        
+        # Create pixel coordinate grids
+        y_coords, x_coords = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+        
+        # Relative coordinates to primitive center
+        rel_x = x_coords - center_x
+        rel_y = y_coords - center_y
+        
+        # Normalize by radius
+        r_inv = 1.0 / radius if radius > 1e-6 else 1e6
+        norm_x = rel_x * r_inv
+        norm_y = rel_y * r_inv
+        
+        # Apply rotation
+        cos_theta = np.cos(rotation)
+        sin_theta = np.sin(rotation)
+        rot_x = cos_theta * norm_x + sin_theta * norm_y
+        rot_y = -sin_theta * norm_x + cos_theta * norm_y
+        
+        # Convert to color map coordinates [0, W_t-1], [0, H_t-1]
+        coord_x = (rot_x + 1.0) * 0.5 * (W_t - 1)
+        coord_y = (rot_y + 1.0) * 0.5 * (H_t - 1)
+        
+        # Clamp coordinates
+        coord_x = np.clip(coord_x, 0, W_t - 1)
+        coord_y = np.clip(coord_y, 0, H_t - 1)
+        
+        # Bilinear interpolation
+        x0 = np.floor(coord_x).astype(np.int32)
+        y0 = np.floor(coord_y).astype(np.int32)
+        x1 = np.minimum(x0 + 1, W_t - 1)
+        y1 = np.minimum(y0 + 1, H_t - 1)
+        
+        fx = coord_x - x0
+        fy = coord_y - y0
+        
+        # Sample colors at four corners
+        c00 = color_map[y0, x0]
+        c01 = color_map[y1, x0]
+        c10 = color_map[y0, x1]
+        c11 = color_map[y1, x1]
+        
+        # Bilinear interpolation
+        c0 = c00 * (1 - fx)[:, :, None] + c10 * fx[:, :, None]
+        c1 = c01 * (1 - fx)[:, :, None] + c11 * fx[:, :, None]
+        sampled_colors = c0 * (1 - fy)[:, :, None] + c1 * fy[:, :, None]
+        
+        return sampled_colors  # (H, W, 3)
+    
     def export_psd(self, filepath: str):
         """Export as PSD file."""
         # Ensure .psd extension

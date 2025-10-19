@@ -14,15 +14,17 @@ std::tuple<torch::Tensor, torch::Tensor> rasterize_tiles_class_fp16(
     torch::Tensor rotations,
     torch::Tensor opacities,
     torch::Tensor colors,
+    torch::Tensor colors_orig,
     torch::Tensor primitive_templates,
     torch::Tensor global_bmp_sel,
+    float c_blend,
     torch::Tensor tile_primitive_mapping) {
     
     if (!global_tile_rasterizer_fp16) {
         throw std::runtime_error("TileRasterizerFP16 not initialized. Call init_tile_rasterizer_fp16 first.");
     }
     
-    return global_tile_rasterizer_fp16->forward(means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, tile_primitive_mapping);
+    return global_tile_rasterizer_fp16->forward(means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, tile_primitive_mapping);
 }
 
 // Class-based backward function
@@ -34,15 +36,17 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     torch::Tensor rotations,
     torch::Tensor opacities,
     torch::Tensor colors,
+    torch::Tensor colors_orig,
     torch::Tensor primitive_templates,
     torch::Tensor global_bmp_sel,
+    float c_blend,
     torch::Tensor lr_config_tensor) {
     
     if (!global_tile_rasterizer_fp16) {
         throw std::runtime_error("TileRasterizerFP16 not initialized or forward pass not called.");
     }
         
-    return global_tile_rasterizer_fp16->backward(grad_out_color, grad_out_alpha, means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, lr_config_tensor);
+    return global_tile_rasterizer_fp16->backward(grad_out_color, grad_out_alpha, means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, lr_config_tensor);
 }
 
 std::tuple<torch::Tensor, torch::Tensor> rasterize_tiles_fp16(
@@ -51,15 +55,17 @@ std::tuple<torch::Tensor, torch::Tensor> rasterize_tiles_fp16(
     torch::Tensor rotations,
     torch::Tensor opacities,
     torch::Tensor colors,
+    torch::Tensor colors_orig,
     torch::Tensor primitive_templates,
     torch::Tensor global_bmp_sel,
+    float c_blend,
     torch::Tensor tile_primitive_mapping,
     int image_height,
     int image_width,
     int tile_size,
     float sigma) {
     
-    return CudaRasterizeTilesForwardFP16(means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, tile_primitive_mapping, image_height, image_width, tile_size, sigma);
+    return CudaRasterizeTilesForwardFP16(means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, tile_primitive_mapping, image_height, image_width, tile_size, sigma);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> rasterize_tiles_backward_fp16(
@@ -70,15 +76,17 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     torch::Tensor rotations,
     torch::Tensor opacities,
     torch::Tensor colors,
+    torch::Tensor colors_orig,
     torch::Tensor primitive_templates,
     torch::Tensor global_bmp_sel,  // [num_primitives] - template selection indices
+    float c_blend,
     torch::Tensor lr_config_tensor,
     int image_height,
     int image_width,
     int tile_size,
     float sigma) {
     
-    return CudaRasterizeTilesBackwardFP16(grad_out_color, grad_out_alpha, means2D, radii, rotations, opacities, colors, primitive_templates, global_bmp_sel, lr_config_tensor, image_height, image_width, tile_size, sigma);
+    return CudaRasterizeTilesBackwardFP16(grad_out_color, grad_out_alpha, means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, lr_config_tensor, image_height, image_width, tile_size, sigma);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

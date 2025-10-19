@@ -21,6 +21,9 @@ output_webpage/src_sequential_lyrics/index.html
 !assets/svg/fire2.svg
 !assets/primitives/paint_brush.png
 !assets/primitives/hand.jpeg
+!assets/primitives/baby_footprint*
+!assets/primitives/oldhangul*
+!assets/primitives/razor*
 
 assets/font/*
 !assets/font/arial.ttf
@@ -38,6 +41,8 @@ images/person/*
 !images/person/pororo_no_background.png
 !images/person/junghun.png
 !images/person/안중근.jpg
+!images/person/kingsejong*
+!images/person/vangogh*
 
 images/gif/*
 !images/gif/pororo_monkey_crop_first2.gif

@@ -18,11 +18,11 @@ __host__ __device__ PrimitiveConfigFP16::PrimitiveConfigFP16(int num_primitives,
 // Input tensor group constructors
 __host__ __device__ InputTensorsFP16::InputTensorsFP16(
     const __half* means2D, const __half* radii, const __half* rotations,
-    const __half* opacities, const __half* colors, const __half* primitive_templates,
-    const int* global_bmp_sel)
+    const __half* opacities, const __half* colors, const __half* colors_orig, 
+    const __half* primitive_templates, const int* global_bmp_sel, float c_blend)
     : means2D(means2D), radii(radii), rotations(rotations),
-      opacities(opacities), colors(colors), primitive_templates(primitive_templates),
-      global_bmp_sel(global_bmp_sel) {}
+      opacities(opacities), colors(colors), colors_orig(colors_orig), 
+      primitive_templates(primitive_templates), global_bmp_sel(global_bmp_sel), c_blend(c_blend) {}
 
 // Output tensor group constructors
 __host__ __device__ OutputTensorsFP16::OutputTensorsFP16(
