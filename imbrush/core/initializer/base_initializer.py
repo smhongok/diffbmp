@@ -8,6 +8,7 @@ from datetime import timedelta
 from abc import ABC, abstractmethod
 from imbrush.core.renderer.vector_renderer import VectorRenderer
 from typing import Dict, Any
+from imbrush.util.constants import OPACITY_INIT_VALUE
 
 class BaseInitializer(ABC):
     def __init__(self, init_opt:Dict[str, Any]):
@@ -16,6 +17,7 @@ class BaseInitializer(ABC):
         self.radii_max = init_opt.get("radii_max", None)
         self.debug_mode = init_opt.get("debug_mode", False)
         self.detail_first = init_opt.get("detail_first", True)
+        self.v_init_bias = init_opt.get("v_init_bias", OPACITY_INIT_VALUE)
         
     @abstractmethod
     def initialize(self, I_target, target_binary_mask = None, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
@@ -36,7 +38,7 @@ class BaseInitializer(ABC):
             r_max = 0.5 * min(H, W)
         r = self._rand_leaf((N,), r_min, r_max, device)
 
-        v = self._rand_leaf((N,),self.v_init_bias - 0.5, self.v_init_bias + 0.5, device)
+        v = self._rand_leaf((N,), self.v_init_bias - 0.5, self.v_init_bias + 0.5, device)
 
         theta = self._rand_leaf((N,), 0, 2 * torch.pi, device)
         c     = self._rand_leaf((N,3), 0, 1, device)

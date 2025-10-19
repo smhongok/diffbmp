@@ -70,7 +70,8 @@ DEFAULT_SEED = 42
 
 # Primitive/SVG loading defaults
 DEFAULT_OUTPUT_WIDTH = 128
-CONVERT_TO_SVG_DEFAULT = True
+CONVERT_TO_SVG_DEFAULT = False
+PRIMITIVE_HOLLOW_DEFAULT = False
 REMOVE_PUNCTUATION_DEFAULT = False
 
 # Renderer defaults
@@ -167,6 +168,7 @@ def apply_constants_to_config(config: dict) -> dict:
         config["primitive"].setdefault("output_width", DEFAULT_OUTPUT_WIDTH)
         config["primitive"].setdefault("bg_threshold", BG_THRESHOLD)
         config["primitive"].setdefault("convert_to_svg", CONVERT_TO_SVG_DEFAULT)
+        config["primitive"].setdefault("primitive_hollow", PRIMITIVE_HOLLOW_DEFAULT)
         config["primitive"].setdefault("remove_punctuation", REMOVE_PUNCTUATION_DEFAULT)
     
     # Apply constants as defaults for sequential section

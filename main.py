@@ -54,17 +54,23 @@ with open(config_path, "r", encoding="utf-8") as f:
     config = json.load(f)
 
 # Apply constants as default values
-from imbrush.util.constants import apply_constants_to_config
+from imbrush.util.constants import apply_constants_to_config, PRIMITIVE_HOLLOW_DEFAULT
 config = apply_constants_to_config(config)
 # After import or after loading config
 set_global_seed(config["seed"])
 
 # Handle multiple images - convert to list if single path
+# For CLIP-only mode, img_path can be None
 img_paths = config["preprocessing"]["img_path"]
-if not isinstance(img_paths, list):
+if img_paths is None:
+    # Text-to-drawing mode (CLIPDraw style)
+    img_paths = [None]
+    print("Running in text-to-drawing mode (no target image)")
+elif not isinstance(img_paths, list):
     img_paths = [img_paths]
-
-print(f"Processing {len(img_paths)} image(s)")
+    print(f"Processing {len(img_paths)} image(s)")
+else:
+    print(f"Processing {len(img_paths)} image(s)")
 
 # Force list attributes to single item
 if type(config["preprocessing"]["final_width"]) is list:
@@ -172,30 +178,46 @@ except Exception as e:
 # Process each image in the list
 for img_idx, img_path in enumerate(img_paths):
     print(f"\n{'='*80}")
-    print(f"Processing image {img_idx + 1}/{len(img_paths)}: {img_path}")
+    if img_path is None:
+        print(f"Text-to-drawing synthesis (no target image)")
+    else:
+        print(f"Processing image {img_idx + 1}/{len(img_paths)}: {img_path}")
     print(f"{'='*80}")
     
     # Update config with current image path
     config["preprocessing"]["img_path"] = img_path
     
-    # Initialize preprocessor for current image (each image may have different dimensions)
-    preprocessor = Preprocessor(
-        final_width=pp_conf["final_width"],
-        trim=pp_conf.get("trim", False),
-        FM_halftone=pp_conf.get("FM_halftone", False),
-        transform_mode=pp_conf.get("transform", "none"),
-    )
+    # Check if this is text-only mode (CLIPDraw style)
+    is_text_only_mode = (img_path is None)
     
-    # Load single image
-    if exist_bg:
-        print("Target image has background")
-        I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
+    if is_text_only_mode:
+        # Text-to-drawing mode: create white canvas as placeholder
+        H = pp_conf["final_width"]  # Use square canvas
+        W = pp_conf["final_width"]
+        I_target = torch.ones((H, W, 3), device=device, dtype=torch.float32)
+        target_binary_mask_np = None
+        print(f"Created white canvas: {W}x{H}")
     else:
-        print("Target image has no background, using color and opacity")
-        I_target,target_binary_mask_np = preprocessor.load_image_8bit_color_opacity(config["preprocessing"])
-        I_target = I_target.astype(np.float32) / 255.0
+        # Initialize preprocessor for current image (each image may have different dimensions)
+        preprocessor = Preprocessor(
+            final_width=pp_conf["final_width"],
+            trim=pp_conf.get("trim", False),
+            FM_halftone=pp_conf.get("FM_halftone", False),
+            transform_mode=pp_conf.get("transform", "none"),
+        )
+        
+        # Load single image
+        if exist_bg:
+            print("Target image has background")
+            I_target = preprocessor.load_image_8bit_color(config["preprocessing"]).astype(np.float32) / 255.0
+        else:
+            print("Target image has no background, using color and opacity")
+            I_target,target_binary_mask_np = preprocessor.load_image_8bit_color_opacity(config["preprocessing"])
+            I_target = I_target.astype(np.float32) / 255.0
 
-    I_target = torch.tensor(I_target, device=device)  # (H, W, 3) or (H, W, 4) if no background
+        I_target = torch.tensor(I_target, device=device)  # (H, W, 3) or (H, W, 4) if no background
+        H = preprocessor.final_height
+        W = preprocessor.final_width
 
     # Initialize renderer (always use SimpleTileRenderer)
     renderer_class = SimpleTileRenderer
@@ -205,9 +227,6 @@ for img_idx, img_path in enumerate(img_paths):
         bmp_tensor = bmp_tensor.to(dtype=torch.float16)
     else:
         bmp_tensor = bmp_tensor.to(dtype=torch.float32)
-
-    H = preprocessor.final_height
-    W = preprocessor.final_width
 
     # Extract primitive colors for c_o initialization
     if primitive_loader is not None:
@@ -303,7 +322,7 @@ for img_idx, img_path in enumerate(img_paths):
         
         exporter.export(x, y, r, theta, v, c,
                         output_path=pdf_path,
-                        svg_hollow=config["primitive"].get("primitive_hollow", False),
+                        svg_hollow=config["primitive"]["primitive_hollow"],
                         html_extra_path = "output_webpage/src/index.html" if html_extra_path_special is None else html_extra_path_special,
                         export_pdf=True,
                         html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}

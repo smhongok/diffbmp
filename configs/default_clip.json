@@ -1,0 +1,65 @@
+{
+    "preprocessing": {
+        "final_width": [224],
+        "img_path": null,
+        "exist_bg": true
+    },
+    "primitive": {
+        "primitive_file": ["baby_footprint_left.png", "baby_footprint_right.png"],
+        "output_width": 128
+    },
+    "initialization": {
+        "initializer": "random",
+        "N": [4000],
+        "radii_min": 2,
+        "radii_max": 20,
+        "v_init_bias": -4.0,
+        "debug_mode": false,
+        "detail_first": false
+    },
+    "optimization": {
+        "use_fp16": true,
+        "num_iterations": 1000,
+        "learning_rate": {
+            "default": 1.0,
+            "x": 1.0,
+            "y": 1.0,
+            "r": 0.1,
+            "theta": 0.1,
+            "v": 0.01,
+            "c": 0.01
+        },
+        "do_decay": true,
+        "decay_schedule": {
+            "0.5": 0.4,
+            "0.75": 0.1
+        },
+        "do_gaussian_blur": true,
+        "c_blend": 0.0,
+        "alpha_upper_bound": 0.7,
+        "loss_config": {
+            "type": "clip",
+            "clip_config": {
+                "text_prompt": "A 3D rendering of a temple",
+                "negative_prompts": {
+                    "colorful": 0.3
+                },
+                "model_name": "ViT-B/32",
+                "use_normalized_clip": true,
+                "num_augs": 16,
+                "distortion_scale": 0.5,
+                "crop_scale_min": 0.7,
+                "crop_scale_max": 0.9,
+                "target_size": 224
+            }
+        }
+    },
+    "postprocessing": {
+        "output_folder": "outputs/",
+        "compute_psnr": false,
+        "export_psd": false,
+        "export_mp4": false,
+        "psd_scale_factor": 1.0,
+        "linewidth": 1.0
+    }
+}
