@@ -67,3 +67,6 @@ tzdata==2025.2
 urllib3==1.26.13
 webencodings==0.5.1
 zipp==3.21.0
+ftfy==6.3.1
+regex==2025.9.18
+git+https://github.com/openai/CLIP.git

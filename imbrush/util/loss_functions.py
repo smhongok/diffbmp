@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 from typing import Dict, Any, Optional, Callable
 import torchvision.models as models
+import torchvision.transforms as transforms
 
 
 class LossRegistry:
@@ -282,6 +283,90 @@ class LossRegistry:
             else:
                 return torch.tensor(0.0, device=rendered.device, requires_grad=True)
         return F.smooth_l1_loss(rendered_gray, target_gray, beta=delta)
+        
+    def clip_loss(rendered: torch.Tensor,
+                  target: torch.Tensor = None,
+                  mask: Optional[torch.Tensor] = None,
+                  clip_model: Optional[torch.nn.Module] = None,
+                  text_features: Optional[torch.Tensor] = None,
+                  negative_features: Optional[list] = None,
+                  negative_weights: Optional[list] = None,
+                  augment_fn: Optional[Callable] = None,
+                  num_augs: int = 4,
+                  **kwargs) -> torch.Tensor:
+        """
+        CLIP-based loss for text-to-drawing synthesis with negative prompt support.
+        Maximizes cosine similarity with positive prompt and minimizes with negative prompts.
+        
+        Args:
+            rendered: Rendered image (H, W, C)
+            target: Not used (kept for compatibility)
+            mask: Not used
+            clip_model: CLIP model for encoding images
+            text_features: Pre-computed positive text features from CLIP
+            negative_features: List of tuples (feature, weight) for negative prompts
+            negative_weights: List of weights for each negative prompt (deprecated, use negative_features)
+            augment_fn: Augmentation function to apply to images
+            num_augs: Number of augmented views to generate
+            
+        Returns:
+            Combined loss: -sim(positive) + sum(weight_i * sim(negative_i))
+        """
+        if clip_model is None or text_features is None:
+            return torch.tensor(0.0, device=rendered.device, requires_grad=True)
+        
+        # Convert (H, W, C) -> (1, C, H, W)
+        img = rendered.permute(2, 0, 1).unsqueeze(0)
+        
+        # Clamp to [0, 1] range
+        img = torch.clamp(img, 0.0, 1.0)
+        
+        # Generate multiple augmented views
+        img_augs = []
+        
+        for _ in range(num_augs):
+            if augment_fn is not None:
+                img_aug = augment_fn(img)
+            else:
+                img_aug = img
+            img_augs.append(img_aug)
+        
+        # Batch process augmented images
+        im_batch = torch.cat(img_augs, dim=0)  # (num_augs, C, H, W)
+        
+        # Encode images with CLIP
+        image_features = clip_model.encode_image(im_batch)
+        
+        # Compute positive prompt loss (negative cosine similarity)
+        positive_loss = 0.0
+        for n in range(num_augs):
+            positive_loss -= torch.cosine_similarity(text_features, image_features[n:n+1], dim=1)
+        positive_loss = positive_loss / num_augs
+        
+        # Compute negative prompt loss (positive cosine similarity to push away)
+        negative_loss = 0.0
+        if negative_features is not None and len(negative_features) > 0:
+            for neg_item in negative_features:
+                # Support both (feature, weight) tuple and bare feature
+                if isinstance(neg_item, tuple):
+                    neg_feat, neg_weight = neg_item
+                else:
+                    neg_feat = neg_item
+                    neg_weight = 0.3  # Default weight
+                
+                # Compute similarity for this negative prompt
+                neg_sim = 0.0
+                for n in range(num_augs):
+                    neg_sim += torch.cosine_similarity(neg_feat, image_features[n:n+1], dim=1)
+                neg_sim = neg_sim / num_augs
+                
+                # Add weighted negative similarity
+                negative_loss += neg_weight * neg_sim
+        
+        # Total loss: minimize similarity to positive, maximize distance from negatives
+        total_loss = positive_loss + negative_loss
+        
+        return total_loss
 
 
 class LossComposer:
@@ -316,6 +401,18 @@ class LossComposer:
                 self._init_vgg_model()
         elif self.loss_type == "perceptual":
             self._init_vgg_model()
+        
+        # Initialize CLIP model and augmentation for CLIP loss if needed
+        self.clip_model = None
+        self.text_features = None
+        self.negative_features = None  # List of (feature, weight) tuples
+        self.augment_fn = None
+        if self.loss_type == "combined":
+            components = loss_config.get("components", [])
+            if any(c.get("name") == "clip" for c in components):
+                self._init_clip_model()
+        elif self.loss_type == "clip":
+            self._init_clip_model()
     
     def _init_vgg_model(self):
         """Initialize VGG model for perceptual loss."""
@@ -323,6 +420,83 @@ class LossComposer:
         for param in vgg.parameters():
             param.requires_grad = False
         self.vgg_model = vgg.to(self.device)
+    
+    def _init_clip_model(self):
+        """Initialize CLIP model and augmentation transforms."""
+        try:
+            import clip
+        except ImportError:
+            raise ImportError(
+                "CLIP is required for clip loss. Install with: pip install git+https://github.com/openai/CLIP.git"
+            )
+        
+        # Load CLIP model
+        clip_config = self.loss_config.get("clip_config", {})
+        model_name = clip_config.get("model_name", "ViT-B/32")
+        self.clip_model, _ = clip.load(model_name, self.device, jit=False)
+        self.clip_model.eval()
+        for param in self.clip_model.parameters():
+            param.requires_grad = False
+        
+        # Encode positive text prompt
+        text_prompt = clip_config.get("text_prompt", "A beautiful drawing")
+        text_input = clip.tokenize(text_prompt).to(self.device)
+        with torch.no_grad():
+            self.text_features = self.clip_model.encode_text(text_input)
+        
+        # Encode negative prompts if provided
+        # Supports both dict format {"prompt": weight} and list format for backward compatibility
+        negative_prompts = clip_config.get("negative_prompts", {})
+        self.negative_features = []
+        
+        if negative_prompts:
+            if isinstance(negative_prompts, dict):
+                # Dict format: {"blurry": 0.3, "low quality": 0.5}
+                for neg_prompt, neg_weight in negative_prompts.items():
+                    neg_input = clip.tokenize(neg_prompt).to(self.device)
+                    with torch.no_grad():
+                        neg_feat = self.clip_model.encode_text(neg_input)
+                        self.negative_features.append((neg_feat, neg_weight))
+                print(f"Encoded {len(self.negative_features)} negative prompts with individual weights")
+                for prompt, weight in negative_prompts.items():
+                    print(f"  - '{prompt}': {weight}")
+            elif isinstance(negative_prompts, list):
+                # List format (backward compatibility): use default weight
+                default_weight = clip_config.get("negative_weight", 0.3)
+                for neg_prompt in negative_prompts:
+                    neg_input = clip.tokenize(neg_prompt).to(self.device)
+                    with torch.no_grad():
+                        neg_feat = self.clip_model.encode_text(neg_input)
+                        self.negative_features.append((neg_feat, default_weight))
+                print(f"Encoded {len(self.negative_features)} negative prompts with weight {default_weight}")
+                for prompt in negative_prompts:
+                    print(f"  - '{prompt}'")
+        
+        # Setup augmentation transforms
+        use_normalized_clip = clip_config.get("use_normalized_clip", True)
+        distortion_scale = clip_config.get("distortion_scale", 0.5)
+        crop_scale_min = clip_config.get("crop_scale_min", 0.7)
+        crop_scale_max = clip_config.get("crop_scale_max", 0.9)
+        target_size = clip_config.get("target_size", 224)
+        
+        aug_list = [
+            transforms.RandomPerspective(fill=1, p=1, distortion_scale=distortion_scale),
+            transforms.RandomResizedCrop(target_size, scale=(crop_scale_min, crop_scale_max)),
+        ]
+        
+        if use_normalized_clip:
+            # CLIP ImageNet normalization
+            aug_list.append(
+                transforms.Normalize(
+                    (0.48145466, 0.4578275, 0.40821073),
+                    (0.26862954, 0.26130258, 0.27577711)
+                )
+            )
+        
+        self.augment_fn = transforms.Compose(aug_list)
+        
+        print(f"Initialized CLIP model: {model_name}")
+        print(f"Positive prompt: {text_prompt}")
     
     def compute_loss(self,
                     rendered: torch.Tensor,
@@ -372,9 +546,15 @@ class LossComposer:
         if loss_fn is None:
             raise ValueError(f"Unknown loss function: {loss_name}")
         
-        # Add VGG model if needed
+        # Add model-specific parameters
         if loss_name == "perceptual":
             kwargs['vgg_model'] = self.vgg_model
+        elif loss_name == "clip":
+            kwargs['clip_model'] = self.clip_model
+            kwargs['text_features'] = self.text_features
+            kwargs['negative_features'] = self.negative_features  # List of (feature, weight) tuples
+            kwargs['augment_fn'] = self.augment_fn
+            kwargs['num_augs'] = self.loss_config.get('clip_config', {}).get('num_augs', 4)
         
         return loss_fn(rendered, target, mask=mask, **kwargs)
     
@@ -424,10 +604,17 @@ class LossComposer:
                     print(f"Warning: Unknown loss function '{loss_name}', skipping")
                     continue
                 
-                # Add VGG model if needed
+                # Add model-specific parameters
                 loss_kwargs = kwargs.copy()
                 if loss_name == "perceptual":
                     loss_kwargs['vgg_model'] = self.vgg_model
+                elif loss_name == "clip":
+                    loss_kwargs['clip_model'] = self.clip_model
+                    loss_kwargs['text_features'] = self.text_features
+                    loss_kwargs['negative_features'] = self.negative_features  # List of (feature, weight) tuples
+                    loss_kwargs['augment_fn'] = self.augment_fn
+                    # Get num_augs from component config or use default
+                    loss_kwargs['num_augs'] = component.get('num_augs', 4)
                 
                 loss_value = loss_fn(rendered, target, mask=mask, **loss_kwargs)
                 weighted_loss = weight * loss_value
