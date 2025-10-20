@@ -580,15 +580,32 @@ if config['postprocessing'].get('compute_psnr', False):
                 metrics_fh.write(f"  opacity_threshold: {ac_conf.get('opacity_threshold', '')}\n")
                 metrics_fh.write(f"  opacity_reduction_factor: {ac_conf.get('opacity_reduction_factor', '')}\n")
                 metrics_fh.write(f"  max_primitives_per_tile: {ac_conf.get('max_primitives_per_tile', '')}\n")
+                metrics_fh.write(f"  min_criteria_count: {ac_conf.get('min_criteria_count', '')}\n")
+                metrics_fh.write(f"  front_primitives_percentile: {ac_conf.get('front_primitives_percentile', '')}\n")
                 metrics_fh.write(f"  apply_epochs: {ac_conf.get('apply_epochs', '')}\n")
                 gr_conf = ac_conf.get('gradient_ranking', {})
-                if isinstance(gr_conf, dict) and gr_conf:
+                if isinstance(gr_conf, dict):
                     metrics_fh.write("  gradient_ranking:\n")
                     metrics_fh.write(f"    enabled: {gr_conf.get('enabled', False)}\n")
                     metrics_fh.write(f"    process_all_pixels: {gr_conf.get('process_all_pixels', False)}\n")
                     metrics_fh.write(f"    pixels_per_tile: {gr_conf.get('pixels_per_tile', '')}\n")
             except Exception as e:
                 print(f"Warning: Failed to write adaptive_control config to metrics file: {e}")
+            
+            # Write selective_parameter_optimization configuration snapshot for record
+            try:
+                spo_conf = sequential_config.get("selective_parameter_optimization", {})
+                metrics_fh.write("selective_parameter_optimization_config\n")
+                metrics_fh.write(f"  enabled: {spo_conf.get('enabled', False)}\n")
+                metrics_fh.write(f"  freeze_distance_threshold: {spo_conf.get('freeze_distance_threshold', '')}\n")                
+                metrics_fh.write(f"  diff_magnitude_threshold: {spo_conf.get('diff_magnitude_threshold', '')}\n")
+                gf_conf = spo_conf.get('gradual_freeze', {})
+                if isinstance(gf_conf, dict):
+                    metrics_fh.write("  gradual_freeze:\n")
+                    metrics_fh.write(f"    enabled: {gf_conf.get('enabled', False)}\n")
+                    metrics_fh.write(f"    strength: {gf_conf.get('strength', '')}\n")
+            except Exception as e:
+                print(f"Warning: Failed to write selective_parameter_optimization config to metrics file: {e}")
 
             metrics_fh.write("frame,psnr,ssim,vif,lpips\n")
         except Exception as e:

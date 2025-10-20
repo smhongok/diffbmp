@@ -181,8 +181,6 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         diff_mask_for_freeze = None
         if selective_parameter_optimization_config.get('enabled', False) and previous_target is not None:
             with torch.no_grad():
-                import os
-                from torchvision.utils import save_image
                 # Compute absolute difference between target and next_target
                 diff = torch.abs(target - previous_target)
                 diff_magnitude = torch.mean(diff, dim=2)  # [H, W]
@@ -192,8 +190,11 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 print(f"Diff magnitude threshold: {diff_magnitude_threshold}")
                 diff_mask_for_freeze = diff_magnitude > diff_magnitude_threshold  # [H, W]
                 
+                # DIFF MASK DEBUG VISUALIZATION
                 # Save diff mask for visualization
                 if DIFF_MASK_EXPORT_PATH is not None:
+                    import os
+                    from torchvision.utils import save_image
                     os.makedirs(DIFF_MASK_EXPORT_PATH, exist_ok=True)
                     # Use frame index from self if available, otherwise use a counter
                     frame_idx = getattr(self, 'current_frame_idx', 0)
@@ -209,6 +210,11 @@ class SequentialFrameRenderer(SimpleTileRenderer):
 
         # Main optimization loop
         for i in pbar:
+            # Select primitives to freeze based on diff mask
+            freeze_mask = None
+            if selective_parameter_optimization_config.get("enabled", False):
+                freeze_mask = self.select_primitives_2_freeze(x, y, diff_mask_for_freeze, selective_parameter_optimization_config)
+
             # Apply adaptive control at specified epochs if enabled
             if (adaptive_config.get('enabled', False) and i in apply_epochs):
                 
@@ -237,7 +243,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 else:
                     # Use normal adaptive control without visualization
                     x, y, r, v, theta, c = self.apply_adaptive_control(
-                        x, y, r, v, theta, c, target, adaptive_config)
+                        x, y, r, v, theta, c, target, adaptive_config, freeze_mask)
                 
                 # Update optimizer parameters with new tensors
                 optimizer.param_groups[0]['params'] = [x]
@@ -265,9 +271,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             
             loss.backward()
 
-            if selective_parameter_optimization_config.get("enabled", False) and diff_mask_for_freeze is not None:
-                freeze_mask = self.select_primitives_2_freeze(x, y, diff_mask_for_freeze, selective_parameter_optimization_config)
-            
+            if selective_parameter_optimization_config.get("enabled", False):
+                
                 with torch.no_grad():
                     x.grad[freeze_mask] = 0
                     y.grad[freeze_mask] = 0
@@ -360,7 +365,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                              x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
                              v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
                              target_image: torch.Tensor,
-                             adaptive_config: dict = None) -> tuple:
+                             adaptive_config: dict = None,
+                             freeze_mask: torch.Tensor = None) -> tuple:
         """
         Apply adaptive control to reduce artifacts by lowering opacity of problematic primitives.
         
@@ -386,6 +392,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         opacity_threshold = adaptive_config.get('opacity_threshold', 0.7)
         opacity_reduction_factor = adaptive_config.get('opacity_reduction_factor', 0.5)
         max_primitives_per_tile = adaptive_config.get('max_primitives_per_tile', 3)
+        min_criteria_count = adaptive_config.get('min_criteria_count', 2)
+        front_primitives_percentile = adaptive_config.get('front_primitives_percentile', 0.7)
         
         
 
@@ -441,7 +449,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 problematic_indices = self._find_problematic_primitives(
                     tile_indices, x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
                     scale_threshold, opacity_threshold, gradient_magnitudes, max_primitives_per_tile,
-                    gradient_ranking_enabled
+                    gradient_ranking_enabled, freeze_mask, min_criteria_count, front_primitives_percentile
                 )
                 
                 # Apply opacity reduction using in-place operation to maintain leaf tensor status
@@ -458,7 +466,10 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                            scale_threshold: float, opacity_threshold: float,
                            gradient_magnitudes: torch.Tensor = None,
                            max_primitives_per_tile: int = 16,
-                           gradient_ranking_enabled: bool = True) -> torch.Tensor:
+                           gradient_ranking_enabled: bool = True,
+                           freeze_mask: torch.Tensor = None,
+                           min_criteria_count: int = 2,
+                           front_primitives_percentile: float = 0.7) -> torch.Tensor:
         """
         Find problematic primitives within a tile based on three criteria,
         then select top-k by gradient magnitude or scale*opacity based on configuration.
@@ -484,17 +495,17 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         tile_opacity = self.alpha_upper_bound*torch.sigmoid(tile_v)
         
         # Criterion 1: Large scale primitives
-        large_scale_mask = tile_r >= scale_threshold
+        large_scale_mask = tile_r >= scale_threshold*self.W
         
         # Criterion 2: High opacity primitives
         high_opacity_mask = tile_opacity >= opacity_threshold
         
         # Criterion 3: Front primitives (those with higher z-order)
         # In splatting, higher array indices are rendered later, thus appearing in front
-        # We consider primitives in the top 30% of indices within this tile as "front"
+        # We consider primitives above the percentile threshold as "front"
         if len(tile_indices) > 0:
             tile_indices_sorted = torch.sort(tile_indices)[0]  # Sort tile indices
-            front_threshold_idx = int(len(tile_indices_sorted) * 0.7)  # Top 30%
+            front_threshold_idx = int(len(tile_indices_sorted) * front_primitives_percentile)
             front_indices_threshold = tile_indices_sorted[front_threshold_idx] if front_threshold_idx < len(tile_indices_sorted) else tile_indices_sorted[-1]
             
             # Create mask for primitives that are in the front (high z-order) - vectorized
@@ -502,18 +513,29 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         else:
             front_mask = torch.tensor([], dtype=torch.bool, device=tile_indices.device)
         
+        # Calculate actual percentage for display
+        front_percentage = int((1.0 - front_primitives_percentile) * 100)
 
         # Debug: Print criteria counts
         print(f"[Adaptive Control Debug] Tile criteria counts:")
         print(f"  - Large scale (>={scale_threshold}): {large_scale_mask.sum().item()}/{len(tile_indices)}")
         print(f"  - High opacity (>={opacity_threshold:.2f}): {high_opacity_mask.sum().item()}/{len(tile_indices)}")
-        print(f"  - Front primitives (top 30%): {front_mask.sum().item()}/{len(tile_indices)}")
+        print(f"  - Front primitives (top {front_percentage}%): {front_mask.sum().item()}/{len(tile_indices)}")
         
-        # Combine criteria: primitives meeting all 3 criteria
+        # Combine criteria: primitives meeting minimum criteria count
         criteria_count = (large_scale_mask.float() + high_opacity_mask.float() + front_mask.float())
-        problematic_mask = criteria_count >= 2.0
+        problematic_mask = criteria_count >= float(min_criteria_count)
         
-        print(f"  - Problematic by criteria (>=2/3): {problematic_mask.sum().item()}/{len(tile_indices)}")
+        # Exclude frozen primitives from adaptive control candidates
+        if freeze_mask is not None:
+            # Extract freeze status for primitives in this tile
+            tile_freeze_mask = freeze_mask[tile_indices]
+            # Keep only primitives that are problematic AND not frozen
+            problematic_mask = problematic_mask & (~tile_freeze_mask)
+            print(f"  - Problematic by criteria (>={min_criteria_count}/3): {(criteria_count >= float(min_criteria_count)).sum().item()}/{len(tile_indices)}")
+            print(f"  - After excluding frozen: {problematic_mask.sum().item()}/{len(tile_indices)}")
+        else:
+            print(f"  - Problematic by criteria (>={min_criteria_count}/3): {problematic_mask.sum().item()}/{len(tile_indices)}")
         
         # Get indices of problematic primitives within the tile
         problematic_tile_indices = torch.where(problematic_mask)[0]
@@ -553,7 +575,9 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                                x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                                v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
                                scale_threshold: float, opacity_threshold: float,
-                               max_primitives_per_tile: int = 16) -> torch.Tensor:
+                               max_primitives_per_tile: int = 16,
+                               min_criteria_count: int = 3,
+                               back_primitives_percentile: float = 0.3) -> torch.Tensor:
         """
         Find non-problematic primitives within a tile based on three opposite criteria,
         then select top-k by scale * opacity score.
@@ -577,17 +601,17 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         tile_opacity = self.alpha_upper_bound * torch.sigmoid(tile_v)
         
         # Criterion 1: Small scale primitives (opposite of large scale)
-        small_scale_mask = tile_r < scale_threshold
+        small_scale_mask = tile_r < scale_threshold*self.W
         
         # Criterion 2: Low opacity primitives (opposite of high opacity)
         low_opacity_mask = tile_opacity < opacity_threshold
         
         # Criterion 3: Back primitives (those with lower z-order, opposite of front)
         # In splatting, lower array indices are rendered earlier, thus appearing in back
-        # We consider primitives in the bottom 30% of indices within this tile as "back"
+        # We consider primitives below the percentile threshold as "back"
         if len(tile_indices) > 0:
             tile_indices_sorted = torch.sort(tile_indices)[0]  # Sort tile indices
-            back_threshold_idx = int(len(tile_indices_sorted) * 0.3)  # Bottom 30%
+            back_threshold_idx = int(len(tile_indices_sorted) * back_primitives_percentile)
             back_indices_threshold = tile_indices_sorted[back_threshold_idx] if back_threshold_idx < len(tile_indices_sorted) else tile_indices_sorted[0]
             
             # Create mask for primitives that are in the back (low z-order) - vectorized
@@ -595,17 +619,20 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         else:
             back_mask = torch.tensor([], dtype=torch.bool, device=tile_indices.device)
         
+        # Calculate actual percentage for display
+        back_percentage = int(back_primitives_percentile * 100)
+        
         # Debug: Print criteria counts
         print(f"[Non-Problematic Debug] Tile criteria counts:")
         print(f"  - Small scale (<{scale_threshold}): {small_scale_mask.sum().item()}/{len(tile_indices)}")
         print(f"  - Low opacity (<{opacity_threshold:.2f}): {low_opacity_mask.sum().item()}/{len(tile_indices)}")
-        print(f"  - Back primitives (bottom 30%): {back_mask.sum().item()}/{len(tile_indices)}")
+        print(f"  - Back primitives (bottom {back_percentage}%): {back_mask.sum().item()}/{len(tile_indices)}")
         
-        # Combine criteria: primitives meeting all 3 criteria (opposite approach)
+        # Combine criteria: primitives meeting minimum criteria count (opposite approach)
         criteria_count = (small_scale_mask.float() + low_opacity_mask.float() + back_mask.float())
-        non_problematic_mask = criteria_count >= 3.0
+        non_problematic_mask = criteria_count >= float(min_criteria_count)
         
-        print(f"  - Non-problematic by criteria (>=3/3): {non_problematic_mask.sum().item()}/{len(tile_indices)}")
+        print(f"  - Non-problematic by criteria (>={min_criteria_count}/3): {non_problematic_mask.sum().item()}/{len(tile_indices)}")
         
         # Get indices of non-problematic primitives within the tile
         non_problematic_tile_indices = torch.where(non_problematic_mask)[0]
@@ -867,6 +894,9 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         scale_threshold = adaptive_config.get('scale_threshold', 8.0)
         opacity_threshold = adaptive_config.get('opacity_threshold', 0.7)
         max_primitives_per_tile = adaptive_config.get('max_primitives_per_tile', 3)
+        min_criteria_count = adaptive_config.get('min_criteria_count', 2)
+        front_primitives_percentile = adaptive_config.get('front_primitives_percentile', 0.7)
+        back_primitives_percentile = adaptive_config.get('back_primitives_percentile', 0.3)
 
         
         # Extract gradient_ranking configuration
@@ -949,13 +979,13 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 problematic_indices = self._find_problematic_primitives(
                     tile_indices, x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
                     scale_threshold, opacity_threshold, gradient_magnitudes, max_primitives_per_tile,
-                    gradient_ranking_enabled
+                    gradient_ranking_enabled, None, min_criteria_count, front_primitives_percentile
                 )
                 
                 # Find non-problematic primitives for comparison
                 non_problematic_indices = self._find_non_problematic_primitives(
                     tile_indices, x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
-                    scale_threshold, opacity_threshold, max_primitives_per_tile
+                    scale_threshold, opacity_threshold, max_primitives_per_tile, min_criteria_count, back_primitives_percentile
                 )
                 
                 if len(problematic_indices) > 0 or len(non_problematic_indices) > 0:
