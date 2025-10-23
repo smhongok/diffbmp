@@ -1421,6 +1421,124 @@ class SimpleTileRenderer(VectorRenderer):
         frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
         
         writer.write(frame_bgr)
+    
+    def visualize_primitive_gradients(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        r: torch.Tensor,
+        v: torch.Tensor,
+        theta: torch.Tensor,
+        c: torch.Tensor,
+        target_image: torch.Tensor,
+        primitive_indices: List[int],
+        save_path: str = "./outputs/gradient_vis",
+        color_spectrum: str = "full",
+        force_pytorch: bool = False,
+        primitive_radius_multiplier: float = 2.0,
+        enable_logging: bool = True
+    ) -> Tuple[torch.Tensor, str]:
+        """
+        Lightweight gradient visualization for user-specified primitives only.
+        
+        This method visualizes per-pixel gradients for a small set of user-defined primitives,
+        making it much faster than full adaptive control visualization.
+        
+        Args:
+            x, y, r, v, theta, c: Primitive parameters
+            target_image: Target image tensor [H, W, 3]
+            primitive_indices: List of primitive indices to visualize (user-defined)
+            save_path: Path to save visualization (without extension)
+            color_spectrum: Color spectrum type ("full", "warm", "cool")
+            force_pytorch: If True, use PyTorch rendering instead of CUDA
+            primitive_radius_multiplier: Radius multiplier for gradient region
+            enable_logging: Whether to print detailed logs
+            
+        Returns:
+            Tuple of (visualization_tensor, saved_path)
+            
+        Example:
+            >>> # Visualize gradients for primitives 5, 10, 15
+            >>> vis_tensor, path = renderer.visualize_primitive_gradients(
+            ...     x, y, r, v, theta, c, target_image,
+            ...     primitive_indices=[5, 10, 15],
+            ...     save_path="./my_gradient_vis",
+            ...     force_pytorch=True  # Use PyTorch for gradient computation
+            ... )
+        """
+        from imbrush.util.gradient_visualizer import GradientVisualizer
+        import os
+        from datetime import datetime
+        
+        # Convert to tensor if list
+        if isinstance(primitive_indices, list):
+            primitive_indices = torch.tensor(primitive_indices, dtype=torch.long, device=x.device)
+        
+        if len(primitive_indices) == 0:
+            raise ValueError("primitive_indices cannot be empty")
+        
+        if enable_logging:
+            print(f"\n{'='*60}")
+            print(f"[Gradient Visualizer] Visualizing {len(primitive_indices)} primitives")
+            print(f"[Gradient Visualizer] Indices: {primitive_indices.tolist()}")
+            print(f"[Gradient Visualizer] Force PyTorch: {force_pytorch}")
+            print(f"{'='*60}\n")
+        
+        # Temporarily disable CUDA if force_pytorch is True
+        original_cuda_rasterizer = None
+        if force_pytorch and self.cuda_rasterizer is not None:
+            if enable_logging:
+                print("[Gradient Visualizer] Temporarily disabling CUDA for gradient computation...")
+            original_cuda_rasterizer = self.cuda_rasterizer
+            self.cuda_rasterizer = None
+        
+        try:
+            # Ensure parameters require gradients
+            if not x.requires_grad:
+                x = x.detach().requires_grad_(True)
+            if not y.requires_grad:
+                y = y.detach().requires_grad_(True)
+            
+            # Create visualizer
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            vis_save_path = f"{save_path}_{timestamp}"
+            
+            visualizer = GradientVisualizer(
+                target_image=target_image,
+                save_path=vis_save_path,
+                color_spectrum=color_spectrum,
+                background_color=(1.0, 1.0, 1.0),
+                primitive_radius_multiplier=2.,
+                gradient_threshold=1e-6,
+                center_dot_radius=0,
+                enable_logging=enable_logging
+            )
+            
+            # Visualize gradients
+            if enable_logging:
+                print(f"[Gradient Visualizer] Starting gradient computation...")
+            
+            vis_tensor, saved_path = visualizer.visualize_gradients(
+                renderer=self,
+                x=x, y=y, r=r, v=v, theta=theta, c=c,
+                primitive_indices=primitive_indices,
+                suffix="user_defined",
+                title_prefix=f"Gradient Visualization - {len(primitive_indices)} Primitives",
+                center_dot_color=(1.0, 0.0, 0.0)  # Red dots
+            )
+            
+            if enable_logging:
+                print(f"\n[Gradient Visualizer] ✅ Visualization saved to: {saved_path}")
+                print(f"{'='*60}\n")
+            
+            return vis_tensor, saved_path
+            
+        finally:
+            # Restore CUDA rasterizer if it was disabled
+            if force_pytorch and original_cuda_rasterizer is not None:
+                if enable_logging:
+                    print("[Gradient Visualizer] Re-enabling CUDA rasterizer...")
+                self.cuda_rasterizer = original_cuda_rasterizer
                 
 
 if __name__ == "__main__":

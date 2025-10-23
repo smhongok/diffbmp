@@ -295,6 +295,43 @@ for img_idx, img_path in enumerate(img_paths):
         target_binary_mask=target_binary_mask,
         initializer=initializer
     )
+    
+    # Gradient visualization (if enabled in config)
+    grad_vis_config = config.get("gradient_visualization", {})
+    if grad_vis_config.get("enabled", False):
+        print("\n" + "="*60)
+        print("Gradient Visualization (Post-Optimization)")
+        print("="*60)
+        
+        primitive_indices = grad_vis_config.get("primitive_indices", [0, 5, 10])
+        save_path = grad_vis_config.get("save_path", "./outputs/gradient_vis")
+        color_spectrum = grad_vis_config.get("color_spectrum", "full")
+        force_pytorch = grad_vis_config.get("force_pytorch", False)
+        radius_mult = grad_vis_config.get("primitive_radius_multiplier", 2.0)
+        enable_logging = grad_vis_config.get("enable_logging", True)
+        
+        # Add timestamp to save path
+        timestamp_vis = datetime.now().strftime('%Y%m%d_%H%M%S')
+        save_path_with_time = f"{save_path}_{timestamp_vis}"
+        
+        try:
+            vis_tensor, saved_path = renderer.visualize_primitive_gradients(
+                x=x, y=y, r=r, v=v, theta=theta, c=c,
+                target_image=I_target,
+                primitive_indices=primitive_indices,
+                save_path=save_path_with_time,
+                color_spectrum=color_spectrum,
+                force_pytorch=force_pytorch,
+                primitive_radius_multiplier=radius_mult,
+                enable_logging=enable_logging
+            )
+            print(f"\n✅ Gradient visualization saved to: {saved_path}")
+        except Exception as e:
+            print(f"\n⚠️  Gradient visualization failed: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        print("="*60 + "\n")
 
     if not exist_bg:
         I_target = I_target[..., :3]  # Remove alpha channel if exists

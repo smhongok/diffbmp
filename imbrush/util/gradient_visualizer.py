@@ -30,7 +30,7 @@ class GradientVisualizer:
                  color_spectrum: str = "full",
                  background_color: Tuple[float, float, float] = (1.0, 1.0, 1.0),
                  primitive_radius_multiplier: float = 1.5,
-                 gradient_threshold: float = 1e-12,
+                 gradient_threshold: float = 1e-6,
                  center_dot_radius: int = 3,
                  enable_logging: bool = True):
         """
@@ -245,28 +245,28 @@ class GradientVisualizer:
                         # Set color on canvas
                         canvas[i, j] = rgb_color
                         gradient_mask[i, j] = True
-                    else:
-                        # For zero gradients, use light gray
-                        canvas[i, j] = [0.95, 0.95, 0.95]
-                        gradient_mask[i, j] = True
+                    # else:
+                    #     # For zero gradients, use light gray (DISABLED - gray circle removed)
+                    #     canvas[i, j] = [0.95, 0.95, 0.95]
+                    #     gradient_mask[i, j] = True
             else:
                 if self.enable_logging:
                     print(f"[GradientVisualizer] Primitive {prim_idx} has no significant gradients")
         
-        # Add primitive centers as dots
-        for prim_idx in primitive_indices:
-            prim_idx = int(prim_idx.item()) if torch.is_tensor(prim_idx) else int(prim_idx)
-            prim_x = int(x[prim_idx].item())
-            prim_y = int(y[prim_idx].item())
-            
-            # Draw center dot
-            if 0 <= prim_x < self.W and 0 <= prim_y < self.H:
-                for dy in range(-self.center_dot_radius, self.center_dot_radius + 1):
-                    for dx in range(-self.center_dot_radius, self.center_dot_radius + 1):
-                        if dx*dx + dy*dy <= self.center_dot_radius*self.center_dot_radius:
-                            nx, ny = prim_x + dx, prim_y + dy
-                            if 0 <= nx < self.W and 0 <= ny < self.H:
-                                canvas[ny, nx] = center_dot_color
+        # Add primitive centers as dots (DISABLED - center dots removed)
+        # for prim_idx in primitive_indices:
+        #     prim_idx = int(prim_idx.item()) if torch.is_tensor(prim_idx) else int(prim_idx)
+        #     prim_x = int(x[prim_idx].item())
+        #     prim_y = int(y[prim_idx].item())
+        #     
+        #     # Draw center dot
+        #     if 0 <= prim_x < self.W and 0 <= prim_y < self.H:
+        #         for dy in range(-self.center_dot_radius, self.center_dot_radius + 1):
+        #             for dx in range(-self.center_dot_radius, self.center_dot_radius + 1):
+        #                 if dx*dx + dy*dy <= self.center_dot_radius*self.center_dot_radius:
+        #                     nx, ny = prim_x + dx, prim_y + dy
+        #                     if 0 <= nx < self.W and 0 <= ny < self.H:
+        #                         canvas[ny, nx] = center_dot_color
     
     def _save_visualization(self, 
                           canvas: np.ndarray, 
