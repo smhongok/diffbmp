@@ -600,11 +600,7 @@ if config['postprocessing'].get('compute_psnr', False):
                 metrics_fh.write(f"  enabled: {spo_conf.get('enabled', False)}\n")
                 metrics_fh.write(f"  freeze_distance_threshold: {spo_conf.get('freeze_distance_threshold', '')}\n")                
                 metrics_fh.write(f"  diff_magnitude_threshold: {spo_conf.get('diff_magnitude_threshold', '')}\n")
-                gf_conf = spo_conf.get('gradual_freeze', {})
-                if isinstance(gf_conf, dict):
-                    metrics_fh.write("  gradual_freeze:\n")
-                    metrics_fh.write(f"    enabled: {gf_conf.get('enabled', False)}\n")
-                    metrics_fh.write(f"    strength: {gf_conf.get('strength', '')}\n")
+                metrics_fh.write(f"  tight_freezemask: {spo_conf.get('tight_freezemask', False)}\n")
             except Exception as e:
                 print(f"Warning: Failed to write selective_parameter_optimization config to metrics file: {e}")
 

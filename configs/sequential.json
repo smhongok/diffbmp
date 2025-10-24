@@ -61,27 +61,24 @@
             "enabled": true,
             "tile_rows": 4,
             "tile_cols": 4,
-            "scale_threshold": 0.225,
+            "scale_threshold": 0.1,
             "opacity_threshold": 0.7,
-            "opacity_reduction_factor": 0.1,
+            "opacity_reduction_factor": 0.3,
             "max_primitives_per_tile": 4,
             "min_criteria_count": 3,
             "front_primitives_percentile": 0.7,
             "apply_epochs": [20, 45, 70],
             "gradient_ranking": {
-                "enabled": true,
+                "enabled": false,
                 "process_all_pixels": true,
                 "pixels_per_tile": 64
             }
         },
         "selective_parameter_optimization":{
             "enabled": true,
-            "freeze_distance_threshold": 0.05,
+            "freeze_distance_threshold": 0.1,
             "diff_magnitude_threshold": 0.1,
-            "gradual_freeze": {
-                "enabled": false,
-                "strength": 0.5
-            }
+            "tight_freezemask": false
         },
         "export": {
             "export_frames": true,
@@ -91,7 +88,7 @@
         }
     },
     "postprocessing": {
-        "output_folder": "./outputs/freeze_test/proro/11",
+        "output_folder": "./outputs/sep_init_test/proro/7",
         "hires_export": false,
         "hires_scale_factor": 4.0,
         "compute_psnr": true,
