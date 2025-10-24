@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from typing import Tuple, List, Optional
+from typing import Any, Tuple, List, Optional
 from imbrush.core.renderer.vector_renderer import VectorRenderer
 import time
 import matplotlib.pyplot as plt
@@ -11,6 +11,7 @@ from imbrush.util.loss_functions import LossComposer
 
 DEBUG_MODE = False
 DEBUG_MODE_DETAIL = False
+DEBUG_MODE_SAVE = True
 
 # Try to import CUDA extension, fallback to PyTorch if not available
 try:
@@ -625,7 +626,7 @@ class SimpleTileRenderer(VectorRenderer):
                                   v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
                                   target_image: torch.Tensor, opt_conf: dict,
                                   target_binary_mask: Optional[torch.Tensor] = None,
-                                  adjusted_pts: Optional[torch.Tensor] = None
+                                  initializer: Optional[Any] = None
                                   ):
         """
         Override optimization to use tile-based rendering instead of cached_masks.
@@ -655,7 +656,7 @@ class SimpleTileRenderer(VectorRenderer):
         blur_sigma = opt_conf.get("blur_sigma", 1.0)
         
         # Create output directory for saving images if it doesn't exist
-        save_image_intervals = [1, 5, 10, 20, 50, 100]
+        save_image_intervals = range(0, num_iterations, 10)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(self.output_path, exist_ok=True)
         
@@ -698,8 +699,7 @@ class SimpleTileRenderer(VectorRenderer):
                 no_prune_last_iterations = prune_conf.get("no_prune_last_iterations", 10)
                 no_prune_warmup_iterations = prune_conf.get("no_prune_warmup_iterations", 20)
                 if iteration % prune_iterations == 0 and iteration < num_iterations - no_prune_last_iterations and iteration > no_prune_warmup_iterations:
-                    print("[DEBUG] Pruning...")
-                    self.do_prune(x,y,r,v,theta,c,prune_conf,adjusted_pts,target_binary_mask,target_image)      
+                    self.do_prune(x,y,r,v,theta,c,prune_conf,initializer,target_image)         
 
             # Adaptive Gaussian blur
             if do_adapt_gaussian_blur:
@@ -815,7 +815,7 @@ class SimpleTileRenderer(VectorRenderer):
                 print(f"      c: [{c.min():.4f}, {c.max():.4f}]")
             
             # Log progress with loss components
-            if iteration % 10 == 0 or iteration in save_image_intervals or iteration < 3:
+            if iteration % 10 == 0:
                 # Get loss components for detailed logging
                 _, loss_components = self.compute_loss(
                     rendered, target_image, x, y, r, v, theta, c, 
@@ -828,155 +828,72 @@ class SimpleTileRenderer(VectorRenderer):
                 components_str = ", ".join([f"{name}={val:.6f}" for name, val in loss_components.items()])
                 print(f"Iteration {iteration}: Total={loss.item():.6f} ({components_str})")
                 
-                # Save intermediate images
-                if iteration in save_image_intervals and DEBUG_MODE:
-                    img_path = os.path.join(self.output_path, f"tile_iter_{iteration:04d}_{timestamp}.png")
-                    self.save_image_tensor(rendered, img_path)
+            # Save intermediate images
+            if iteration in save_image_intervals and DEBUG_MODE_SAVE:
+                img_path = os.path.join(self.output_path, f"tile_iter_{iteration:04d}_{timestamp}.png")
+                if rendered_alpha is not None:
+                    rendered_to_save = torch.cat([rendered, rendered_alpha.unsqueeze(-1)], dim=-1)
+                else:
+                    rendered_to_save = rendered
+                self.save_image_tensor(rendered_to_save, img_path)
         
         print(f"Tile-based optimization completed. Final loss: {loss.item():.6f}")
         return x, y, r, v, theta, c
 
-    def do_prune(self, x , y , r, v, theta, c, prune_conf, adjusted_pts, target_binary_mask, target_image) -> None:
+    def do_prune(self, x , y , r, v, theta, c, prune_conf, initializer, target_image) -> None:
         """
-        Prune the low-opacity primitives and re-initialize them using adjusted_pts.
+        Prune the low-opacity primitives and re-initialize them using the initializer.
         
         Args:
             x, y, r, v, theta, c: Primitive parameters
             prune_conf: Pruning configuration
-            adjusted_pts: Pre-computed adjusted points from initialization (numpy array of shape [N, 2])
+            initializer: StructureAwareInitializer instance with adjusted_pts and sampled_variances
             target_binary_mask: Binary mask for target regions
             target_image: Target image tensor for color sampling
         """
+        print("Re-initializing low-opacity primitives...")
         prune_threshold = prune_conf.get("prune_threshold", 0.3)
-        
-        # Calculate opacity from visibility parameters
-        opacity = torch.sigmoid(v)
-        
         # Find primitives with low opacity
+        opacity = torch.sigmoid(v)
         low_opacity_mask = opacity < prune_threshold
         num_to_prune = low_opacity_mask.sum().item()
-        
+
         if num_to_prune == 0:
             print("No primitives to prune.")
             return
-            
+
         print(f"Pruning {num_to_prune} low-opacity primitives (threshold: {prune_threshold})")
-        
-        # Get indices of primitives to prune
         prune_indices = torch.where(low_opacity_mask)[0]
-        
-        # 1. Position initialization: Random sampling from adjusted_pts
-        if adjusted_pts is not None and len(adjusted_pts) > 0:
-            # Convert to numpy if tensor
-            adjusted_pts_np = adjusted_pts.cpu().numpy() if isinstance(adjusted_pts, torch.Tensor) else adjusted_pts
-            num_adjusted_pts = len(adjusted_pts_np)
-            
-            # Random sampling from adjusted_pts (with replacement if needed)
-            sample_indices = np.random.choice(num_adjusted_pts, num_to_prune, replace=True)
-            new_positions = adjusted_pts_np[sample_indices]
-            print(f"Sampled {num_to_prune} positions from {num_adjusted_pts} adjusted points")
-        else:
-            # Fallback to random positions within canvas bounds
-            new_positions = np.random.rand(num_to_prune, 2) * np.array([self.W, self.H])
-            print("No adjusted_pts available, using random positions")
-        
-        # Re-initialize pruned primitives
+        try:
+            # Use initializer's reinitialize_subset method
+            new_x, new_y, new_r, new_v, new_theta, new_c = initializer.reinitialize_subset(
+                num_to_prune, target_image[:,:,:3], x.device
+            )
+            # Update pruned primitives
+            with torch.no_grad():
+                x.data[prune_indices] = new_x
+                y.data[prune_indices] = new_y
+                r.data[prune_indices] = new_r
+                v.data[prune_indices] = new_v
+                theta.data[prune_indices] = new_theta
+                c.data[prune_indices] = new_c
+            print(f"✓ Re-initialized {num_to_prune} primitives using StructureAwareInitializer")
+        except Exception as e:
+            print(f"Warning: Reinitialize failed ({e}). Using fallback.")
+            self._fallback_random_init(x, y, r, v, theta, c, prune_indices, num_to_prune)
+
+    def _fallback_random_init(self, x, y, r, v, theta, c, indices, num_points):
+        """Fallback random initialization for pruned primitives."""
         with torch.no_grad():
-            # 1. Update positions (x, y)
-            x.data[prune_indices] = torch.tensor(new_positions[:, 0], 
-                                               dtype=x.dtype, device=x.device)
-            y.data[prune_indices] = torch.tensor(new_positions[:, 1], 
-                                               dtype=y.dtype, device=y.device)
-            
-            # 2. Visibility initialization (same as svgsplat_initializater.py)
-            v.data[prune_indices] = torch.full((num_to_prune,), -2.0, device=v.device)
-            
-            # 3. Rotation initialization (same as svgsplat_initializater.py)
-            theta.data[prune_indices] = torch.rand(num_to_prune, device=theta.device) * 2 * np.pi
-            
-            # 4. Color initialization (same as svgsplat_initializater.py)
-            if target_image is not None:
-                I_np = target_image.detach().cpu().numpy()
-                
-                if I_np.ndim == 3:
-                    H, W, C = I_np.shape
-                    # Handle 4-channel (RGBA) images by taking only RGB channels
-                    if C == 4:
-                        I_np = I_np[:, :, :3]  # Remove alpha channel
-                    I_color = I_np  # (H, W, 3)
-                else:
-                    # Grayscale case
-                    H, W = I_np.shape
-                    I_color = np.stack([I_np] * 3, axis=2)  # Convert to RGB
-                
-                # Sample pixel colors at new positions (same as svgsplat_initializater.py)
-                idx_x = np.clip(np.round(new_positions[:, 0]).astype(int), 0, W - 1)
-                idx_y = np.clip(np.round(new_positions[:, 1]).astype(int), 0, H - 1)
-                c_init = I_color[idx_y, idx_x]  # (num_to_prune, 3)
-                
-                # Add slight noise to diversify parameters (same as svgsplat_initializater.py)
-                c_init += np.random.normal(0.0, 0.02, c_init.shape)
-                c_init = np.clip(c_init, 0.0, 1.0)  # Safely clip values
-                
-                c.data[prune_indices] = torch.tensor(c_init, dtype=c.dtype, device=c.device)
-            else:
-                # Fallback: use diverse random colors
-                new_colors = torch.rand(num_to_prune, 3, device=c.device) * 0.8 + 0.1
-                c.data[prune_indices] = new_colors
-            
-            # 5. Radius initialization: distance-based only (distance_factor = 1.0)
-            if target_image is not None:
-                I_np = target_image.detach().cpu().numpy()
-                if I_np.ndim == 3:
-                    # Convert to grayscale for edge detection
-                    I_gray = np.mean(I_np, axis=2)
-                else:
-                    I_gray = I_np.copy()
-                
-                # Ensure correct format for edge detection
-                if I_gray.dtype != np.uint8:
-                    I_gray = (I_gray * 255).astype(np.uint8)
-                
-                # Same radius calculation as svgsplat_initializater.py
-                H, W = I_gray.shape
-                max_radius = min(H, W) / 4
-                
-                # Get min_radius from base initializer (similar to svgsplat_initializater.py)
-                # Assuming radii_min is available, otherwise use default
-                min_radius = getattr(self, 'radii_min', 2)
-                
-                # Calculate Canny edges and distance transform (same as svgsplat_initializater.py)
-                edges = cv2.Canny(I_gray, 100, 200)
-                inverted_edges = cv2.bitwise_not(edges)
-                distance_map = cv2.distanceTransform(inverted_edges, cv2.DIST_L2, 5)
-                
-                # Sample distance at each new position
-                idx_x = np.clip(np.round(new_positions[:, 0]).astype(int), 0, W - 1)
-                idx_y = np.clip(np.round(new_positions[:, 1]).astype(int), 0, H - 1)
-                point_distances = distance_map[idx_y, idx_x]
-                
-                # Normalize distances (0 = on edge, 1 = farthest from edge)
-                max_distance = np.max(distance_map) if np.max(distance_map) > 0 else 1.0
-                normalized_distances = point_distances / max_distance
-                
-                # Pure distance-based radius (distance_factor = 1.0)
-                distance_based_radius = min_radius + normalized_distances * (max_radius - min_radius)
-                
-                # Add noise for variety (same as svgsplat_initializater.py)
-                noise_scale = 0.01
-                noise = np.random.normal(0, noise_scale * (max_radius - min_radius), num_to_prune)
-                r_np = np.clip(distance_based_radius + noise, min_radius, max_radius)
-                
-                r.data[prune_indices] = torch.tensor(r_np, dtype=r.dtype, device=r.device)
-            else:
-                # Fallback: random radius between min and max
-                min_radius = min(self.H, self.W) / 200
-                max_radius = min(self.H, self.W) / 20
-                new_radii = min_radius + torch.rand(num_to_prune, device=r.device) * (max_radius - min_radius)
-                r.data[prune_indices] = new_radii
-        
-        print(f"Re-initialized {num_to_prune} primitives using svgsplat_initializater.py initialization method")
-    
+            x.data[indices] = torch.rand(num_points, device=x.device) * self.W
+            y.data[indices] = torch.rand(num_points, device=y.device) * self.H
+            r.data[indices] = torch.rand(num_points, device=r.device) * (min(self.H, self.W) / 20) + 2
+            v.data[indices] = torch.full((num_points,), -2.0, device=v.device)
+            theta.data[indices] = torch.rand(num_points, device=theta.device) * 2 * np.pi
+            c.data[indices] = torch.rand(num_points, 3, device=c.device)
+        print(f"✓ Fallback: Randomly re-initialized {num_points} primitives")
+
+
     def save_image_tensor(self, image_tensor: torch.Tensor, path: str):
         """Save image tensor to file."""
         import matplotlib.pyplot as plt

@@ -206,15 +206,26 @@ class Preprocessor:
 
         return arr
 
-    def load_image_8bit_color_opacity(self, config):
+    def load_image_8bit_color_opacity(self, config, make_bg_white=True):
         """
         Load image as 8-bit color and opacity(RGBA), and if large, apply CenterCrop → White Padding → resize to final size.
+        Args:
+            config (dict): Configuration dictionary containing 'img_path'.
+            make_bg_white (bool): If True, convert transparent background to white. This is for some cases that the input image has wierd RGB values in transparent area.
         Returns:
             arr (np.ndarray): Processed image array.
             binary_image (np.ndarray): Binary mask of the alpha channel.
         """
         img = Image.open(config["img_path"]).convert('RGBA')  # 8-bit color with alpha
         binary_image = (1-(np.array(img)[:, :, 3] > 0).astype(np.uint8)) * 255
+
+        img_array = np.array(img)
+        if make_bg_white:
+            # Convert transparent background (alpha=0) to white
+            img_array[binary_image!=0, :3] = 255  # Set RGB to white
+            img = Image.fromarray(img_array, mode='RGBA')
+
+
         w, h = img.size
         self.width = w
         self.height = h

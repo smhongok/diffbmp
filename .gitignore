@@ -24,6 +24,8 @@ output_webpage/src_sequential_lyrics/index.html
 !assets/primitives/baby_footprint*
 !assets/primitives/oldhangul*
 !assets/primitives/razor*
+!assets/primitives/circle.png
+!assets/primitives/paw_complicated.png
 
 assets/font/*
 !assets/font/arial.ttf

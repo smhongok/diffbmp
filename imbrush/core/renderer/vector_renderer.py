@@ -1079,7 +1079,7 @@ class VectorRenderer:
                       target_image: torch.Tensor,
                       opt_conf: Dict[str, Any],
                       target_binary_mask: Optional[torch.Tensor] = None,
-                      adjusted_pts: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, ...]:
+                      initializer: Optional[Any] = None) -> Tuple[torch.Tensor, ...]:
         """Optimize rendering parameters to match target image."""
         N = x.shape[0]
         self.sample_size = max(1, int(0.2 * N))  # 20% of primitives
@@ -1088,14 +1088,14 @@ class VectorRenderer:
 
         # Use whole optimization (batch optimization removed as it's never used)
         return self._optimize_parameters_whole(
-            x, y, r, v, theta, c, target_image, opt_conf, target_binary_mask, adjusted_pts
+            x, y, r, v, theta, c, target_image, opt_conf, target_binary_mask, initializer
         )
 
     def _optimize_parameters_whole(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                                   v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
                                   target_image: torch.Tensor, opt_conf: dict,
-                                  target_binary_mask: torch.Tensor = None,
-                                  target_dist_mask: torch.Tensor = None):
+                                  target_binary_mask: torch.Tensor = None
+                                  ):
         """
         Override optimization to use tile-based rendering instead of cached_masks.
         This is the core difference from VectorRenderer - we render directly from parameters.
