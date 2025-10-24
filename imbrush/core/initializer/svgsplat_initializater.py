@@ -22,6 +22,7 @@ class StructureAwareInitializer(BaseInitializer):
         self.variance_base_prob = init_opt.get("variance_base_prob", VARIANCE_BASE_PROB)
         self.adjusted_pts = None
         self.sampled_variances = None
+        self.decrease_max_radius = 0
 
     def _preprocess_image(self, I_target):
         """
@@ -192,10 +193,14 @@ class StructureAwareInitializer(BaseInitializer):
 
         # -------------------- Variance-based radius initialization -------------------- #
         min_radius = self.radii_min
+
+        # Decrease max radius whenever do_prune function is called to focus on details
+        max_radius_rate = 0.5 ** self.decrease_max_radius
+
         if self.radii_max is not None:
-            max_radius = self.radii_max
+            max_radius = max(self.radii_max * max_radius_rate, min_radius + 0.1)
         else:
-            max_radius = max(min(H, W) / 4, min_radius + 0.1)
+            max_radius = max(max_radius_rate * min(H, W) / 4, min_radius + 0.1)
         
         # Radius based on variance at each point
         # Low variance (flat, index 0) → large radius

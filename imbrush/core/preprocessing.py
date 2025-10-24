@@ -265,10 +265,10 @@ class Preprocessor:
         new_h = int(h * ratio)
         self.final_width = new_w
         self.final_height = new_h
-        resized_img = padded_img.resize((new_w, new_h), Image.LANCZOS)
+        resized_img = padded_img.resize((new_w, new_h), Image.NEAREST)
 
         binary_image = Image.fromarray(binary_image, mode='L')  # Convert binary image to PIL Image
-        binary_image = binary_image.resize((new_w, new_h), Image.BICUBIC)  # Resize binary image to match resized_img
+        binary_image = binary_image.resize((new_w, new_h), Image.NEAREST)  # Resize binary image to match resized_img
 
         arr = np.array(resized_img, dtype=np.uint8)
 

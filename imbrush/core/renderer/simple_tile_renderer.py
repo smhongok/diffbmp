@@ -11,7 +11,7 @@ from imbrush.util.loss_functions import LossComposer
 
 DEBUG_MODE = False
 DEBUG_MODE_DETAIL = False
-DEBUG_MODE_SAVE = True
+DEBUG_MODE_SAVE = False
 
 # Try to import CUDA extension, fallback to PyTorch if not available
 try:
@@ -852,6 +852,7 @@ class SimpleTileRenderer(VectorRenderer):
             target_image: Target image tensor for color sampling
         """
         print("Re-initializing low-opacity primitives...")
+        initializer.decrease_max_radius += 1
         prune_threshold = prune_conf.get("prune_threshold", 0.3)
         # Find primitives with low opacity
         opacity = torch.sigmoid(v)
