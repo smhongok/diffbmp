@@ -266,6 +266,7 @@ sequential_renderer = SequentialFrameRenderer(
     tile_size=sequential_config["tile_size"],
     sigma = opt_conf["blur_sigma"] if opt_conf.get("do_gaussian_blur", False) else 0.0,
     c_blend=config["optimization"].get("c_blend", 0.0),
+    primitive_colors=primitive_colors,
 )
 print(f"Using SequentialFrameRenderer with tile-based rendering (tile_size: {sequential_config['tile_size']})")
 
@@ -321,7 +322,7 @@ for frame_idx, I_target_frame in enumerate(I_targets):
             x, y, r, v, theta, c = renderer.optimize_parameters(
             x, y, r, v, theta, c,
             I_target_frame, 
-            opt_conf=frame_opt_conf
+            opt_conf=opt_conf
             )
 
             end_time_frame = time.time()

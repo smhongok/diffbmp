@@ -36,12 +36,12 @@ class SequentialFrameRenderer(SimpleTileRenderer):
     Inherits from SimpleTileRenderer and uses warmup scheduling for loss.
     """
     
-    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None, tile_size=32, sigma = 1.0):
+    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None, tile_size=32, sigma = 1.0, c_blend=0.0, primitive_colors: torch.Tensor = None):
         # Pass parameters to SimpleTileRenderer using keyword arguments
         super().__init__(canvas_size, S, tile_size=tile_size, 
                         alpha_upper_bound=alpha_upper_bound, device=device, 
                         use_fp16=use_fp16, gamma=gamma, output_path=output_path,
-                        sigma = sigma)
+                        sigma = sigma, c_blend=c_blend, primitive_colors=primitive_colors)
     
     def compute_loss_with_warmup(self, 
                                rendered: torch.Tensor, 
