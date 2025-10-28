@@ -19,7 +19,7 @@ class PrimitiveLoader:
     Backward compatible with SVGLoader interface.
     """
     
-    def __init__(self, primitive_paths: Union[str, List[str]], output_width: int = 128, device=None, bg_threshold: int = 250):
+    def __init__(self, primitive_paths: Union[str, List[str]], output_width: int = 128, device=None, bg_threshold: int = 250, radial_transparency: bool = False):
         # Accept single path or list of paths
         if isinstance(primitive_paths, (list, tuple)):
             self.primitive_paths = primitive_paths
@@ -29,6 +29,7 @@ class PrimitiveLoader:
         self.output_width = output_width
         self.device = device or torch.device('cpu')
         self.bg_threshold = bg_threshold  # Threshold for background removal (0-255)
+        self.radial_transparency = radial_transparency  # Apply radial gradient alpha mask
         
         # Analyze primitive types and set dimensions
         self.primitive_types = []
@@ -92,6 +93,30 @@ class PrimitiveLoader:
         data = self.primitive_data[index]
         return data['width'], data['height']
 
+    def _create_radial_mask(self, size: int) -> np.ndarray:
+        """
+        Create a radial gradient mask for transparency.
+        Center is fully opaque (1.0), edges are fully transparent (0.0).
+        
+        Args:
+            size: Size of the square mask
+            
+        Returns:
+            Radial gradient mask of shape (size, size) with values in [0, 1]
+        """
+        center = size / 2.0
+        y, x = np.ogrid[:size, :size]
+        # Distance from center
+        dist_from_center = np.sqrt((x - center)**2 + (y - center)**2)
+        # Normalize to [0, 1] where max distance is at corners
+        max_dist = np.sqrt(2) * center
+        normalized_dist = dist_from_center / max_dist
+        # Invert so center is 1.0 and edges are 0.0
+        radial_mask = 1.0 - normalized_dist
+        # Clamp to [0, 1]
+        radial_mask = np.clip(radial_mask, 0.0, 1.0)
+        return radial_mask
+
     def load_alpha_bitmap(self):
         """
         Render each primitive to an alpha bitmap and return:
@@ -105,6 +130,13 @@ class PrimitiveLoader:
                 bitmap = self._load_svg_bitmap(data)
             else:  # raster
                 bitmap = self._load_raster_bitmap(data)
+            
+            # Apply radial transparency if enabled
+            if self.radial_transparency:
+                size = bitmap.shape[0]
+                radial_mask = self._create_radial_mask(size)
+                radial_mask_tensor = torch.tensor(radial_mask, device=self.device, dtype=bitmap.dtype)
+                bitmap = bitmap * radial_mask_tensor
             
             bitmaps.append(bitmap)
         
