@@ -338,42 +338,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 # NEW: Bounding box-based overlap detection (more accurate)
                 print("[Selective Freeze] Using tight bounding box overlap detection")
                 
-                p = len(self.primitive_bboxes)
-                
-                # Pre-compute trigonometric values for all primitives
-                cos_theta = torch.cos(theta)  # (N,)
-                sin_theta = torch.sin(theta)  # (N,)
-                
-                # Get primitive indices (cycling through available primitives)
-                prim_indices = (N - torch.arange(N, device=self.device) - 1) % p  # (N,)
-                
-                # Extract bounding boxes for all primitives
-                bbox_tensor = torch.tensor(self.primitive_bboxes, device=self.device)  # (p, 4)
-                selected_bboxes = bbox_tensor[prim_indices]  # (N, 4)
-                
-                min_u = selected_bboxes[:, 0]  # (N,)
-                max_u = selected_bboxes[:, 1]  # (N,)
-                min_v = selected_bboxes[:, 2]  # (N,)
-                max_v = selected_bboxes[:, 3]  # (N,)
-                
-                # Create all corner combinations for bounding boxes
-                corners_u = torch.stack([min_u, max_u, min_u, max_u], dim=1)  # (N, 4)
-                corners_v = torch.stack([min_v, min_v, max_v, max_v], dim=1)  # (N, 4)
-                
-                # Transform all corners to world coordinates (vectorized)
-                # Broadcasting: (N, 1) * (N, 4) -> (N, 4)
-                world_x = x.unsqueeze(1) + r.unsqueeze(1) * (
-                    corners_u * cos_theta.unsqueeze(1) - corners_v * sin_theta.unsqueeze(1)
-                )  # (N, 4)
-                world_y = y.unsqueeze(1) + r.unsqueeze(1) * (
-                    corners_u * sin_theta.unsqueeze(1) + corners_v * cos_theta.unsqueeze(1)
-                )  # (N, 4)
-                
-                # Compute bounding box extents for each primitive in pixel space
-                bbox_x_min = world_x.min(dim=1)[0]  # (N,)
-                bbox_x_max = world_x.max(dim=1)[0]  # (N,)
-                bbox_y_min = world_y.min(dim=1)[0]  # (N,)
-                bbox_y_max = world_y.max(dim=1)[0]  # (N,)
+                # Use shared helper to compute world-space bounding boxes
+                bbox_x_min, bbox_x_max, bbox_y_min, bbox_y_max = self._compute_primitive_world_bboxes(x, y, r, theta)
                 
                 # Add distance threshold margin to bounding boxes
                 margin = freeze_distance_threshold * self.W
