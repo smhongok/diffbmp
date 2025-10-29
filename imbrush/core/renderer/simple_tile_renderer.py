@@ -9,6 +9,7 @@ import os
 import cv2
 from imbrush.util.loss_functions import LossComposer
 import pynvml as nvml
+from imbrush.util.constants import MAX_PRIMS_PER_PIXEL
 
 DEBUG_MODE = False
 DEBUG_MODE_DETAIL = False
@@ -109,7 +110,7 @@ class SimpleTileRenderer(VectorRenderer):
         # Compute bounding boxes for each primitive in self.S
         self.primitive_bboxes = self._compute_primitive_bboxes()
         
-        self.max_prims_per_pixel = 100
+        self.max_prims_per_pixel = MAX_PRIMS_PER_PIXEL
         
         # PyTorch timing variables
         self.pytorch_forward_time = 0.0
