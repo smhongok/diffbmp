@@ -26,7 +26,7 @@ output_webpage/src_sequential_lyrics/index.html
 !assets/primitives/razor*
 !assets/primitives/CelebA/
 !assets/primitives/*seurat*
-!assets/primitives/*Seurat*
+!assets/primitives/fingerprint.jpg
 
 assets/font/*
 !assets/font/arial.ttf
