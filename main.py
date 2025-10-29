@@ -345,13 +345,13 @@ for img_idx, img_path in enumerate(img_paths):
                 rendered_np = (rendered_np * 255).astype(np.uint8)
                 Image.fromarray(rendered_np).save(output_path)
                 if not exist_bg:
-                    save_spatial_constraints(rendered_alpha, output_path)
+                    save_spatial_constraints(rendered, rendered_alpha, output_path)
 
         else:
             # Still render final PNG for preview/compatibility
             rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
             if not exist_bg:
-                save_spatial_constraints(rendered_alpha, output_path)
+                save_spatial_constraints(rendered, rendered_alpha, output_path)
             # Save rendered image directly from rendered tensor 
             rendered_np = rendered.detach().cpu().numpy()
             rendered_np = (rendered_np * 255).astype(np.uint8)
