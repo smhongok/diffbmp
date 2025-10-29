@@ -6,6 +6,8 @@
 #include <memory>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <chrono>
+#include <iostream>
 
 // TileRasterizerFP16 class for managing global memory
 class TileRasterizerFP16 {
@@ -37,6 +39,18 @@ private:
     
     // Track if memory is allocated
     bool memory_allocated;
+    
+    // Timing variables
+    std::chrono::high_resolution_clock::time_point forward_start_time;
+    std::chrono::high_resolution_clock::time_point forward_end_time;
+    std::chrono::high_resolution_clock::time_point backward_start_time;
+    std::chrono::high_resolution_clock::time_point backward_end_time;
+    
+    // Total timing statistics
+    double total_forward_time;
+    double total_backward_time;
+    int forward_iteration_count;
+    int backward_iteration_count;
     
 public:
     // Configuration (public for access in wrapper functions)
@@ -88,44 +102,17 @@ public:
     
     // Free memory
     void freeMemory();
+    
+    // Timing functions
+    void printTimingStats();
+    void resetTimingStats();
 };
 
 // Global instance for Python binding (will be managed by Python)
 extern std::shared_ptr<TileRasterizerFP16> global_tile_rasterizer_fp16;
 
-// Forward declarations for CUDA functions (for backward compatibility)
-std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForwardFP16(
-    torch::Tensor means2D,
-    torch::Tensor radii,
-    torch::Tensor rotations,
-    torch::Tensor opacities,
-    torch::Tensor colors,
-    torch::Tensor colors_orig,
-    torch::Tensor primitive_templates,
-    torch::Tensor global_bmp_sel,
-    float c_blend,
-    torch::Tensor tile_primitive_mapping,
-    int image_height,
-    int image_width,
-    int tile_size,
-    float sigma);
-
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> CudaRasterizeTilesBackwardFP16(
-    torch::Tensor grad_out_color,
-    torch::Tensor grad_out_alpha,
-    torch::Tensor means2D,
-    torch::Tensor radii,
-    torch::Tensor rotations,
-    torch::Tensor opacities,
-    torch::Tensor colors,
-    torch::Tensor colors_orig,
-    torch::Tensor primitive_templates,
-    torch::Tensor global_bmp_sel,  // [num_primitives] - template selection indices
-    float c_blend,
-    torch::Tensor lr_config_tensor,
-    int image_height,
-    int image_width,
-    int tile_size,
-    float sigma);
+// Timing functions for Python binding
+void printCudaTimingStatsFP16();
+void resetCudaTimingStatsFP16();
 
 #endif // TILE_RASTERIZE_FP16_H

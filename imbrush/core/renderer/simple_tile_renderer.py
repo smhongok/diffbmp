@@ -8,6 +8,8 @@ import numpy as np
 import os
 import cv2
 from imbrush.util.loss_functions import LossComposer
+import pynvml as nvml
+from imbrush.util.constants import MAX_PRIMS_PER_PIXEL
 
 DEBUG_MODE = False
 DEBUG_MODE_DETAIL = False
@@ -25,13 +27,56 @@ try:
         sys.path.insert(0, cuda_path)
     if cuda_fp16_path not in sys.path:
         sys.path.insert(0, cuda_fp16_path)
-    from cuda_tile_rasterizer import TileRasterizer
+    from cuda_tile_rasterizer import TileRasterizer, print_cuda_timing_stats, print_cuda_timing_stats_fp16
     CUDA_AVAILABLE = True
     print("CUDA tile rasterizer loaded successfully!")
             
 except ImportError as e:
     CUDA_AVAILABLE = False
     print(f"CUDA tile rasterizer not available, using PyTorch fallback: {e}")
+
+# CUDA_AVAILABLE=False
+# CUDA_AVAILABLE_FP16=False
+
+def _get_running_procs(handle, kind):
+    # kind: "Compute" or "Graphics"
+    for name in [f"nvmlDeviceGet{kind}RunningProcesses_v3",
+                 f"nvmlDeviceGet{kind}RunningProcesses_v2",
+                 f"nvmlDeviceGet{kind}RunningProcesses"]:
+        fn = getattr(nvml, name, None)
+        if fn:
+            try:
+                return fn(handle)
+            except nvml.NVMLError:
+                pass
+    return []
+
+def vram_used_by_pid(pid=None):
+    """Return per-GPU and total VRAM (bytes) held by the PID as reported by NVML/nvidia-smi."""
+    if pid is None:
+        pid = os.getpid()
+
+    vis = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if not vis:
+        # env가 없으면 물리 GPU 0으로 가정
+        target = "0"
+    else:
+        target = vis.split(",")[0].strip()
+
+    nvml.nvmlInit()
+    try:
+        h = nvml.nvmlDeviceGetHandleByIndex(int(target))
+        used = 0
+        # NVML은 compute/graphics 프로세스를 따로 노출할 수 있음 → 둘 다 합산
+        for procs in (_get_running_procs(h, "Compute"), _get_running_procs(h, "Graphics")):
+            for p in procs or []:
+                if int(p.pid) == int(pid):
+                    # usedGpuMemory는 bytes (언더플로/UNKNOWN 시 -1일 수 있음)
+                    if getattr(p, "usedGpuMemory", 0) and p.usedGpuMemory > 0:
+                        used += p.usedGpuMemory
+        return used
+    finally:
+        nvml.nvmlShutdown()
 
 
 class SimpleTileRenderer(VectorRenderer):
@@ -53,7 +98,8 @@ class SimpleTileRenderer(VectorRenderer):
         """
         print("="*10,"Initializing SimpleTileRenderer...","="*10)
         super().__init__(canvas_size, S, **kwargs)
-        self.tile_size = tile_size
+        #self.tile_size = tile_size
+        self.tile_size = 32
         
         # Calculate tile grid dimensions
         self.tiles_h = (self.H + tile_size - 1) // tile_size
@@ -64,7 +110,13 @@ class SimpleTileRenderer(VectorRenderer):
         # Compute bounding boxes for each primitive in self.S
         self.primitive_bboxes = self._compute_primitive_bboxes()
         
-        # loss_composer is inherited from VectorRenderer
+        self.max_prims_per_pixel = MAX_PRIMS_PER_PIXEL
+        
+        # PyTorch timing variables
+        self.pytorch_forward_time = 0.0
+        self.pytorch_backward_time = 0.0
+        self.pytorch_forward_count = 0
+        self.pytorch_backward_count = 0
 
     def _clamp_params_inplace(self, x, y, r):
         # VectorRenderer와 동일 정책: r ∈ [2, min(H,W)//4]
@@ -137,6 +189,10 @@ class SimpleTileRenderer(VectorRenderer):
         Returns:
             Rendered image tensor
         """
+        
+        # Start timing for PyTorch forward pass
+        start_time = time.time()
+        
         N = x.shape[0]
         # Pre-compute global primitive template selection (before tile processing)
         
@@ -190,6 +246,14 @@ class SimpleTileRenderer(VectorRenderer):
             output = self._process_tiles_parallel(x, y, r, theta, v, c, sigma, I_bg, global_bmp_sel, output, lr_conf, is_final=is_final, return_alpha=return_alpha)
         else:
             output = self._process_tiles_sequential(x, y, r, theta, v, c, sigma, I_bg, global_bmp_sel, output, lr_conf, is_final=is_final)
+        
+        # End timing and update statistics
+        end_time = time.time()
+        elapsed_time_ms = (end_time - start_time) * 1000.0
+        
+        # Update PyTorch forward timing statistics
+        self.pytorch_forward_time += elapsed_time_ms
+        self.pytorch_forward_count += 1
         
         if return_alpha:
             output, alpha = output
@@ -374,7 +438,7 @@ class SimpleTileRenderer(VectorRenderer):
                     print(f"    🔧 Creating new TileRasterizer for optimization with {len(radii)} primitives...")
                     self.cuda_rasterizer = TileRasterizer(
                         self.H, self.W, self.tile_size, sigma, 
-                        self.alpha_upper_bound, 300, len(radii),
+                        self.alpha_upper_bound, self.max_prims_per_pixel, len(radii),
                         use_fp16=self.use_fp16
                     )
 
@@ -386,7 +450,7 @@ class SimpleTileRenderer(VectorRenderer):
                     print(f"    🔧 Creating new TileRasterizer for optimization with {len(radii)} primitives...")
                     self.cuda_rasterizer = TileRasterizer(
                         self.H, self.W, self.tile_size, sigma, 
-                        self.alpha_upper_bound, 300, len(radii),
+                        self.alpha_upper_bound, self.max_prims_per_pixel, len(radii),
                         use_fp16=self.use_fp16
                     )
 
@@ -411,7 +475,7 @@ class SimpleTileRenderer(VectorRenderer):
                 print(f"    🔧 Creating new TileRasterizer for final rendering with {len(radii)} primitives...")
                 self.cuda_rasterizer = TileRasterizer(
                     self.H, self.W, self.tile_size, sigma, 
-                    self.alpha_upper_bound, 300, len(radii),
+                    self.alpha_upper_bound, self.max_prims_per_pixel, len(radii),
                     use_fp16=self.use_fp16
                 )
 
@@ -729,7 +793,15 @@ class SimpleTileRenderer(VectorRenderer):
                             rendered_alpha=rendered_alpha)
                     
                 # Scale the loss and call backward
+                start_backward_time = time.time()
                 scaler.scale(loss).backward()
+                end_backward_time = time.time()
+                
+                # Update PyTorch backward timing statistics
+                backward_time_ms = (end_backward_time - start_backward_time) * 1000.0
+                self.pytorch_backward_time += backward_time_ms
+                self.pytorch_backward_count += 1
+                
                 scaler.step(optimizer)
                 scaler.update()
                 #loss.backward()
@@ -752,7 +824,14 @@ class SimpleTileRenderer(VectorRenderer):
                                          rendered_alpha=rendered_alpha)
                 
                 # Backward pass
+                start_backward_time = time.time()
                 loss.backward()
+                end_backward_time = time.time()
+                
+                # Update PyTorch backward timing statistics
+                backward_time_ms = (end_backward_time - start_backward_time) * 1000.0
+                self.pytorch_backward_time += backward_time_ms
+                self.pytorch_backward_count += 1
                 
                 if DEBUG_MODE_DETAIL:
                     print(f"\n🔍 Gradient Analysis (First 10 Primitives) - Iteration {iteration}")
@@ -834,6 +913,50 @@ class SimpleTileRenderer(VectorRenderer):
                     self.save_image_tensor(rendered, img_path)
         
         print(f"Tile-based optimization completed. Final loss: {loss.item():.6f}")
+        
+        used = vram_used_by_pid()
+        mb = lambda b: b / (1024**2)
+        gb = lambda b: b / (1024**3)
+        
+        # Print CUDA timing statistics
+        if CUDA_AVAILABLE:
+            print("\n" + "="*60)
+            print("CUDA Performance Statistics:")
+            print("="*60)
+            if self.use_fp16:
+                print_cuda_timing_stats_fp16()
+            else:
+                print_cuda_timing_stats()
+            print("-"*60)
+            print(f"VRAM used: {mb(used):.0f} MiB, {gb(used):.3f} GB")
+            print("="*60)
+        else:
+            # Print PyTorch timing statistics
+            print("\n" + "="*60)
+            print("PyTorch Performance Statistics:")
+            print("="*60)
+            print("Forward Pass:")
+            print(f"  Total time: {self.pytorch_forward_time:.2f} ms")
+            print(f"  Iterations: {self.pytorch_forward_count}")
+            if self.pytorch_forward_count > 0:
+                print(f"  Average time per iteration: {self.pytorch_forward_time / self.pytorch_forward_count:.2f} ms")
+            
+            print("Backward Pass:")
+            print(f"  Total time: {self.pytorch_backward_time:.2f} ms")
+            print(f"  Iterations: {self.pytorch_backward_count}")
+            if self.pytorch_backward_count > 0:
+                print(f"  Average time per iteration: {self.pytorch_backward_time / self.pytorch_backward_count:.2f} ms")
+            
+            print("Combined:")
+            print(f"  Total time: {self.pytorch_forward_time + self.pytorch_backward_time:.2f} ms")
+            print(f"  Total iterations: {self.pytorch_forward_count + self.pytorch_backward_count}")
+            if (self.pytorch_forward_count + self.pytorch_backward_count) > 0:
+                avg_time = (self.pytorch_forward_time + self.pytorch_backward_time) / (self.pytorch_forward_count + self.pytorch_backward_count)
+                print(f"  Average time per iteration: {avg_time:.2f} ms")
+            print("-"*60)
+            print(f"VRAM used: {mb(used):.0f} MiB, {gb(used):.3f} GB")
+            print("="*60)
+        
         return x, y, r, v, theta, c
 
     def do_prune(self, x , y , r, v, theta, c, prune_conf, adjusted_pts, target_binary_mask, target_image) -> None:
@@ -1042,7 +1165,7 @@ class SimpleTileRenderer(VectorRenderer):
         else:
             print(f"❌ Debug - self.c_o is None")
             return None
-        tile_c_blend = self.c_blend  # Use config value
+        tile_c_blend = torch.tensor(self.c_blend, device=self.device, dtype=torch.float16 if self.use_fp16 else torch.float32)  # Convert to tensor
         
         # Create coordinate grid for this tile
         tile_X = self.X[:, y_start:y_end, x_start:x_end]  # (1, tile_h, tile_w)
@@ -1116,8 +1239,13 @@ class SimpleTileRenderer(VectorRenderer):
             
             # Apply c_o and c_blend
             c_o_sigmoid = torch.sigmoid(tile_c_o)
-            c_blend_sigmoid = torch.sigmoid(tile_c_blend)
-            rgb = rgb * (1 - c_blend_sigmoid) + c_o_sigmoid * c_blend_sigmoid
+            # Reshape c_o_sigmoid to match rgb shape: (num_primitives_in_tile, 3)
+            # Take the center pixel or average of each primitive's color map
+            h_center, w_center = tile_c_o.shape[1] // 2, tile_c_o.shape[2] // 2
+            c_o_sigmoid_center = c_o_sigmoid[:, h_center, w_center, :]  # (num_primitives_in_tile, 3)
+            
+            c_blend_sigmoid = torch.sigmoid(tile_c_blend).item()  # Convert to scalar
+            rgb = rgb * (1 - c_blend_sigmoid) + c_o_sigmoid_center * c_blend_sigmoid
             
             # Apply alpha to masks
             a = tile_masks * alpha.view(-1, 1, 1)

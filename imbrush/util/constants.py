@@ -18,6 +18,8 @@ VARIANCE_BASE_PROB = 0.1  # Base probability for low-variance areas
 # V_INIT_BIAS = -5.0
 # V_INIT_SLOPE = 3.0
 
+MAX_PRIMS_PER_PIXEL = 100
+
 # ==================== Optimization Constants ====================
 LR_DEFAULT = 0.1
 # Learning rate gains (relative to base learning rate)
