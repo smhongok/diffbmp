@@ -1030,6 +1030,16 @@ class VectorRenderer:
             # Create foreground mask
             alpha_mask = target_alpha > 0     # Shape: (H, W), boolean mask
             
+            # Prepare primitive parameters dict for regularization losses
+            primitive_params = {
+                'x': x,
+                'y': y,
+                'r': r,
+                'v': v,
+                'theta': theta,
+                'c': c
+            }
+            
             # Use loss composer
             result = self.loss_composer.compute_loss(
                 rendered=rendered,
@@ -1037,17 +1047,29 @@ class VectorRenderer:
                 rendered_alpha=rendered_alpha,
                 target_alpha=target_alpha,
                 mask=alpha_mask,
-                return_components=return_components
+                return_components=return_components,
+                primitive_params=primitive_params
             )
         else:
             # 3-channel target (with background)
+            # Prepare primitive parameters dict for regularization losses
+            primitive_params = {
+                'x': x,
+                'y': y,
+                'r': r,
+                'v': v,
+                'theta': theta,
+                'c': c
+            }
+            
             result = self.loss_composer.compute_loss(
                 rendered=rendered,
                 target=target,
                 rendered_alpha=None,
                 target_alpha=None,
                 mask=None,
-                return_components=return_components
+                return_components=return_components,
+                primitive_params=primitive_params
             )
         
         return result

@@ -25,6 +25,8 @@ output_webpage/src_sequential_lyrics/index.html
 !assets/primitives/oldhangul*
 !assets/primitives/razor*
 !assets/primitives/CelebA/
+!assets/primitives/*seurat*
+!assets/primitives/*Seurat*
 
 assets/font/*
 !assets/font/arial.ttf
@@ -36,6 +38,7 @@ assets/texts/*
 configs/*
 !configs/default*.json
 !configs/sequential*.json
+!configs/seurat*.json
 
 images/person/*
 !images/person/pororo.jpg
