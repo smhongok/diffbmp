@@ -16,7 +16,8 @@ std::shared_ptr<TileRasterizerFP16> global_tile_rasterizer_fp16 = nullptr;
 TileRasterizerFP16::TileRasterizerFP16(int image_h, int image_w, int tile_sz, __half sig, __half alpha_ub, int max_prims, int num_prims) 
     : image_height(image_h), image_width(image_w), tile_size(tile_sz), sigma(sig), 
       alpha_upper_bound(alpha_ub), max_prims_per_pixel(max_prims), num_primitives(num_prims),
-      memory_allocated(false) {
+      memory_allocated(false), total_forward_time(0.0), total_backward_time(0.0), 
+      forward_iteration_count(0), backward_iteration_count(0) {
 
     pixel_alphas = nullptr;
     pixel_colors_r = nullptr;
@@ -306,6 +307,9 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizerFP16::forward(
     float c_blend,
     torch::Tensor tile_primitive_mapping) {
     
+    // Start timing
+    forward_start_time = std::chrono::high_resolution_clock::now();
+    
     // Check if memory is allocated
     if (!memory_allocated) {
         throw std::runtime_error("TileRasterizerFP16 memory not allocated");
@@ -483,6 +487,14 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizerFP16::forward(
     printf("TileRasterizerFP16::forward: CUDA tensors created successfully\n");
 #endif
     
+    // End timing and update statistics
+    forward_end_time = std::chrono::high_resolution_clock::now();
+    auto forward_duration = std::chrono::duration_cast<std::chrono::microseconds>(forward_end_time - forward_start_time);
+    double forward_time_ms = forward_duration.count() / 1000.0;
+    
+    total_forward_time += forward_time_ms;
+    forward_iteration_count++;
+    
     return std::make_tuple(out_color_tensor, out_alpha_tensor);
 }
 
@@ -525,6 +537,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     cudaMemset(grad_opacities, 0,  num_primitives * sizeof(__half));
     cudaMemset(grad_colors, 0,  num_primitives * 3 * sizeof(__half));
     
+    // Start timing for kernel execution only
+    backward_start_time = std::chrono::high_resolution_clock::now();
+    
     // Launch CUDA backward kernel using the stored global memory
     CudaRasterizeTilesBackwardKernelFP16(
         reinterpret_cast<const __half*>(grad_out_color.data_ptr()),
@@ -566,6 +581,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
             __float2half(lr_config[6].item<float>())  // gain_c
         )
     );
+    
+    // End timing for kernel execution only
+    backward_end_time = std::chrono::high_resolution_clock::now();
+    auto backward_duration = std::chrono::duration_cast<std::chrono::microseconds>(backward_end_time - backward_start_time);
+    double backward_time_ms = backward_duration.count() / 1000.0;
+    
+    total_backward_time += backward_time_ms;
+    backward_iteration_count++;
     
     // Create tensors from CPU memory
     // Create CUDA tensors directly (no CPU copy needed)
@@ -619,79 +642,53 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     return std::make_tuple(grad_means2D_tensor, grad_radii_tensor, grad_rotations_tensor, grad_opacities_tensor, grad_colors_tensor);
 }
 
-// Wrapper functions for backward compatibility
-std::tuple<torch::Tensor, torch::Tensor> CudaRasterizeTilesForwardFP16(
-    torch::Tensor means2D,
-    torch::Tensor radii,
-    torch::Tensor rotations,
-    torch::Tensor opacities,
-    torch::Tensor colors,
-    torch::Tensor colors_orig,
-    torch::Tensor primitive_templates,
-    torch::Tensor global_bmp_sel,
-    float c_blend,
-    torch::Tensor tile_primitive_mapping,
-    int image_height,
-    int image_width,
-    int tile_size,
-    float sigma) {
-    
-    const int num_primitives = radii.size(0);
-    
-    // Create configuration structures
-    TileConfigFP16 tile_config(image_height, image_width, tile_size, __float2half(sigma), __float2half(1.0f));
-    PrimitiveConfigFP16 prim_config(num_primitives, primitive_templates.size(0), 
-                               primitive_templates.size(1), primitive_templates.size(2), 500);
-
-    // Debug: Print input tensor info
-#if DEBUG_CUDA_KERNELS_FP16
-    printf("C++ Wrapper FP16: num_primitives=%d, image_size=%dx%d, tile_size=%d, total_tiles=%d\n",
-           num_primitives, image_width, image_height, tile_size, tile_config.total_tiles);
-#endif
-    // Create or reuse global rasterizer instance
-    if (!global_tile_rasterizer_fp16 || 
-        global_tile_rasterizer_fp16->image_height != image_height ||
-        global_tile_rasterizer_fp16->image_width != image_width ||
-        global_tile_rasterizer_fp16->tile_size != tile_size ||
-        global_tile_rasterizer_fp16->num_primitives != num_primitives) {
-        
-#if DEBUG_CUDA_KERNELS_FP16
-        printf("Creating new TileRasterizerFP16: %dx%d, tile_size=%d, num_prims=%d\n", image_width, image_height, tile_size, num_primitives);
-#endif
-        
-        global_tile_rasterizer_fp16 = std::make_shared<TileRasterizerFP16>(image_height, image_width, tile_size, __float2half(sigma), __float2half(1.0f), 500, num_primitives);
-        
-#if DEBUG_CUDA_KERNELS_FP16
-        printf("TileRasterizerFP16 created successfully\n");
-#endif
+// Timing functions implementation
+void TileRasterizerFP16::printTimingStats() {
+    std::cout << "=== CUDA Tile Rasterizer FP16 Timing Statistics ===" << std::endl;
+    std::cout << "Forward Pass:" << std::endl;
+    std::cout << "  Total time: " << total_forward_time << " ms" << std::endl;
+    std::cout << "  Iterations: " << forward_iteration_count << std::endl;
+    if (forward_iteration_count > 0) {
+        std::cout << "  Average time per iteration: " << (total_forward_time / forward_iteration_count) << " ms" << std::endl;
     }
     
-    return global_tile_rasterizer_fp16->forward(means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, tile_primitive_mapping);
+    std::cout << "Backward Pass:" << std::endl;
+    std::cout << "  Total time: " << total_backward_time << " ms" << std::endl;
+    std::cout << "  Iterations: " << backward_iteration_count << std::endl;
+    if (backward_iteration_count > 0) {
+        std::cout << "  Average time per iteration: " << (total_backward_time / backward_iteration_count) << " ms" << std::endl;
+    }
+    
+    std::cout << "Combined:" << std::endl;
+    std::cout << "  Total time: " << (total_forward_time + total_backward_time) << " ms" << std::endl;
+    std::cout << "  Total iterations: " << (forward_iteration_count + backward_iteration_count) << std::endl;
+    if ((forward_iteration_count + backward_iteration_count) > 0) {
+        std::cout << "  Average time per iteration: " << ((total_forward_time + total_backward_time) / (forward_iteration_count + backward_iteration_count)) << " ms" << std::endl;
+    }
+    std::cout << "===============================================" << std::endl;
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> CudaRasterizeTilesBackwardFP16(
-    torch::Tensor grad_out_color,
-    torch::Tensor grad_out_alpha,
-    torch::Tensor means2D,
-    torch::Tensor radii,
-    torch::Tensor rotations,
-    torch::Tensor opacities,
-    torch::Tensor colors,
-    torch::Tensor colors_orig,
-    torch::Tensor primitive_templates,
-    torch::Tensor global_bmp_sel,  // [num_primitives] - template selection indices
-    float c_blend,
-    torch::Tensor lr_config_tensor,
-    int image_height,
-    int image_width,
-    int tile_size,
-    float sigma) {
-    
-    // Use the same global rasterizer instance that was used in forward pass
-    if (!global_tile_rasterizer_fp16) {
-        throw std::runtime_error("Backward pass called without forward pass");
+void TileRasterizerFP16::resetTimingStats() {
+    total_forward_time = 0.0;
+    total_backward_time = 0.0;
+    forward_iteration_count = 0;
+    backward_iteration_count = 0;
+    std::cout << "FP16 Timing statistics reset." << std::endl;
+}
+
+// Python binding functions for timing
+void printCudaTimingStatsFP16() {
+    if (global_tile_rasterizer_fp16) {
+        global_tile_rasterizer_fp16->printTimingStats();
+    } else {
+        std::cout << "No TileRasterizerFP16 instance available for timing stats." << std::endl;
     }
-    
-    return global_tile_rasterizer_fp16->backward(grad_out_color, grad_out_alpha, means2D, radii, rotations, 
-                                           opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, lr_config_tensor);
+}
+
+void resetCudaTimingStatsFP16() {
+    if (global_tile_rasterizer_fp16) {
+        global_tile_rasterizer_fp16->resetTimingStats();
+    } else {
+        std::cout << "No TileRasterizerFP16 instance available for timing stats reset." << std::endl;
+    }
 }

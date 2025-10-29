@@ -48,7 +48,7 @@ class TileRasterizer:
     Class-based tile rasterizer that manages global memory between forward and backward passes.
     This ensures accurate gradient computation for transmit-over compositing.
     """
-    def __init__(self, image_height, image_width, tile_size=16, sigma=0.0, alpha_upper_bound=1.0, max_prims_per_pixel=500, num_primitives=None, use_fp16=False):
+    def __init__(self, image_height, image_width, tile_size=16, sigma=0.0, alpha_upper_bound=1.0, max_prims_per_pixel=151, num_primitives=None, use_fp16=False):
         self.image_height = image_height
         self.image_width = image_width
         self.tile_size = tile_size
@@ -227,5 +227,34 @@ class TileRasterizerFunctionFP16(Function):
                 
         return grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors, None, None, None, None, None, None, None, None, None, None, None
 
+# Timing functions for CUDA performance monitoring
+def print_cuda_timing_stats():
+    """Print CUDA forward and backward timing statistics"""
+    if CUDA_AVAILABLE:
+        _C.print_cuda_timing_stats()
+    else:
+        print("CUDA not available for timing stats")
+
+def reset_cuda_timing_stats():
+    """Reset CUDA timing statistics"""
+    if CUDA_AVAILABLE:
+        _C.reset_cuda_timing_stats()
+    else:
+        print("CUDA not available for timing stats reset")
+
+def print_cuda_timing_stats_fp16():
+    """Print CUDA forward and backward timing statistics for FP16"""
+    if CUDA_FP16_AVAILABLE:
+        _C_fp16.print_cuda_timing_stats_fp16()
+    else:
+        print("CUDA FP16 not available for timing stats")
+
+def reset_cuda_timing_stats_fp16():
+    """Reset CUDA timing statistics for FP16"""
+    if CUDA_FP16_AVAILABLE:
+        _C_fp16.reset_cuda_timing_stats_fp16()
+    else:
+        print("CUDA FP16 not available for timing stats reset")
+
 #__all__ = ['rasterize_tiles', 'TileRasterizer', 'TileRasterizerFunction', 'CudaTileRasterizeFunction', 'CUDA_AVAILABLE']
-__all__ = ['TileRasterizer', 'TileRasterizerFunction', 'TileRasterizerFunctionFP16', 'CUDA_AVAILABLE']
+__all__ = ['TileRasterizer', 'TileRasterizerFunction', 'TileRasterizerFunctionFP16', 'CUDA_AVAILABLE', 'CUDA_FP16_AVAILABLE', 'print_cuda_timing_stats', 'reset_cuda_timing_stats', 'print_cuda_timing_stats_fp16', 'reset_cuda_timing_stats_fp16']

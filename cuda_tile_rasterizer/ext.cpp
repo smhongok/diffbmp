@@ -49,52 +49,13 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     return global_tile_rasterizer->backward(grad_out_color, grad_out_alpha, means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, lr_config_tensor);
 }
 
-std::tuple<torch::Tensor, torch::Tensor> rasterize_tiles(
-    torch::Tensor means2D,
-    torch::Tensor radii,
-    torch::Tensor rotations,
-    torch::Tensor opacities,
-    torch::Tensor colors,
-    torch::Tensor colors_orig,
-    torch::Tensor primitive_templates,
-    torch::Tensor global_bmp_sel,
-    float c_blend,
-    torch::Tensor tile_primitive_mapping,
-    int image_height,
-    int image_width,
-    int tile_size,
-    float sigma) {
-    
-    return CudaRasterizeTilesForward(means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, tile_primitive_mapping, image_height, image_width, tile_size, sigma);
-}
-
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> rasterize_tiles_backward(
-    torch::Tensor grad_out_color,
-    torch::Tensor grad_out_alpha,
-    torch::Tensor means2D,
-    torch::Tensor radii,
-    torch::Tensor rotations,
-    torch::Tensor opacities,
-    torch::Tensor colors,
-    torch::Tensor colors_orig,
-    torch::Tensor primitive_templates,
-    torch::Tensor global_bmp_sel,  // [num_primitives] - template selection indices
-    float c_blend,
-    torch::Tensor lr_config_tensor,
-    int image_height,
-    int image_width,
-    int tile_size,
-    float sigma) {
-    
-    return CudaRasterizeTilesBackward(grad_out_color, grad_out_alpha, means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, lr_config_tensor, image_height, image_width, tile_size, sigma);
-}
-
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("rasterize_tiles", &rasterize_tiles, "CUDA tile rasterization forward");
-    m.def("rasterize_tiles_backward", &rasterize_tiles_backward, "CUDA tile rasterization backward");
-    
     // Class-based functions
     m.def("init_tile_rasterizer", &init_tile_rasterizer, "Initialize global tile rasterizer");
     m.def("rasterize_tiles_class", &rasterize_tiles_class, "CUDA tile rasterization forward (class-based)");
     m.def("rasterize_tiles_backward_class", &rasterize_tiles_backward_class, "CUDA tile rasterization backward (class-based)");
+    
+    // Timing functions
+    m.def("print_cuda_timing_stats", &printCudaTimingStats, "Print CUDA timing statistics");
+    m.def("reset_cuda_timing_stats", &resetCudaTimingStats, "Reset CUDA timing statistics");
 }
