@@ -24,6 +24,7 @@ output_webpage/src_sequential_lyrics/index.html
 !assets/primitives/baby_footprint*
 !assets/primitives/oldhangul*
 !assets/primitives/razor*
+!assets/primitives/CelebA/
 
 assets/font/*
 !assets/font/arial.ttf
@@ -43,6 +44,8 @@ images/person/*
 !images/person/안중근.jpg
 !images/person/kingsejong*
 !images/person/vangogh*
+!images/person/marilyn.png
+
 
 images/gif/*
 !images/gif/pororo_monkey_crop_first2.gif
@@ -248,3 +251,4 @@ visualize_gif_canny_edges.py
 frame_counter.py
 cuda_tile_rasterizer/build_bypass.py
 test_gradient_basic.png
+**/ignore_*/

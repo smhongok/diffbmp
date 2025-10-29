@@ -24,6 +24,7 @@ from imbrush.util.primitive_loader import PrimitiveLoader
 from imbrush.util.svg_converter import FontParser, ImageToSVG
 from imbrush.core.initializer.svgsplat_initializater import StructureAwareInitializer
 from imbrush.core.initializer.random_initializater import RandomInitializer
+from imbrush.util.primitive_utils import expand_primitive_wildcards
 
 # Route visualization flag - set to True to enable primitive movement visualization
 ENABLE_ROUTE_VISUALIZATION = False
@@ -89,6 +90,7 @@ exist_bg = pp_conf.get("exist_bg", True)
 
 # Handle primitive file loading (same for all images)
 primitive_file_config = config["primitive"].get("primitive_file")
+primitive_file_config = expand_primitive_wildcards(primitive_file_config)
 
 # Handle list of files (multiple primitives)
 if isinstance(primitive_file_config, list):
@@ -160,7 +162,8 @@ try:
         primitive_paths=svg_path,
         output_width=config["primitive"]["output_width"],
         device=device,
-        bg_threshold=config["primitive"]["bg_threshold"]
+        bg_threshold=config["primitive"]["bg_threshold"],
+        radial_transparency=config["primitive"]["radial_transparency"]
     )
     # Keep reference for backward compatibility
     svg_loader = primitive_loader
