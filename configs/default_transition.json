@@ -1,0 +1,53 @@
+{
+    "preprocessing": {
+        "final_width": [1024],
+        "square_crop": true,
+        "img_path": [
+            "images/transition/Adam_creation_1.jpg",
+            "images/transition/Adam_creation_2.jpg"
+        ]
+    },
+    "primitive": {
+        "primitive_file": ["apple.png"],
+        "convert_to_svg": false,
+        "primitive_hollow": false,
+        "output_width": 128
+    },
+    "initialization": {
+        "initializer": "structure_aware",
+        "N": [3000],
+        "radii_min": 2,
+        "radii_max": 50,
+        "debug_mode": true,
+        "detail_first": false
+    },
+    "optimization": {
+        "use_fp16": false,
+        "num_iterations": 100,
+        "learning_rate": {
+            "default": 0.1
+        },
+        "do_decay": true,
+        "do_gaussian_blur": true,
+        "c_blend": 0.0,
+        "loss_config": {
+            "type": "combined",
+            "components": [
+                {"name": "mse", "weight": 1.0},
+                {"name": "perceptual", "weight": 0.2}
+            ]
+        }
+    },
+    "postprocessing": {
+        "output_folder": "outputs/square_crop/",
+        "compute_psnr": true,
+        "export_psd": false,
+        "export_transition": true,
+        "transition_config": {
+            "fps": 30,
+            "transition_frames": 60,
+            "hold_frames": 20,
+            "interpolation_style": "sine"
+        }
+    }
+} 
