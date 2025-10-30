@@ -4,8 +4,9 @@
             512
         ],
         "img_path": [
-            "images/spatial_constraint/Imagen_dog.png"
+            "images/spatial_constraint/15.jpg"
         ],
+        "mask_path": "images/spatial_constraint/masks/00015_hair.png",
         "exist_bg" : false,
         "debug_save_intermediates" : true,
         "prevent_overshooting" : {
@@ -15,7 +16,7 @@
         }
     },
     "primitive": {
-        "primitive_file": "paw_complicated.png",
+        "primitive_file": "mike_white_bg.png",
         "convert_to_svg": false,
         "svg_hollow": false,
         "output_width": 128
@@ -23,7 +24,7 @@
     "initialization": {
         "initializer": "structure_aware",
         "N": [
-            3000
+            500
         ],
         "radii_min": 2,
         "radii_max": 64,
@@ -52,6 +53,7 @@
         },
         "do_decay": true,
         "do_gaussian_blur": true,
+        "c_blend": 0.7,
         "alpha_upper_bound" : 0.7
     },
     "postprocessing": {

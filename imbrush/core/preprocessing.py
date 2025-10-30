@@ -218,11 +218,29 @@ class Preprocessor:
         """
         img = Image.open(config["img_path"]).convert('RGBA')  # 8-bit color with alpha
         binary_image = (1-(np.array(img)[:, :, 3] > 0).astype(np.uint8)) * 255
-
         img_array = np.array(img)
+        if config.get("mask_path") is not None:
+            # Use provided mask path to create binary mask
+            mask_img = Image.open(config["mask_path"]).convert('L')
+            
+            # Resize mask to match image size if they don't match
+            img_w, img_h = img.size
+            mask_w, mask_h = mask_img.size
+            if (mask_w, mask_h) != (img_w, img_h):
+                target_w = min(img_w, mask_w)
+                target_h = min(img_h, mask_h)
+                mask_img = mask_img.resize((target_w, target_h), Image.NEAREST)
+                img = img.resize((target_w, target_h), Image.NEAREST)
+            
+            binary_image = 255 - np.array(mask_img)
+
         if make_bg_white:
+            # Update img_array after potential resize
+            img_array = np.array(img)
+
             # Convert transparent background (alpha=0) to white
             img_array[binary_image!=0, :3] = 255  # Set RGB to white
+            img_array[binary_image!=0, 3] = 0  # Set alpha to 0
             img = Image.fromarray(img_array, mode='RGBA')
 
 
