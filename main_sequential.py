@@ -16,6 +16,7 @@ from PIL import Image
 import json
 import argparse
 import cv2
+import csv
 from datetime import datetime
 from imbrush.core.renderer.sequential_renderer import SequentialFrameRenderer
 from imbrush.core.renderer.simple_tile_renderer import SimpleTileRenderer
@@ -39,6 +40,58 @@ from imbrush.util.temporal_consistency_metrics import compute_all_temporal_metri
 if ENABLE_ROUTE_VISUALIZATION:
     from imbrush.util.route_visualizer import create_route_visualization
 
+
+def write_metrics_to_csv(csv_path, metrics_data):
+    """
+    Write or append metrics data to a CSV file.
+    
+    Args:
+        csv_path: Path to the CSV file
+        metrics_data: Dictionary containing all metrics to write
+    """
+    # Check if file exists to determine if we need to write headers
+    file_exists = os.path.exists(csv_path)
+    
+    # Ensure directory exists
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    
+    # Define column headers in the order they should appear
+    headers = [
+        'timestamp',
+        'num_frames',
+        'num_splats',
+        # Adaptive control config
+        'ac_enabled', 'ac_tile_rows', 'ac_tile_cols', 'ac_scale_threshold',
+        'ac_opacity_threshold', 'ac_opacity_reduction_factor', 'ac_max_primitives_per_tile',
+        'ac_min_criteria_count', 'ac_front_primitives_percentile', 'ac_apply_epochs',
+        'ac_gr_enabled', 'ac_gr_process_all_pixels', 'ac_gr_pixels_per_tile',
+        # Selective parameter optimization config
+        'spo_enabled', 'spo_freeze_distance_threshold', 'spo_diff_magnitude_threshold',
+        'spo_tight_freezemask',
+        # Per-frame metrics (comma-separated values in single column)
+        'frame_psnr', 'frame_ssim', 'frame_vif', 'frame_lpips',
+        # Average metrics
+        'avg_psnr', 'avg_ssim', 'avg_vif', 'avg_lpips',
+        # Temporal consistency metrics
+        'E_warp', 'tOF', 'tLP'
+    ]
+    
+    # Open file in append mode if it exists, otherwise write mode
+    mode = 'a' if file_exists else 'w'
+    
+    with open(csv_path, mode, newline='', encoding='utf-8') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=headers)
+        
+        # Write header only if file is new
+        if not file_exists:
+            writer.writeheader()
+        
+        # Ensure all expected keys exist in metrics_data (use empty string as default)
+        row_data = {key: metrics_data.get(key, '') for key in headers}
+        
+        writer.writerow(row_data)
+    
+    print(f"Metrics {'appended to' if file_exists else 'written to'}: {csv_path}")
 
 
 html_extra_path_special = None
@@ -564,51 +617,44 @@ if config['postprocessing'].get('compute_psnr', False):
         total_vif = 0
         total_lpips = 0
         
-        # Prepare metrics txt output path under configured output folder
-        metrics_txt_path = os.path.join(output_dir, f"metrics_{timestamp}.txt")
-        try:
-            metrics_fh = open(metrics_txt_path, 'w')
-            metrics_fh.write("Sequential frame metrics\n")
-            metrics_fh.write(f"Timestamp: {timestamp}\n")
-            
-            # Write adaptive_control configuration snapshot for record
-            try:
-                ac_conf = sequential_config.get("adaptive_control", {})
-                metrics_fh.write("adaptive_control_config\n")
-                metrics_fh.write(f"  enabled: {ac_conf.get('enabled', False)}\n")
-                metrics_fh.write(f"  tile_rows: {ac_conf.get('tile_rows', '')}\n")
-                metrics_fh.write(f"  tile_cols: {ac_conf.get('tile_cols', '')}\n")
-                metrics_fh.write(f"  scale_threshold: {ac_conf.get('scale_threshold', '')}\n")
-                metrics_fh.write(f"  opacity_threshold: {ac_conf.get('opacity_threshold', '')}\n")
-                metrics_fh.write(f"  opacity_reduction_factor: {ac_conf.get('opacity_reduction_factor', '')}\n")
-                metrics_fh.write(f"  max_primitives_per_tile: {ac_conf.get('max_primitives_per_tile', '')}\n")
-                metrics_fh.write(f"  min_criteria_count: {ac_conf.get('min_criteria_count', '')}\n")
-                metrics_fh.write(f"  front_primitives_percentile: {ac_conf.get('front_primitives_percentile', '')}\n")
-                metrics_fh.write(f"  apply_epochs: {ac_conf.get('apply_epochs', '')}\n")
-                gr_conf = ac_conf.get('gradient_ranking', {})
-                if isinstance(gr_conf, dict):
-                    metrics_fh.write("  gradient_ranking:\n")
-                    metrics_fh.write(f"    enabled: {gr_conf.get('enabled', False)}\n")
-                    metrics_fh.write(f"    process_all_pixels: {gr_conf.get('process_all_pixels', False)}\n")
-                    metrics_fh.write(f"    pixels_per_tile: {gr_conf.get('pixels_per_tile', '')}\n")
-            except Exception as e:
-                print(f"Warning: Failed to write adaptive_control config to metrics file: {e}")
-            
-            # Write selective_parameter_optimization configuration snapshot for record
-            try:
-                spo_conf = sequential_config.get("selective_parameter_optimization", {})
-                metrics_fh.write("selective_parameter_optimization_config\n")
-                metrics_fh.write(f"  enabled: {spo_conf.get('enabled', False)}\n")
-                metrics_fh.write(f"  freeze_distance_threshold: {spo_conf.get('freeze_distance_threshold', '')}\n")                
-                metrics_fh.write(f"  diff_magnitude_threshold: {spo_conf.get('diff_magnitude_threshold', '')}\n")
-                metrics_fh.write(f"  tight_freezemask: {spo_conf.get('tight_freezemask', False)}\n")
-            except Exception as e:
-                print(f"Warning: Failed to write selective_parameter_optimization config to metrics file: {e}")
-
-            metrics_fh.write("frame,psnr,ssim,vif,lpips\n")
-        except Exception as e:
-            print(f"Warning: Could not open metrics file for writing: {e}")
-            metrics_fh = None
+        # Prepare CSV metrics data dictionary
+        metrics_data = {
+            'timestamp': timestamp,
+            'num_frames': len(frame_results),
+            'num_splats': len(frame_results[0]['x']) if frame_results else 0
+        }
+        
+        # Add adaptive_control configuration
+        ac_conf = sequential_config.get("adaptive_control", {})
+        metrics_data['ac_enabled'] = ac_conf.get('enabled', False)
+        metrics_data['ac_tile_rows'] = ac_conf.get('tile_rows', '')
+        metrics_data['ac_tile_cols'] = ac_conf.get('tile_cols', '')
+        metrics_data['ac_scale_threshold'] = ac_conf.get('scale_threshold', '')
+        metrics_data['ac_opacity_threshold'] = ac_conf.get('opacity_threshold', '')
+        metrics_data['ac_opacity_reduction_factor'] = ac_conf.get('opacity_reduction_factor', '')
+        metrics_data['ac_max_primitives_per_tile'] = ac_conf.get('max_primitives_per_tile', '')
+        metrics_data['ac_min_criteria_count'] = ac_conf.get('min_criteria_count', '')
+        metrics_data['ac_front_primitives_percentile'] = ac_conf.get('front_primitives_percentile', '')
+        metrics_data['ac_apply_epochs'] = str(ac_conf.get('apply_epochs', ''))
+        
+        gr_conf = ac_conf.get('gradient_ranking', {})
+        if isinstance(gr_conf, dict):
+            metrics_data['ac_gr_enabled'] = gr_conf.get('enabled', False)
+            metrics_data['ac_gr_process_all_pixels'] = gr_conf.get('process_all_pixels', False)
+            metrics_data['ac_gr_pixels_per_tile'] = gr_conf.get('pixels_per_tile', '')
+        
+        # Add selective_parameter_optimization configuration
+        spo_conf = sequential_config.get("selective_parameter_optimization", {})
+        metrics_data['spo_enabled'] = spo_conf.get('enabled', False)
+        metrics_data['spo_freeze_distance_threshold'] = spo_conf.get('freeze_distance_threshold', '')
+        metrics_data['spo_diff_magnitude_threshold'] = spo_conf.get('diff_magnitude_threshold', '')
+        metrics_data['spo_tight_freezemask'] = spo_conf.get('tight_freezemask', False)
+        
+        # Initialize lists for per-frame metrics
+        frame_psnr_list = []
+        frame_ssim_list = []
+        frame_vif_list = []
+        frame_lpips_list = []
         
         # Collect rendered and target frames for temporal metrics
         rendered_frames_np = []
@@ -638,12 +684,11 @@ if config['postprocessing'].get('compute_psnr', False):
             
             print(f"Frame {frame_idx + 1}: PSNR: {psnr_val.item():.2f} dB, SSIM: {ssim_val.item():.4f}, VIF: {vif_val.item():.4f}, LPIPS: {lpips_val.item():.4f}")
             
-            # Write per-frame metrics to txt file if available
-            if metrics_fh is not None:
-                try:
-                    metrics_fh.write(f"{frame_idx + 1},{psnr_val.item():.4f},{ssim_val.item():.6f},{vif_val.item():.6f},{lpips_val.item():.6f}\n")
-                except Exception as e:
-                    print(f"Warning: Failed to write metrics for frame {frame_idx + 1}: {e}")
+            # Collect per-frame metrics for CSV
+            frame_psnr_list.append(f"{psnr_val.item():.4f}")
+            frame_ssim_list.append(f"{ssim_val.item():.6f}")
+            frame_vif_list.append(f"{vif_val.item():.6f}")
+            frame_lpips_list.append(f"{lpips_val.item():.6f}")
             
             total_psnr += psnr_val.item()
             total_ssim += ssim_val.item()
@@ -698,29 +743,35 @@ if config['postprocessing'].get('compute_psnr', False):
         else:
             print(f"\nSkipping temporal consistency metrics (requires >= 2 frames, got {num_frames})")
         
-        # Append averages to metrics txt and close file
-        if metrics_fh is not None:
-            try:
-                metrics_fh.write("\nAverages\n")
-                metrics_fh.write(f"avg_psnr,{total_psnr / num_frames:.4f}\n")
-                metrics_fh.write(f"avg_ssim,{total_ssim / num_frames:.6f}\n")
-                metrics_fh.write(f"avg_vif,{total_vif / num_frames:.6f}\n")
-                metrics_fh.write(f"avg_lpips,{total_lpips / num_frames:.6f}\n")
-                
-                # Write temporal consistency metrics if available
-                if temporal_metrics:
-                    metrics_fh.write("\nTemporal Consistency Metrics\n")
-                    if 'E_warp' in temporal_metrics:
-                        metrics_fh.write(f"E_warp,{temporal_metrics['E_warp']:.8f}\n")
-                    if 'tOF' in temporal_metrics:
-                        metrics_fh.write(f"tOF,{temporal_metrics['tOF']:.8f}\n")
-                    if 'tLP' in temporal_metrics:
-                        metrics_fh.write(f"tLP,{temporal_metrics['tLP']:.8f}\n")
-                
-                metrics_fh.close()
-                print(f"\nPer-frame and temporal metrics saved to: {metrics_txt_path}")
-            except Exception as e:
-                print(f"Warning: Failed to finalize metrics file: {e}")
+        # Add per-frame metrics as comma-separated values
+        metrics_data['frame_psnr'] = ','.join(frame_psnr_list)
+        metrics_data['frame_ssim'] = ','.join(frame_ssim_list)
+        metrics_data['frame_vif'] = ','.join(frame_vif_list)
+        metrics_data['frame_lpips'] = ','.join(frame_lpips_list)
+        
+        # Add average metrics
+        metrics_data['avg_psnr'] = f"{total_psnr / num_frames:.4f}"
+        metrics_data['avg_ssim'] = f"{total_ssim / num_frames:.6f}"
+        metrics_data['avg_vif'] = f"{total_vif / num_frames:.6f}"
+        metrics_data['avg_lpips'] = f"{total_lpips / num_frames:.6f}"
+        
+        # Add temporal consistency metrics if available
+        if temporal_metrics:
+            if 'E_warp' in temporal_metrics:
+                metrics_data['E_warp'] = f"{temporal_metrics['E_warp']:.8f}"
+            if 'tOF' in temporal_metrics:
+                metrics_data['tOF'] = f"{temporal_metrics['tOF']:.8f}"
+            if 'tLP' in temporal_metrics:
+                metrics_data['tLP'] = f"{temporal_metrics['tLP']:.8f}"
+        
+        # Write all metrics to CSV
+        csv_path = sequential_config.get('export', {}).get('metrics_csv_path', './outputs/metrics.csv')
+        try:
+            write_metrics_to_csv(csv_path, metrics_data)
+        except Exception as e:
+            print(f"Warning: Failed to write metrics to CSV: {e}")
+            import traceback
+            traceback.print_exc()
             
     except ImportError as e:
         print(f"Required library missing: {e}. Cannot compute metrics.")

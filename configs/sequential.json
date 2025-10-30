@@ -84,11 +84,12 @@
             "export_frames": true,
             "export_gif": true,
             "export_mp4": false,
-            "frame_duration": 100
+            "frame_duration": 100,
+            "metrics_csv_path": "./outputs/metrics.csv"
         }
     },
     "postprocessing": {
-        "output_folder": "./outputs/sep_init_test/proro/7",
+        "output_folder": "./outputs/sep_init_test/proro/8",
         "hires_export": false,
         "hires_scale_factor": 4.0,
         "compute_psnr": true,
