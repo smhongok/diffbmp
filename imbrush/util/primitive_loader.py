@@ -144,7 +144,7 @@ class PrimitiveLoader:
         img = data['image']
         
         # Resize to target size while maintaining aspect ratio
-        img.thumbnail((self.output_width, self.output_width), Image.Resampling.LANCZOS)
+        img.thumbnail((self.output_width, self.output_width), Image.Resampling.NEAREST)
         
         # Convert to RGB first, then create alpha channel based on background removal
         if img.mode == 'RGBA':
