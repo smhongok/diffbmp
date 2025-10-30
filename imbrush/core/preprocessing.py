@@ -220,19 +220,41 @@ class Preprocessor:
         binary_image = (1-(np.array(img)[:, :, 3] > 0).astype(np.uint8)) * 255
         img_array = np.array(img)
         if config.get("mask_path") is not None:
-            # Use provided mask path to create binary mask
-            mask_img = Image.open(config["mask_path"]).convert('L')
+            # Use provided mask path(s) to create binary mask
+            mask_paths = config["mask_path"]
             
-            # Resize mask to match image size if they don't match
+            # Handle both single path (string) and multiple paths (list)
+            if isinstance(mask_paths, str):
+                mask_paths = [mask_paths]
+            
             img_w, img_h = img.size
-            mask_w, mask_h = mask_img.size
-            if (mask_w, mask_h) != (img_w, img_h):
-                target_w = min(img_w, mask_w)
-                target_h = min(img_h, mask_h)
-                mask_img = mask_img.resize((target_w, target_h), Image.NEAREST)
-                img = img.resize((target_w, target_h), Image.NEAREST)
+            combined_mask = None
             
-            binary_image = 255 - np.array(mask_img)
+            # Load and combine all masks using OR operation
+            for mask_path in mask_paths:
+                mask_img = Image.open(mask_path).convert('L')
+                
+                # Resize mask to match image size if they don't match
+                mask_w, mask_h = mask_img.size
+                if (mask_w, mask_h) != (img_w, img_h):
+                    target_w = min(img_w, mask_w)
+                    target_h = min(img_h, mask_h)
+                    mask_img = mask_img.resize((target_w, target_h), Image.NEAREST)
+                    
+                    # Only resize img once (on first iteration if needed)
+                    if combined_mask is None and (img_w, img_h) != (target_w, target_h):
+                        img = img.resize((target_w, target_h), Image.NEAREST)
+                        img_w, img_h = target_w, target_h
+                
+                mask_array = np.array(mask_img)
+                
+                # Combine masks using OR operation (any non-zero pixel is considered filled)
+                if combined_mask is None:
+                    combined_mask = mask_array
+                else:
+                    combined_mask = np.maximum(combined_mask, mask_array)
+            
+            binary_image = 255 - combined_mask
 
         if make_bg_white:
             # Update img_array after potential resize
