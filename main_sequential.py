@@ -58,6 +58,7 @@ def write_metrics_to_csv(csv_path, metrics_data):
     # Define column headers in the order they should appear
     headers = [
         'timestamp',
+        'input_path',
         'num_frames',
         'num_splats',
         # Adaptive control config
@@ -623,6 +624,9 @@ if config['postprocessing'].get('compute_psnr', False):
             'num_frames': len(frame_results),
             'num_splats': len(frame_results[0]['x']) if frame_results else 0
         }
+        
+        # Add input_path to track experiment source
+        metrics_data['input_path'] = input_path
         
         # Add adaptive_control configuration
         ac_conf = sequential_config.get("adaptive_control", {})

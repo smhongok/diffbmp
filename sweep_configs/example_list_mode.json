@@ -1,0 +1,28 @@
+{
+    "experiment_name": "specific_configurations",
+    "base_config": "configs/sequential.json",
+    "sweep_type": "list",
+    "combinations": [
+        {
+            "sequential.adaptive_control.enabled": true,
+            "sequential.adaptive_control.opacity_threshold": 0.7,
+            "sequential.adaptive_control.max_primitives_per_tile": 3,
+            "optimization.learning_rate.default": 0.1
+        },
+        {
+            "sequential.adaptive_control.enabled": true,
+            "sequential.adaptive_control.opacity_threshold": 0.8,
+            "sequential.adaptive_control.max_primitives_per_tile": 5,
+            "optimization.learning_rate.default": 0.15
+        },
+        {
+            "sequential.adaptive_control.enabled": false,
+            "optimization.learning_rate.default": 0.2
+        }
+    ],
+    "fixed_overrides": {
+        "optimization.num_iterations": 100,
+        "sequential.optimization.num_iterations": 100
+    },
+    "output_base": "./outputs/experiments"
+}

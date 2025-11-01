@@ -1,0 +1,19 @@
+{
+    "experiment_name": "ac_tuning",
+    "base_config": "configs/sequential.json",
+    "sweep_type": "grid",
+    "parameters": {
+        "sequential.adaptive_control.enabled": [true, false],
+        "sequential.adaptive_control.opacity_threshold": [0.6, 0.7, 0.8],
+        "sequential.adaptive_control.max_primitives_per_tile": [3, 4, 5],
+        "sequential.adaptive_control.opacity_reduction_factor": [0.1, 0.3, 0.5],
+        "sequential.adaptive_control.min_criteria_count": [2, 3],
+        "sequential.adaptive_control.scale_threshold": [0.1, 0.125, 0.075],
+        "sequential.adaptive_control.apply_epochs": [[20, 45, 70], [20, 40, 60, 80]]
+    },
+    "fixed_overrides": {
+        "sequential.export.metrics_csv_path": "./outputs/metrics_pororo.csv"
+    },
+    "output_base": "./outputs/experiments_pororo",
+    "description": "Systematic tuning of adaptive control parameters for artifact reduction"
+}

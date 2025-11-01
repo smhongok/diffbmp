@@ -76,13 +76,13 @@
         },
         "selective_parameter_optimization":{
             "enabled": true,
-            "freeze_distance_threshold": 0.1,
+            "freeze_distance_threshold": 0.0,
             "diff_magnitude_threshold": 0.1,
-            "tight_freezemask": false
+            "tight_freezemask": true
         },
         "export": {
             "export_frames": true,
-            "export_gif": true,
+            "export_gif": false,
             "export_mp4": false,
             "frame_duration": 100,
             "metrics_csv_path": "./outputs/metrics.csv"
