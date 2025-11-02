@@ -448,11 +448,6 @@ if config['postprocessing'].get('export_transition', False):
     
     # Get transition configuration
     transition_config = config['postprocessing'].get('transition_config', {})
-    fps = transition_config.get('fps', 30)
-    transition_frames = transition_config.get('transition_frames', 60)
-    hold_frames = transition_config.get('hold_frames', 30)
-    interpolation_style = transition_config.get('interpolation_style', 'linear')
-    
     # Export transition video with holds
     video_path = export_transition_video_with_holds(
         transition_x_list,
@@ -463,10 +458,10 @@ if config['postprocessing'].get('export_transition', False):
         transition_theta_list,
         renderer=renderer,
         output_folder=config['postprocessing'].get('output_folder', 'outputs/'),
-        fps=fps,
-        transition_frames=transition_frames,
-        hold_frames=hold_frames,
-        interpolation_style=interpolation_style,
+        fps=transition_config.get('fps', 30),
+        transition_frames=transition_config.get('transition_frames', 60),
+        hold_frames=transition_config.get('hold_frames', 30),
+        interpolation_style=transition_config.get('interpolation_style', 'linear'),
         device=device
     )
     

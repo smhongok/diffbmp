@@ -1,6 +1,6 @@
 {
     "preprocessing": {
-        "final_width": [1024],
+        "final_width": [256],
         "square_crop": true,
         "img_path": [
             "images/transition/Adam_creation_1.jpg",
@@ -8,15 +8,15 @@
         ]
     },
     "primitive": {
-        "primitive_file": ["apple.png"],
+        "primitive_file": ["praying_hands.png"],
         "convert_to_svg": false,
         "primitive_hollow": false,
         "output_width": 128
     },
     "initialization": {
         "initializer": "structure_aware",
-        "N": [3000],
-        "radii_min": 2,
+        "N": [1000],
+        "radii_min": 10,
         "radii_max": 50,
         "debug_mode": true,
         "detail_first": false
@@ -44,10 +44,10 @@
         "export_psd": false,
         "export_transition": true,
         "transition_config": {
-            "fps": 30,
+            "fps": 15,
             "transition_frames": 60,
             "hold_frames": 20,
-            "interpolation_style": "sine"
+            "interpolation_style": "ease_in_out"
         }
     }
 } 
