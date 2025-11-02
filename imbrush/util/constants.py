@@ -18,6 +18,8 @@ VARIANCE_BASE_PROB = 0.1  # Base probability for low-variance areas
 # V_INIT_BIAS = -5.0
 # V_INIT_SLOPE = 3.0
 
+MAX_PRIMS_PER_PIXEL = 100
+
 # ==================== Optimization Constants ====================
 LR_DEFAULT = 0.1
 # Learning rate gains (relative to base learning rate)
@@ -73,6 +75,7 @@ DEFAULT_OUTPUT_WIDTH = 128
 CONVERT_TO_SVG_DEFAULT = False
 PRIMITIVE_HOLLOW_DEFAULT = False
 REMOVE_PUNCTUATION_DEFAULT = False
+RADIAL_TRANSPARENCY_DEFAULT = False
 
 # Renderer defaults
 DEFAULT_TILE_SIZE = 32
@@ -170,6 +173,7 @@ def apply_constants_to_config(config: dict) -> dict:
         config["primitive"].setdefault("convert_to_svg", CONVERT_TO_SVG_DEFAULT)
         config["primitive"].setdefault("primitive_hollow", PRIMITIVE_HOLLOW_DEFAULT)
         config["primitive"].setdefault("remove_punctuation", REMOVE_PUNCTUATION_DEFAULT)
+        config["primitive"].setdefault("radial_transparency", RADIAL_TRANSPARENCY_DEFAULT)
     
     # Apply constants as defaults for sequential section
     if "sequential" not in config:

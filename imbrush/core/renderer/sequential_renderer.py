@@ -36,12 +36,12 @@ class SequentialFrameRenderer(SimpleTileRenderer):
     Inherits from SimpleTileRenderer and uses warmup scheduling for loss.
     """
     
-    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None, tile_size=32, sigma = 1.0):
+    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None, tile_size=32, sigma = 1.0, c_blend=0.0, primitive_colors: torch.Tensor = None):
         # Pass parameters to SimpleTileRenderer using keyword arguments
         super().__init__(canvas_size, S, tile_size=tile_size, 
                         alpha_upper_bound=alpha_upper_bound, device=device, 
                         use_fp16=use_fp16, gamma=gamma, output_path=output_path,
-                        sigma = sigma)
+                        sigma = sigma, c_blend=c_blend, primitive_colors=primitive_colors)
     
     def compute_loss_with_warmup(self, 
                                rendered: torch.Tensor, 
@@ -213,7 +213,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             # Select primitives to freeze based on diff mask
             freeze_mask = None
             if selective_parameter_optimization_config.get("enabled", False):
-                freeze_mask = self.select_primitives_2_freeze(x, y, diff_mask_for_freeze, selective_parameter_optimization_config)
+                freeze_mask = self.select_primitives_2_freeze(x, y, r, theta, diff_mask_for_freeze, selective_parameter_optimization_config)
 
             # Apply adaptive control at specified epochs if enabled
             if (adaptive_config.get('enabled', False) and i in apply_epochs):
@@ -296,62 +296,123 @@ class SequentialFrameRenderer(SimpleTileRenderer):
     def select_primitives_2_freeze(self,
                                    x: torch.Tensor,
                                    y: torch.Tensor,
+                                   r: torch.Tensor,
+                                   theta: torch.Tensor,
                                    diff_mask: torch.Tensor,
                                    config: dict) -> torch.Tensor:
         """
         Select primitives to freeze based on pre-computed diff_mask.
         
-        Primitives are frozen if their (x, y) position is NOT within freeze_distance_threshold
-        of regions where the diff_mask is True (indicating changes between frames).
+        Two modes available:
+        - tight_freezemask=True: Uses bounding box overlap detection (more accurate, accounts for scale/rotation)
+        - tight_freezemask=False: Uses legacy center-based distance check (simpler, faster)
         
         Args:
             x, y: Primitive position parameters [N]
+            r: Primitive scale parameters [N]
+            theta: Primitive rotation parameters [N]
             diff_mask: Pre-computed boolean mask of changed regions [H, W]
-            config: Configuration dict with 'freeze_distance_threshold' parameter
+            config: Configuration dict with 'freeze_distance_threshold' and 'tight_freezemask' parameters
             
         Returns:
             freeze_mask: Boolean tensor [N] where True indicates primitive should be frozen
         """
         # Extract configuration
         freeze_distance_threshold = config.get('freeze_distance_threshold', 12.0)
+        tight_freezemask = config.get('tight_freezemask', True)
         gradual_freeze_config = config.get('gradual_freeze', {})
         use_gradual_freeze = gradual_freeze_config.get('enabled', False)
         
         with torch.no_grad():
+            N = len(x)
+            
             # Find coordinates of all changed pixels
             changed_coords = torch.nonzero(diff_mask, as_tuple=False)  # [M, 2] where M is number of changed pixels
             
             if changed_coords.shape[0] == 0:
                 # No changes detected, freeze all primitives
                 print("[Selective Freeze] No changes detected between frames, freezing all primitives")
-                return torch.ones(x.shape[0], dtype=torch.bool, device=x.device)
+                return torch.ones(N, dtype=torch.bool, device=x.device)
             
-            # Convert primitive positions from normalized coordinates to pixel coordinates
-            # x, y are in range [0, W-1] and [0, H-1]
-            prim_x_pixel = x  # Already in pixel coordinates
-            prim_y_pixel = y  # Already in pixel coordinates
-            
-            # Stack primitive coordinates [N, 2]
-            prim_coords = torch.stack([prim_y_pixel, prim_x_pixel], dim=1)  # [N, 2] (y, x order to match image)
-            
-            # Compute distance from each primitive to all changed pixels
-            # Using broadcasting: [N, 1, 2] - [1, M, 2] = [N, M, 2]
-            distances = torch.cdist(prim_coords.float(), changed_coords.float())  # [N, M]
-            
-            # Find minimum distance from each primitive to any changed pixel
-            min_distances, _ = torch.min(distances, dim=1)  # [N]
-            
-            # Create freeze mask: freeze primitives that are FARTHER than threshold from changes
-            # (i.e., keep optimizing primitives that are close to changed regions)
-            freeze_mask = min_distances > freeze_distance_threshold*self.W
-            
-            # Log statistics
-            num_frozen = torch.sum(freeze_mask).item()
-            num_optimized = x.shape[0] - num_frozen
-            print(f"[Selective Freeze] Freeze threshold: {freeze_distance_threshold:.1f}px")
-            print(f"[Selective Freeze] Changed pixels: {changed_coords.shape[0]}")
-            print(f"[Selective Freeze] Frozen primitives: {num_frozen}/{x.shape[0]} ({100*num_frozen/x.shape[0]:.1f}%)")
-            print(f"[Selective Freeze] Optimized primitives: {num_optimized}/{x.shape[0]} ({100*num_optimized/x.shape[0]:.1f}%)")
+            if tight_freezemask:
+                # NEW: Bounding box-based overlap detection (more accurate)
+                print("[Selective Freeze] Using tight bounding box overlap detection")
+                
+                # Use shared helper to compute world-space bounding boxes
+                bbox_x_min, bbox_x_max, bbox_y_min, bbox_y_max = self._compute_primitive_world_bboxes(x, y, r, theta)
+                
+                # Add distance threshold margin to bounding boxes
+                margin = freeze_distance_threshold * self.W
+                bbox_x_min = bbox_x_min - margin  # (N,)
+                bbox_x_max = bbox_x_max + margin  # (N,)
+                bbox_y_min = bbox_y_min - margin  # (N,)
+                bbox_y_max = bbox_y_max + margin  # (N,)
+                
+                # Extract changed pixel coordinates
+                # changed_coords is [M, 2] in (y, x) format
+                changed_y = changed_coords[:, 0].float()  # (M,)
+                changed_x = changed_coords[:, 1].float()  # (M,)
+                
+                # Check if any changed pixel is within each primitive's bounding box
+                # Using broadcasting: (N, 1) and (1, M)
+                bbox_x_min_exp = bbox_x_min.unsqueeze(1)  # (N, 1)
+                bbox_x_max_exp = bbox_x_max.unsqueeze(1)  # (N, 1)
+                bbox_y_min_exp = bbox_y_min.unsqueeze(1)  # (N, 1)
+                bbox_y_max_exp = bbox_y_max.unsqueeze(1)  # (N, 1)
+                
+                changed_x_exp = changed_x.unsqueeze(0)  # (1, M)
+                changed_y_exp = changed_y.unsqueeze(0)  # (1, M)
+                
+                # Check if each changed pixel is inside each primitive's bounding box
+                x_inside = (changed_x_exp >= bbox_x_min_exp) & (changed_x_exp <= bbox_x_max_exp)  # (N, M)
+                y_inside = (changed_y_exp >= bbox_y_min_exp) & (changed_y_exp <= bbox_y_max_exp)  # (N, M)
+                
+                # Both x and y must be inside for a pixel to be inside the bounding box
+                inside_bbox = x_inside & y_inside  # (N, M)
+                
+                # A primitive overlaps with the diff_mask if ANY changed pixel is inside its bbox
+                has_overlap = inside_bbox.any(dim=1)  # (N,)
+                
+                # Create freeze mask: freeze primitives that do NOT overlap with changed regions
+                freeze_mask = ~has_overlap
+                
+                # Log statistics
+                num_frozen = torch.sum(freeze_mask).item()
+                num_optimized = N - num_frozen
+                print(f"[Selective Freeze] Freeze threshold: {freeze_distance_threshold:.4f} (margin: {margin:.1f}px)")
+                print(f"[Selective Freeze] Changed pixels: {changed_coords.shape[0]}")
+                print(f"[Selective Freeze] Frozen primitives: {num_frozen}/{N} ({100*num_frozen/N:.1f}%)")
+                print(f"[Selective Freeze] Optimized primitives: {num_optimized}/{N} ({100*num_optimized/N:.1f}%)")
+                
+            else:
+                # LEGACY: Center-based distance check (original implementation)
+                print("[Selective Freeze] Using legacy center-based distance check")
+                
+                # Convert primitive positions to pixel coordinates (already in pixel space)
+                prim_x_pixel = x  # Already in pixel coordinates
+                prim_y_pixel = y  # Already in pixel coordinates
+                
+                # Stack primitive coordinates [N, 2]
+                prim_coords = torch.stack([prim_y_pixel, prim_x_pixel], dim=1)  # [N, 2] (y, x order to match image)
+                
+                # Compute distance from each primitive to all changed pixels
+                # Using broadcasting: [N, 1, 2] - [1, M, 2] = [N, M, 2]
+                distances = torch.cdist(prim_coords.float(), changed_coords.float())  # [N, M]
+                
+                # Find minimum distance from each primitive to any changed pixel
+                min_distances, _ = torch.min(distances, dim=1)  # [N]
+                
+                # Create freeze mask: freeze primitives that are FARTHER than threshold from changes
+                # (i.e., keep optimizing primitives that are close to changed regions)
+                freeze_mask = min_distances > freeze_distance_threshold * self.W
+                
+                # Log statistics
+                num_frozen = torch.sum(freeze_mask).item()
+                num_optimized = N - num_frozen
+                print(f"[Selective Freeze] Freeze threshold: {freeze_distance_threshold:.1f}px")
+                print(f"[Selective Freeze] Changed pixels: {changed_coords.shape[0]}")
+                print(f"[Selective Freeze] Frozen primitives: {num_frozen}/{N} ({100*num_frozen/N:.1f}%)")
+                print(f"[Selective Freeze] Optimized primitives: {num_optimized}/{N} ({100*num_optimized/N:.1f}%)")
             
             # Optional: gradual freeze based on distance
             if use_gradual_freeze:

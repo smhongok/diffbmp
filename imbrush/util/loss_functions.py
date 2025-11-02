@@ -283,6 +283,224 @@ class LossRegistry:
             else:
                 return torch.tensor(0.0, device=rendered.device, requires_grad=True)
         return F.smooth_l1_loss(rendered_gray, target_gray, beta=delta)
+    
+    # ==================== Regularization Losses (using primitive parameters) ====================
+    
+    @staticmethod
+    def overlap_penalty_loss(rendered: torch.Tensor = None,
+                            target: torch.Tensor = None,
+                            mask: Optional[torch.Tensor] = None,
+                            primitive_params: Optional[dict] = None,
+                            penalty_weight: float = 0.01,
+                            **kwargs) -> torch.Tensor:
+        """
+        Penalize overlapping primitives to encourage spatial diversity.
+        Computes pairwise distances between primitive centers and penalizes close pairs.
+        
+        Args:
+            primitive_params: Dict with 'x', 'y', 'r' tensors
+            penalty_weight: Weight for the penalty (higher = stronger penalty)
+        
+        Returns:
+            Overlap penalty loss
+        """
+        if primitive_params is None:
+            return torch.tensor(0.0, requires_grad=True)
+        
+        x = primitive_params.get('x')  # (N,)
+        y = primitive_params.get('y')  # (N,)
+        r = primitive_params.get('r')  # (N,)
+        
+        if x is None or y is None or r is None:
+            return torch.tensor(0.0, device=x.device if x is not None else 'cpu', requires_grad=True)
+        
+        N = x.shape[0]
+        if N < 2:
+            return torch.tensor(0.0, device=x.device, requires_grad=True)
+        
+        # Compute pairwise distances
+        x_diff = x.unsqueeze(1) - x.unsqueeze(0)  # (N, N)
+        y_diff = y.unsqueeze(1) - y.unsqueeze(0)  # (N, N)
+        distances = torch.sqrt(x_diff**2 + y_diff**2 + 1e-8)  # (N, N)
+        
+        # Sum of radii for each pair
+        r_sum = r.unsqueeze(1) + r.unsqueeze(0)  # (N, N)
+        
+        # Overlap occurs when distance < sum of radii
+        # Penalty is proportional to how much they overlap
+        overlap = torch.clamp(r_sum - distances, min=0.0)  # (N, N)
+        
+        # Exclude self-comparisons (diagonal)
+        mask_diag = ~torch.eye(N, device=x.device, dtype=torch.bool)
+        overlap = overlap * mask_diag.float()
+        
+        # Average overlap penalty
+        total_overlap = overlap.sum() / 2.0  # Divide by 2 since we count each pair twice
+        
+        return penalty_weight * total_overlap
+    
+    @staticmethod
+    def size_regularization_loss(rendered: torch.Tensor = None,
+                                target: torch.Tensor = None,
+                                mask: Optional[torch.Tensor] = None,
+                                primitive_params: Optional[dict] = None,
+                                target_size: float = 5.0,
+                                weight: float = 0.01,
+                                **kwargs) -> torch.Tensor:
+        """
+        Regularize primitive sizes toward a target size.
+        Encourages uniform primitive sizes for aesthetic consistency.
+        
+        Args:
+            primitive_params: Dict with 'r' tensor
+            target_size: Target radius value
+            weight: Regularization weight
+        
+        Returns:
+            Size regularization loss
+        """
+        if primitive_params is None:
+            return torch.tensor(0.0, requires_grad=True)
+        
+        r = primitive_params.get('r')  # (N,)
+        
+        if r is None:
+            return torch.tensor(0.0, requires_grad=True)
+        
+        # L2 penalty toward target size
+        size_diff = r - target_size
+        loss = weight * (size_diff ** 2).mean()
+        
+        return loss
+    
+    @staticmethod
+    def visibility_sparsity_loss(rendered: torch.Tensor = None,
+                                 target: torch.Tensor = None,
+                                 mask: Optional[torch.Tensor] = None,
+                                 primitive_params: Optional[dict] = None,
+                                 weight: float = 0.001,
+                                 **kwargs) -> torch.Tensor:
+        """
+        Encourage sparsity in visibility (fewer visible primitives).
+        Uses L1 penalty on sigmoid(v) to push low-visibility primitives to zero.
+        
+        Args:
+            primitive_params: Dict with 'v' tensor (visibility logits)
+            weight: Sparsity weight
+        
+        Returns:
+            Visibility sparsity loss
+        """
+        if primitive_params is None:
+            return torch.tensor(0.0, requires_grad=True)
+        
+        v = primitive_params.get('v')  # (N,)
+        
+        if v is None:
+            return torch.tensor(0.0, requires_grad=True)
+        
+        # Apply sigmoid to get visibility in [0, 1]
+        visibility = torch.sigmoid(v)
+        
+        # L1 sparsity penalty
+        loss = weight * visibility.abs().mean()
+        
+        return loss
+    
+    @staticmethod
+    def rotation_smoothness_loss(rendered: torch.Tensor = None,
+                                 target: torch.Tensor = None,
+                                 mask: Optional[torch.Tensor] = None,
+                                 primitive_params: Optional[dict] = None,
+                                 weight: float = 0.01,
+                                 **kwargs) -> torch.Tensor:
+        """
+        Encourage smooth rotation angles between nearby primitives.
+        Penalizes large rotation differences between spatially close primitives.
+        
+        Args:
+            primitive_params: Dict with 'x', 'y', 'theta' tensors
+            weight: Smoothness weight
+        
+        Returns:
+            Rotation smoothness loss
+        """
+        if primitive_params is None:
+            return torch.tensor(0.0, requires_grad=True)
+        
+        x = primitive_params.get('x')  # (N,)
+        y = primitive_params.get('y')  # (N,)
+        theta = primitive_params.get('theta')  # (N,)
+        
+        if x is None or y is None or theta is None:
+            return torch.tensor(0.0, requires_grad=True)
+        
+        N = x.shape[0]
+        if N < 2:
+            return torch.tensor(0.0, device=x.device, requires_grad=True)
+        
+        # Compute pairwise spatial distances
+        x_diff = x.unsqueeze(1) - x.unsqueeze(0)  # (N, N)
+        y_diff = y.unsqueeze(1) - y.unsqueeze(0)  # (N, N)
+        spatial_dist = torch.sqrt(x_diff**2 + y_diff**2 + 1e-8)  # (N, N)
+        
+        # Compute pairwise rotation differences
+        theta_diff = theta.unsqueeze(1) - theta.unsqueeze(0)  # (N, N)
+        # Normalize to [-pi, pi]
+        theta_diff = torch.atan2(torch.sin(theta_diff), torch.cos(theta_diff))
+        
+        # Weight rotation differences by inverse spatial distance
+        # Closer primitives should have more similar rotations
+        spatial_weight = torch.exp(-spatial_dist / 50.0)  # Decay with distance
+        
+        # Weighted rotation difference
+        weighted_diff = (theta_diff ** 2) * spatial_weight
+        
+        # Exclude diagonal
+        mask_diag = ~torch.eye(N, device=x.device, dtype=torch.bool)
+        weighted_diff = weighted_diff * mask_diag.float()
+        
+        loss = weight * weighted_diff.sum() / (N * (N - 1))
+        
+        return loss
+    
+    @staticmethod
+    def rotation_alignment_loss(rendered: torch.Tensor = None,
+                                target: torch.Tensor = None,
+                                mask: Optional[torch.Tensor] = None,
+                                primitive_params: Optional[dict] = None,
+                                target_angle: float = 0.0,
+                                weight: float = 0.01,
+                                **kwargs) -> torch.Tensor:
+        """
+        Regularize rotation angles toward a target angle (default: 0).
+        Encourages primitives to align horizontally or to a specific direction.
+        
+        Args:
+            primitive_params: Dict with 'theta' tensor
+            target_angle: Target rotation angle in radians (default: 0.0 for horizontal)
+            weight: Regularization weight
+        
+        Returns:
+            Rotation alignment loss
+        """
+        if primitive_params is None:
+            return torch.tensor(0.0, requires_grad=True)
+        
+        theta = primitive_params.get('theta')  # (N,)
+        
+        if theta is None:
+            return torch.tensor(0.0, requires_grad=True)
+        
+        # Compute angular difference from target
+        # Normalize to [-pi, pi] for proper angular distance
+        theta_diff = theta - target_angle
+        theta_diff = torch.atan2(torch.sin(theta_diff), torch.cos(theta_diff))
+        
+        # L2 penalty on angular difference
+        loss = weight * (theta_diff ** 2).mean()
+        
+        return loss
         
     def clip_loss(rendered: torch.Tensor,
                   target: torch.Tensor = None,
@@ -505,6 +723,7 @@ class LossComposer:
                     target_alpha: Optional[torch.Tensor] = None,
                     mask: Optional[torch.Tensor] = None,
                     return_components: bool = False,
+                    primitive_params: Optional[dict] = None,
                     **kwargs):
         """
         Compute loss based on configuration.
@@ -516,6 +735,13 @@ class LossComposer:
             target_alpha: Optional target alpha channel (H, W)
             mask: Optional mask for valid pixels (H, W)
             return_components: If True, return (total_loss, components_dict)
+            primitive_params: Optional dict with primitive parameters:
+                - 'x': (N,) x positions
+                - 'y': (N,) y positions
+                - 'r': (N,) radii
+                - 'v': (N,) visibility logits
+                - 'theta': (N,) rotation angles
+                - 'c': (N, 3) color logits
             
         Returns:
             Total loss value, or (total_loss, components_dict) if return_components=True
@@ -524,11 +750,13 @@ class LossComposer:
         
         if loss_type == "combined":
             return self._compute_combined_loss(rendered, target, rendered_alpha, 
-                                               target_alpha, mask, return_components, **kwargs)
+                                               target_alpha, mask, return_components, 
+                                               primitive_params=primitive_params, **kwargs)
         else:
             # Single loss function
             total_loss = self._compute_single_loss(loss_type, rendered, target, 
-                                                   rendered_alpha, target_alpha, mask, **kwargs)
+                                                   rendered_alpha, target_alpha, mask, 
+                                                   primitive_params=primitive_params, **kwargs)
             if return_components:
                 return total_loss, {loss_type: total_loss.item()}
             return total_loss
@@ -540,8 +768,12 @@ class LossComposer:
                             rendered_alpha: Optional[torch.Tensor],
                             target_alpha: Optional[torch.Tensor],
                             mask: Optional[torch.Tensor],
+                            primitive_params: Optional[dict] = None,
                             **kwargs) -> torch.Tensor:
         """Compute a single loss function."""
+        # Pass primitive_params to loss functions that need it
+        if primitive_params is not None:
+            kwargs['primitive_params'] = primitive_params
         loss_fn = getattr(LossRegistry, f"{loss_name}_loss", None)
         if loss_fn is None:
             raise ValueError(f"Unknown loss function: {loss_name}")
@@ -565,8 +797,12 @@ class LossComposer:
                               target_alpha: Optional[torch.Tensor],
                               mask: Optional[torch.Tensor],
                               return_components: bool = False,
+                              primitive_params: Optional[dict] = None,
                               **kwargs):
         """Compute weighted combination of multiple losses."""
+        # Pass primitive_params through kwargs
+        if primitive_params is not None:
+            kwargs['primitive_params'] = primitive_params
         components = self.loss_config.get("components", [])
         
         if not components:

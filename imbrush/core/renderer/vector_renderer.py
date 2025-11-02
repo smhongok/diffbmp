@@ -184,6 +184,66 @@ class VectorRenderer:
         
         return bboxes
     
+    def _compute_primitive_world_bboxes(self, x: torch.Tensor, y: torch.Tensor, 
+                                         r: torch.Tensor, theta: torch.Tensor) -> tuple:
+        """
+        Compute world-space bounding boxes for all primitives.
+        
+        This is a shared helper function that computes the transformed bounding box
+        extents for primitives in pixel/world coordinates, accounting for position,
+        scale, and rotation.
+        
+        Args:
+            x, y: (N,) primitive positions
+            r: (N,) primitive scales
+            theta: (N,) primitive rotations
+            
+        Returns:
+            tuple: (bbox_x_min, bbox_x_max, bbox_y_min, bbox_y_max)
+                   Each tensor has shape (N,) representing the bounding box extents
+                   in world/pixel space for each primitive.
+        """
+        N = len(x)
+        p = len(self.primitive_bboxes)
+        
+        # Pre-compute trigonometric values for all primitives
+        cos_theta = torch.cos(theta)  # (N,)
+        sin_theta = torch.sin(theta)  # (N,)
+        
+        # Get primitive indices (cycling through available primitives)
+        prim_indices = (N - torch.arange(N, device=self.device) - 1) % p  # (N,)
+        
+        # Extract bounding boxes for all primitives
+        # Convert list of tuples to tensor for vectorized operations
+        bbox_tensor = torch.tensor(self.primitive_bboxes, device=self.device)  # (p, 4)
+        selected_bboxes = bbox_tensor[prim_indices]  # (N, 4)
+        
+        min_u = selected_bboxes[:, 0]  # (N,)
+        max_u = selected_bboxes[:, 1]  # (N,)
+        min_v = selected_bboxes[:, 2]  # (N,)
+        max_v = selected_bboxes[:, 3]  # (N,)
+        
+        # Create all corner combinations for bounding boxes
+        corners_u = torch.stack([min_u, max_u, min_u, max_u], dim=1)  # (N, 4)
+        corners_v = torch.stack([min_v, min_v, max_v, max_v], dim=1)  # (N, 4)
+        
+        # Transform all corners to world coordinates (vectorized)
+        # Broadcasting: (N, 1) * (N, 4) -> (N, 4)
+        world_x = x.unsqueeze(1) + r.unsqueeze(1) * (
+            corners_u * cos_theta.unsqueeze(1) - corners_v * sin_theta.unsqueeze(1)
+        )  # (N, 4)
+        world_y = y.unsqueeze(1) + r.unsqueeze(1) * (
+            corners_u * sin_theta.unsqueeze(1) + corners_v * cos_theta.unsqueeze(1)
+        )  # (N, 4)
+        
+        # Compute bounding box extents for each primitive
+        bbox_x_min = world_x.min(dim=1)[0]  # (N,)
+        bbox_x_max = world_x.max(dim=1)[0]  # (N,)
+        bbox_y_min = world_y.min(dim=1)[0]  # (N,)
+        bbox_y_max = world_y.max(dim=1)[0]  # (N,)
+        
+        return bbox_x_min, bbox_x_max, bbox_y_min, bbox_y_max
+    
     def render_from_params(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
                            theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
                            return_alpha: bool = False, I_bg: torch.Tensor = None, 
@@ -349,45 +409,10 @@ class VectorRenderer:
             torch.Tensor: (total_tiles, N) boolean mask where [i, j] indicates 
                          if primitive j affects tile i
         """
-        N = len(x)
         total_tiles = len(x_starts)
-        p = len(self.primitive_bboxes)
         
-        # Pre-compute trigonometric values for all primitives
-        cos_theta = torch.cos(theta)  # (N,)
-        sin_theta = torch.sin(theta)  # (N,)
-        
-        # Get primitive indices (cycling through available primitives)
-        prim_indices = (N - torch.arange(N, device=self.device) - 1) % p  # (N,)
-        
-        # Extract bounding boxes for all primitives
-        # Convert list of tuples to tensor for vectorized operations
-        bbox_tensor = torch.tensor(self.primitive_bboxes, device=self.device)  # (p, 4)
-        selected_bboxes = bbox_tensor[prim_indices]  # (N, 4)
-        
-        min_u = selected_bboxes[:, 0]  # (N,)
-        max_u = selected_bboxes[:, 1]  # (N,)
-        min_v = selected_bboxes[:, 2]  # (N,)
-        max_v = selected_bboxes[:, 3]  # (N,)
-        
-        # Create all corner combinations for bounding boxes
-        corners_u = torch.stack([min_u, max_u, min_u, max_u], dim=1)  # (N, 4)
-        corners_v = torch.stack([min_v, min_v, max_v, max_v], dim=1)  # (N, 4)
-        
-        # Transform all corners to world coordinates (vectorized)
-        # Broadcasting: (N, 1) * (N, 4) -> (N, 4)
-        world_x = x.unsqueeze(1) + r.unsqueeze(1) * (
-            corners_u * cos_theta.unsqueeze(1) - corners_v * sin_theta.unsqueeze(1)
-        )  # (N, 4)
-        world_y = y.unsqueeze(1) + r.unsqueeze(1) * (
-            corners_u * sin_theta.unsqueeze(1) + corners_v * cos_theta.unsqueeze(1)
-        )  # (N, 4)
-        
-        # Compute bounding box extents for each primitive
-        bbox_x_min = world_x.min(dim=1)[0]  # (N,)
-        bbox_x_max = world_x.max(dim=1)[0]  # (N,)
-        bbox_y_min = world_y.min(dim=1)[0]  # (N,)
-        bbox_y_max = world_y.max(dim=1)[0]  # (N,)
+        # Use shared helper to compute world-space bounding boxes
+        bbox_x_min, bbox_x_max, bbox_y_min, bbox_y_max = self._compute_primitive_world_bboxes(x, y, r, theta)
         
         # Expand dimensions for broadcasting: (N, 1) and (1, total_tiles)
         bbox_x_min_exp = bbox_x_min.unsqueeze(1)  # (N, 1)
@@ -1005,6 +1030,16 @@ class VectorRenderer:
             # Create foreground mask
             alpha_mask = target_alpha > 0     # Shape: (H, W), boolean mask
             
+            # Prepare primitive parameters dict for regularization losses
+            primitive_params = {
+                'x': x,
+                'y': y,
+                'r': r,
+                'v': v,
+                'theta': theta,
+                'c': c
+            }
+            
             # Use loss composer
             result = self.loss_composer.compute_loss(
                 rendered=rendered,
@@ -1012,17 +1047,29 @@ class VectorRenderer:
                 rendered_alpha=rendered_alpha,
                 target_alpha=target_alpha,
                 mask=alpha_mask,
-                return_components=return_components
+                return_components=return_components,
+                primitive_params=primitive_params
             )
         else:
             # 3-channel target (with background)
+            # Prepare primitive parameters dict for regularization losses
+            primitive_params = {
+                'x': x,
+                'y': y,
+                'r': r,
+                'v': v,
+                'theta': theta,
+                'c': c
+            }
+            
             result = self.loss_composer.compute_loss(
                 rendered=rendered,
                 target=target,
                 rendered_alpha=None,
                 target_alpha=None,
                 mask=None,
-                return_components=return_components
+                return_components=return_components,
+                primitive_params=primitive_params
             )
         
         return result

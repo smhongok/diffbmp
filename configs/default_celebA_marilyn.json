@@ -1,0 +1,50 @@
+{
+  "preprocessing": {
+    "final_width": [512],
+    "img_path": [
+      "images/person/marilyn.png"
+    ]
+  },
+  "primitive": {
+    "primitive_file": "CelebA/*.png",
+    "convert_to_svg": false,
+    "primitive_hollow": false,
+    "output_width": 128,
+    "radial_transparency": true
+  },
+  "initialization": {
+    "initializer": "structure_aware",
+    "N": [
+      400
+    ],
+    "v_init_bias": -4.0,
+    "radii_min": 4,
+    "radii_max": 20,
+    "debug_mode": false
+  },
+  "optimization": {
+    "use_fp16": false,
+    "num_iterations": 500,
+    "learning_rate": {
+      "default": 0.1
+    },
+    "c_blend": 1.0,
+    "alpha_upper_bound": 1.0,
+    "loss_config": {
+      "type": "combined",
+            "components": [
+                {"name": "grayscale_l1", "weight": 1.0},
+                {"name": "mse", "weight": 0.2}
+            ]
+    },
+
+    "do_decay": true,
+    "do_gaussian_blur": true
+  },
+  "postprocessing": {
+    "output_folder": "outputs/",
+    "compute_psnr": true,
+    "export_psd": true,
+    "psd_scale_factor": 2.0
+  }
+}

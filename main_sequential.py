@@ -33,6 +33,7 @@ from imbrush.core.preprocessing import Preprocessor
 from imbrush.util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
 from imbrush.util.pdf_exporter import PDFExporter
 import imbrush.util.target_masks as target_masks
+from imbrush.util.temporal_consistency_metrics import compute_all_temporal_metrics
 
 # Conditional import for route visualization
 if ENABLE_ROUTE_VISUALIZATION:
@@ -266,6 +267,7 @@ sequential_renderer = SequentialFrameRenderer(
     tile_size=sequential_config["tile_size"],
     sigma = opt_conf["blur_sigma"] if opt_conf.get("do_gaussian_blur", False) else 0.0,
     c_blend=config["optimization"].get("c_blend", 0.0),
+    primitive_colors=primitive_colors,
 )
 print(f"Using SequentialFrameRenderer with tile-based rendering (tile_size: {sequential_config['tile_size']})")
 
@@ -321,7 +323,7 @@ for frame_idx, I_target_frame in enumerate(I_targets):
             x, y, r, v, theta, c = renderer.optimize_parameters(
             x, y, r, v, theta, c,
             I_target_frame, 
-            opt_conf=frame_opt_conf
+            opt_conf=opt_conf
             )
 
             end_time_frame = time.time()
@@ -599,11 +601,7 @@ if config['postprocessing'].get('compute_psnr', False):
                 metrics_fh.write(f"  enabled: {spo_conf.get('enabled', False)}\n")
                 metrics_fh.write(f"  freeze_distance_threshold: {spo_conf.get('freeze_distance_threshold', '')}\n")                
                 metrics_fh.write(f"  diff_magnitude_threshold: {spo_conf.get('diff_magnitude_threshold', '')}\n")
-                gf_conf = spo_conf.get('gradual_freeze', {})
-                if isinstance(gf_conf, dict):
-                    metrics_fh.write("  gradual_freeze:\n")
-                    metrics_fh.write(f"    enabled: {gf_conf.get('enabled', False)}\n")
-                    metrics_fh.write(f"    strength: {gf_conf.get('strength', '')}\n")
+                metrics_fh.write(f"  tight_freezemask: {spo_conf.get('tight_freezemask', False)}\n")
             except Exception as e:
                 print(f"Warning: Failed to write selective_parameter_optimization config to metrics file: {e}")
 
@@ -611,6 +609,10 @@ if config['postprocessing'].get('compute_psnr', False):
         except Exception as e:
             print(f"Warning: Could not open metrics file for writing: {e}")
             metrics_fh = None
+        
+        # Collect rendered and target frames for temporal metrics
+        rendered_frames_np = []
+        target_frames_np = []
         
         for frame_idx, (frame_result, I_target_frame) in enumerate(zip(frame_results, I_targets)):
             # Render frame for metrics using tile-based rendering
@@ -647,6 +649,12 @@ if config['postprocessing'].get('compute_psnr', False):
             total_ssim += ssim_val.item()
             total_vif += vif_val.item()
             total_lpips += lpips_val.item()
+            
+            # Store frames in numpy format [H, W, 3] in range [0, 255] for temporal metrics
+            rendered_np = (rendered_frame.cpu().numpy() * 255.0).astype(np.float32)
+            target_np = (I_target_frame.cpu().numpy() * 255.0).astype(np.float32)
+            rendered_frames_np.append(rendered_np)
+            target_frames_np.append(target_np)
         
         # Print average metrics
         num_frames = len(frame_results)
@@ -657,6 +665,39 @@ if config['postprocessing'].get('compute_psnr', False):
         print(f"LPIPS: {total_lpips / num_frames:.4f}")
         print(f"Number of splats: {len(frame_results[0]['x'])}")
         
+        # Compute temporal consistency metrics if we have multiple frames
+        temporal_metrics = {}
+        if num_frames >= 2:
+            print("\n" + "="*60)
+            print("Computing Temporal Consistency Metrics...")
+            print("="*60)
+            try:
+                # Compute all temporal metrics
+                temporal_metrics = compute_all_temporal_metrics(
+                    rendered_frames=rendered_frames_np,
+                    target_frames=target_frames_np,
+                    compute_warp=True,
+                    compute_of=True,
+                    compute_lp=True
+                )
+                
+                # Print temporal metrics
+                print(f"\nTemporal Consistency Results:")
+                if 'E_warp' in temporal_metrics:
+                    print(f"  E_warp (Warping Error): {temporal_metrics['E_warp']:.6f}")
+                if 'tOF' in temporal_metrics:
+                    print(f"  tOF (Temporal Optical Flow): {temporal_metrics['tOF']:.6f}")
+                if 'tLP' in temporal_metrics:
+                    print(f"  tLP (Temporal LPIPS x100): {temporal_metrics['tLP']:.6f}")
+                print("="*60)
+                
+            except Exception as e:
+                print(f"Warning: Failed to compute temporal consistency metrics: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"\nSkipping temporal consistency metrics (requires >= 2 frames, got {num_frames})")
+        
         # Append averages to metrics txt and close file
         if metrics_fh is not None:
             try:
@@ -665,8 +706,19 @@ if config['postprocessing'].get('compute_psnr', False):
                 metrics_fh.write(f"avg_ssim,{total_ssim / num_frames:.6f}\n")
                 metrics_fh.write(f"avg_vif,{total_vif / num_frames:.6f}\n")
                 metrics_fh.write(f"avg_lpips,{total_lpips / num_frames:.6f}\n")
+                
+                # Write temporal consistency metrics if available
+                if temporal_metrics:
+                    metrics_fh.write("\nTemporal Consistency Metrics\n")
+                    if 'E_warp' in temporal_metrics:
+                        metrics_fh.write(f"E_warp,{temporal_metrics['E_warp']:.8f}\n")
+                    if 'tOF' in temporal_metrics:
+                        metrics_fh.write(f"tOF,{temporal_metrics['tOF']:.8f}\n")
+                    if 'tLP' in temporal_metrics:
+                        metrics_fh.write(f"tLP,{temporal_metrics['tLP']:.8f}\n")
+                
                 metrics_fh.close()
-                print(f"Per-frame metrics saved to: {metrics_txt_path}")
+                print(f"\nPer-frame and temporal metrics saved to: {metrics_txt_path}")
             except Exception as e:
                 print(f"Warning: Failed to finalize metrics file: {e}")
             
