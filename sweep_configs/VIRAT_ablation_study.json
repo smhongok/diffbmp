@@ -1,0 +1,19 @@
+{
+    "experiment_name": "ablation_VIRAT",
+    "base_config": "configs/sequential.json",
+    "sweep_type": "grid",
+    "parameters": {
+        "preprocessing.img_path": [
+            "images/VIRAT/frames1",
+            "images/VIRAT/frames2",
+            "images/VIRAT/frames3",
+            "images/VIRAT/frames4"
+        ],
+        "sequential.adaptive_control.enabled": [true, false],
+        "sequential.selective_parameter_optimization.enabled": [true, false]
+    },
+    "fixed_overrides": {
+        "sequential.export.metrics_csv_path": "./outputs/metrics_VIRAT.csv"
+    },
+    "output_base": "./outputs/experiments_VIRAT"
+}

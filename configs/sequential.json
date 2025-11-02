@@ -9,7 +9,7 @@
     },
     "primitive": {
         "primitive_file": "arial.ttf",
-        "text": "B",
+        "text": "S",
         "primitive_hollow": false,
         "output_width": 128
     },
@@ -39,7 +39,7 @@
     },
     "sequential": {
         "enabled": true,
-        "input_type": "gif",
+        "input_type": "sequence",
         "max_frames": null,
         "seperate_init": false,
         "optimization": {
@@ -63,11 +63,11 @@
             "tile_cols": 4,
             "scale_threshold": 0.1,
             "opacity_threshold": 0.7,
-            "opacity_reduction_factor": 0.3,
+            "opacity_reduction_factor": 0.1,
             "max_primitives_per_tile": 4,
             "min_criteria_count": 3,
             "front_primitives_percentile": 0.7,
-            "apply_epochs": [20, 45, 70],
+            "apply_epochs": [20, 40, 60, 80],
             "gradient_ranking": {
                 "enabled": false,
                 "process_all_pixels": true,
@@ -77,7 +77,7 @@
         "selective_parameter_optimization":{
             "enabled": true,
             "freeze_distance_threshold": 0.0,
-            "diff_magnitude_threshold": 0.1,
+            "diff_magnitude_threshold": 0.05,
             "tight_freezemask": true
         },
         "export": {

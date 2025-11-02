@@ -1,0 +1,20 @@
+{
+    "experiment_name": "ablation_DAVIS",
+    "base_config": "configs/sequential.json",
+    "sweep_type": "grid",
+    "parameters": {
+        "preprocessing.img_path": [
+            "images/DAVIS/bear/",
+            "images/DAVIS/blackswan/",
+            "images/DAVIS/bmx-bumps/",
+            "images/DAVIS/bmx-trees/",
+            "images/DAVIS/parkour/"
+        ],
+        "sequential.adaptive_control.enabled": [true, false],
+        "sequential.selective_parameter_optimization.enabled": [true, false]
+    },
+    "fixed_overrides": {
+        "sequential.export.metrics_csv_path": "./outputs/metrics_DAVIS.csv"
+    },
+    "output_base": "./outputs/experiments_DAVIS"
+}

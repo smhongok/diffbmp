@@ -1,0 +1,15 @@
+{
+    "experiment_name": "ablation_DAVIS",
+    "base_config": "configs/sequential.json",
+    "sweep_type": "grid",
+    "parameters": {
+        "img_path": ["images/DAVIS/bear/", "images/DAVIS/blackswan/"],
+        "sequential.optimization.decay_rate": [0.95, 0.98, 0.99]
+    },
+    "fixed_overrides": {
+        "optimization.num_iterations": 50,
+        "sequential.optimization.num_iterations": 50,
+        "preprocessing.final_width": [128]
+    },
+    "output_base": "./outputs/experiments"
+}
