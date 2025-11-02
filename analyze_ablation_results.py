@@ -1,327 +1,345 @@
 """
 Ablation Study Results Analyzer
 
-Analyzes results from ablation study CSV files and exports comprehensive text summaries.
-Compares performance across different configurations of:
-- Adaptive Control (AC): enabled/disabled
-- Selective Parameter Optimization (SPO): enabled/disabled
+Simple analyzer that:
+1. Concatenates all CSV files
+2. Calculates global PSNR for each experiment
+3. Shows summary statistics (mean ± std)
+4. Lists all detailed experiment data
+5. Exports to clean .txt file
 """
 
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import List, Optional, TextIO
+from typing import List
 import argparse
 from datetime import datetime
 
 
-class AblationAnalyzer:
-    """Analyzer for ablation study results."""
+def calculate_global_psnr(frame_psnr_str: str) -> float:
+    """
+    Calculate global PSNR from per-frame PSNR values.
     
-    def __init__(self, csv_path: str):
-        """
-        Initialize analyzer with a CSV file.
-        
-        Args:
-            csv_path: Path to the metrics CSV file
-        """
-        self.csv_path = csv_path
-        self.df = pd.read_csv(csv_path)
-        self.dataset_name = Path(csv_path).stem.replace('metrics_', '')
-        
-        # Clean column names (remove extra spaces)
-        self.df.columns = self.df.columns.str.strip()
-        
-        print(f"Loaded {len(self.df)} experiments from {self.dataset_name}")
+    Global PSNR = -10 * log10(mean(10^(-PSNR/10)))
     
-    def get_configuration_label(self, ac_enabled: bool, spo_enabled: bool) -> str:
-        """Get readable label for configuration."""
-        if ac_enabled and spo_enabled:
-            return "AC+SPO"
-        elif ac_enabled and not spo_enabled:
-            return "AC only"
-        elif not ac_enabled and spo_enabled:
-            return "SPO only"
-        else:
-            return "Baseline"
+    Args:
+        frame_psnr_str: Comma-separated string of per-frame PSNR values
+        
+    Returns:
+        Global PSNR value
+    """
+    try:
+        # Parse frame PSNR values
+        frame_psnrs = [float(x.strip()) for x in frame_psnr_str.split(',')]
+        
+        # Convert PSNR to MSE for each frame: MSE = 10^(-PSNR/10)
+        mses = [10 ** (-psnr / 10) for psnr in frame_psnrs]
+        
+        # Average MSEs
+        mean_mse = np.mean(mses)
+        
+        # Convert back to PSNR: gPSNR = -10 * log10(mean_MSE)
+        global_psnr = -10 * np.log10(mean_mse)
+        
+        return global_psnr
+    except Exception as e:
+        print(f"Warning: Could not calculate global PSNR: {e}")
+        return np.nan
+
+
+def load_and_process_csvs(csv_files: List[str]) -> pd.DataFrame:
+    """
+    Load all CSV files and concatenate them.
     
-    def summarize_by_configuration(self) -> pd.DataFrame:
-        """
-        Summarize metrics by AC and SPO configuration.
+    Args:
+        csv_files: List of CSV file paths
         
-        Returns:
-            DataFrame with mean and std metrics for each configuration
-        """
-        grouped = self.df.groupby(['ac_enabled', 'spo_enabled'])
-        
-        # Calculate mean metrics
-        summary_mean = grouped[['avg_psnr', 'avg_ssim', 'avg_vif', 'avg_lpips', 
-                                'E_warp', 'tOF', 'tLP']].mean()
-        
-        # Calculate std metrics
-        summary_std = grouped[['avg_psnr', 'avg_ssim', 'avg_vif', 'avg_lpips', 
-                               'E_warp', 'tOF', 'tLP']].std()
-        
-        # Combine with suffix
-        summary = summary_mean.copy()
-        for col in summary_mean.columns:
-            summary[f'{col}_std'] = summary_std[col]
-        
-        summary['num_experiments'] = grouped.size()
-        
-        return summary.reset_index()
+    Returns:
+        Concatenated dataframe with all experiments
+    """
+    dfs = []
     
-    def summarize_by_sequence(self) -> pd.DataFrame:
-        """
-        Summarize metrics by input sequence and configuration.
-        
-        Returns:
-            DataFrame with metrics for each sequence and configuration
-        """
-        grouped = self.df.groupby(['input_path', 'ac_enabled', 'spo_enabled'])
-        
-        summary = grouped[['avg_psnr', 'avg_ssim', 'avg_vif', 'avg_lpips', 
-                           'E_warp', 'tOF', 'tLP']].mean()
-        
-        return summary.reset_index()
+    for csv_file in csv_files:
+        try:
+            df = pd.read_csv(csv_file)
+            # Clean column names
+            df.columns = df.columns.str.strip()
+            
+            # Add source file info
+            dataset_name = Path(csv_file).stem.replace('metrics_', '')
+            df['dataset'] = dataset_name
+            
+            dfs.append(df)
+            print(f"Loaded {len(df)} experiments from {dataset_name}")
+        except Exception as e:
+            print(f"Error loading {csv_file}: {e}")
     
-    def write_summary_to_file(self, file: TextIO):
-        """Write comprehensive summary to file."""
-        
+    if not dfs:
+        raise ValueError("No valid CSV files loaded")
+    
+    # Concatenate all dataframes
+    combined_df = pd.concat(dfs, ignore_index=True)
+    
+    print(f"\nTotal experiments loaded: {len(combined_df)}")
+    
+    # Calculate global PSNR for each row
+    if 'frame_psnr' in combined_df.columns:
+        print("Calculating global PSNR for each experiment...")
+        combined_df['global_psnr'] = combined_df['frame_psnr'].apply(calculate_global_psnr)
+        print("Done!")
+    else:
+        print("Warning: 'frame_psnr' column not found, skipping global PSNR calculation")
+    
+    return combined_df
+
+
+def write_group_statistics(f, df_group, metric_cols, group_name):
+    """
+    Write statistics for a specific group.
+    
+    Args:
+        f: File object
+        df_group: DataFrame subset for this group
+        metric_cols: List of metric column names
+        group_name: Name of the group
+    """
+    f.write(f"\n{group_name} (n={len(df_group)}):\n")
+    f.write("-" * 130 + "\n")
+    f.write(f"{'Metric':<15} | {'Mean':<12} | {'Std':<12} | {'Min':<12} | {'Max':<12}\n")
+    f.write("-" * 130 + "\n")
+    
+    for col in metric_cols:
+        if col in df_group.columns:
+            mean_val = df_group[col].mean()
+            std_val = df_group[col].std()
+            min_val = df_group[col].min()
+            max_val = df_group[col].max()
+            
+            # Format metric name
+            metric_name = col.replace('avg_', '').replace('_', ' ').upper()
+            if col == 'avg_psnr':
+                metric_name = 'mPSNR'
+            elif col == 'global_psnr':
+                metric_name = 'gPSNR'
+            
+            f.write(f"{metric_name:<15} | ")
+            f.write(f"{mean_val:>12.4f} | {std_val:>12.4f} | ")
+            f.write(f"{min_val:>12.4f} | {max_val:>12.4f}\n")
+
+
+def write_summary_report(df: pd.DataFrame, output_file: str):
+    """
+    Write comprehensive summary report to text file.
+    
+    Args:
+        df: DataFrame with all experiment data
+        output_file: Path to output text file
+    """
+    # Metrics to analyze
+    metric_cols = ['avg_psnr', 'avg_ssim', 'avg_vif', 'avg_lpips', 'E_warp', 'tOF', 'tLP']
+    if 'global_psnr' in df.columns:
+        metric_cols.insert(1, 'global_psnr')
+    
+    with open(output_file, 'w') as f:
         # Header
-        file.write("=" * 120 + "\n")
-        file.write(f"ABLATION STUDY SUMMARY: {self.dataset_name}\n")
-        file.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        file.write(f"Total experiments: {len(self.df)}\n")
-        file.write("=" * 120 + "\n\n")
+        f.write("=" * 130 + "\n")
+        f.write("ABLATION STUDY ANALYSIS REPORT\n")
+        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Total Experiments: {len(df)}\n")
+        f.write(f"Datasets: {', '.join(sorted(df['dataset'].unique()))}\n")
+        f.write("=" * 130 + "\n\n")
         
-        # Overall configuration summary
-        file.write("=" * 120 + "\n")
-        file.write("OVERALL SUMMARY BY CONFIGURATION\n")
-        file.write("=" * 120 + "\n\n")
+        # ========================================
+        # SUMMARY STATISTICS
+        # ========================================
+        f.write("=" * 130 + "\n")
+        f.write("SUMMARY STATISTICS (All Experiments)\n")
+        f.write("=" * 130 + "\n\n")
         
-        summary = self.summarize_by_configuration()
+        # Calculate statistics
+        f.write(f"{'Metric':<15} | {'Mean':<12} | {'Std':<12} | {'Min':<12} | {'Max':<12}\n")
+        f.write("-" * 130 + "\n")
+        
+        for col in metric_cols:
+            if col in df.columns:
+                mean_val = df[col].mean()
+                std_val = df[col].std()
+                min_val = df[col].min()
+                max_val = df[col].max()
+                
+                # Format metric name
+                metric_name = col.replace('avg_', '').replace('_', ' ').upper()
+                if col == 'avg_psnr':
+                    metric_name = 'mPSNR'
+                elif col == 'global_psnr':
+                    metric_name = 'gPSNR'
+                
+                f.write(f"{metric_name:<15} | ")
+                f.write(f"{mean_val:>12.4f} | {std_val:>12.4f} | ")
+                f.write(f"{min_val:>12.4f} | {max_val:>12.4f}\n")
+        
+        f.write("\n\n")
+        
+        # ========================================
+        # ABLATION STATISTICS
+        # ========================================
+        f.write("=" * 130 + "\n")
+        f.write("ABLATION STATISTICS (Grouped by AC and SPO Configuration)\n")
+        f.write("=" * 130 + "\n")
+        
+        # Create 4 groups based on AC and SPO settings
+        baseline_group = df[(df['ac_enabled'] == False) & (df['spo_enabled'] == False)]
+        ac_only_group = df[(df['ac_enabled'] == True) & (df['spo_enabled'] == False)]
+        spo_only_group = df[(df['ac_enabled'] == False) & (df['spo_enabled'] == True)]
+        ac_spo_group = df[(df['ac_enabled'] == True) & (df['spo_enabled'] == True)]
+        
+        # Write statistics for each group
+        write_group_statistics(f, baseline_group, metric_cols, "Baseline (AC=No, SPO=No)")
+        write_group_statistics(f, ac_only_group, metric_cols, "AC Only (AC=Yes, SPO=No)")
+        write_group_statistics(f, spo_only_group, metric_cols, "SPO Only (AC=No, SPO=Yes)")
+        write_group_statistics(f, ac_spo_group, metric_cols, "AC+SPO (AC=Yes, SPO=Yes)")
+        
+        # ========================================
+        # IMPROVEMENTS OVER BASELINE
+        # ========================================
+        if len(baseline_group) > 0:
+            f.write("\n\n")
+            f.write("=" * 130 + "\n")
+            f.write("IMPROVEMENTS OVER BASELINE (%)\n")
+            f.write("=" * 130 + "\n\n")
+            
+            # Calculate baseline means
+            baseline_means = {}
+            for col in metric_cols:
+                if col in baseline_group.columns:
+                    baseline_means[col] = baseline_group[col].mean()
+            
+            # Write comparison header
+            f.write(f"{'Group':<20} | ")
+            for col in metric_cols:
+                if col in df.columns:
+                    metric_name = col.replace('avg_', '').replace('_', ' ').upper()
+                    if col == 'avg_psnr':
+                        metric_name = 'mPSNR'
+                    elif col == 'global_psnr':
+                        metric_name = 'gPSNR'
+                    f.write(f"{metric_name:>10} | ")
+            f.write("\n")
+            f.write("-" * 130 + "\n")
+            
+            # Calculate and write improvements for each non-baseline group
+            for group_name, group_df in [("AC Only", ac_only_group), 
+                                          ("SPO Only", spo_only_group), 
+                                          ("AC+SPO", ac_spo_group)]:
+                if len(group_df) > 0:
+                    f.write(f"{group_name:<20} | ")
+                    
+                    for col in metric_cols:
+                        if col in group_df.columns and col in baseline_means:
+                            group_mean = group_df[col].mean()
+                            baseline_mean = baseline_means[col]
+                            
+                            # Calculate % improvement
+                            # For LPIPS, E_warp, tOF, tLP: lower is better
+                            if col in ['avg_lpips', 'E_warp', 'tOF', 'tLP']:
+                                improvement = ((baseline_mean - group_mean) / baseline_mean) * 100
+                            else:
+                                # For PSNR, SSIM, VIF: higher is better
+                                improvement = ((group_mean - baseline_mean) / baseline_mean) * 100
+                            
+                            f.write(f"{improvement:>+9.2f}% | ")
+                    
+                    f.write("\n")
+        
+        f.write("\n\n")
+        
+        # ========================================
+        # DETAILED EXPERIMENT DATA
+        # ========================================
+        f.write("=" * 130 + "\n")
+        f.write("DETAILED EXPERIMENT DATA\n")
+        f.write("=" * 130 + "\n\n")
         
         # Write header
-        file.write(f"{'Configuration':<15} | ")
-        file.write(f"{'PSNR':<12} | {'SSIM':<12} | {'VIF':<12} | ")
-        file.write(f"{'LPIPS':<12} | {'E_warp':<12} | {'tOF':<12} | {'tLP':<12} | {'n':<4}\n")
-        file.write("-" * 120 + "\n")
+        f.write(f"{'#':<4} | {'Dataset':<20} | {'Sequence':<35} | ")
+        f.write(f"{'AC':<4} | {'SPO':<4} | ")
+        f.write(f"{'mPSNR':<8} | ")
+        if 'global_psnr' in df.columns:
+            f.write(f"{'gPSNR':<8} | ")
+        f.write(f"{'SSIM':<8} | {'VIF':<8} | {'LPIPS':<8} | ")
+        f.write(f"{'E_warp':<9} | {'tOF':<8} | {'tLP':<8}\n")
+        f.write("-" * 130 + "\n")
         
-        # Write data rows
-        for _, row in summary.iterrows():
-            config_label = self.get_configuration_label(row['ac_enabled'], row['spo_enabled'])
-            file.write(f"{config_label:<15} | ")
-            file.write(f"{row['avg_psnr']:>6.3f}±{row['avg_psnr_std']:>4.3f} | ")
-            file.write(f"{row['avg_ssim']:>6.4f}±{row['avg_ssim_std']:>4.4f} | ")
-            file.write(f"{row['avg_vif']:>6.4f}±{row['avg_vif_std']:>4.4f} | ")
-            file.write(f"{row['avg_lpips']:>6.4f}±{row['avg_lpips_std']:>4.4f} | ")
-            file.write(f"{row['E_warp']:>7.5f}±{row['E_warp_std']:>4.5f} | ")
-            file.write(f"{row['tOF']:>6.3f}±{row['tOF_std']:>4.3f} | ")
-            file.write(f"{row['tLP']:>6.3f}±{row['tLP_std']:>4.3f} | ")
-            file.write(f"{int(row['num_experiments']):>4}\n")
-        
-        file.write("\n")
-        
-        # Calculate improvements
-        baseline = summary[(summary['ac_enabled'] == False) & 
-                          (summary['spo_enabled'] == False)]
-        
-        if len(baseline) > 0:
-            file.write("=" * 120 + "\n")
-            file.write("IMPROVEMENTS OVER BASELINE (%)\n")
-            file.write("=" * 120 + "\n\n")
-            
-            baseline_metrics = {
-                'psnr': baseline['avg_psnr'].values[0],
-                'ssim': baseline['avg_ssim'].values[0],
-                'vif': baseline['avg_vif'].values[0],
-                'lpips': baseline['avg_lpips'].values[0],
-                'ewarp': baseline['E_warp'].values[0],
-                'tof': baseline['tOF'].values[0],
-                'tlp': baseline['tLP'].values[0]
-            }
-            
-            file.write(f"{'Configuration':<15} | ")
-            file.write(f"{'PSNR':>8} | {'SSIM':>8} | {'VIF':>8} | ")
-            file.write(f"{'LPIPS':>8} | {'E_warp':>8} | {'tOF':>8} | {'tLP':>8}\n")
-            file.write("-" * 120 + "\n")
-            
-            for _, row in summary.iterrows():
-                if row['ac_enabled'] or row['spo_enabled']:
-                    config_label = self.get_configuration_label(row['ac_enabled'], 
-                                                                row['spo_enabled'])
-                    
-                    # Calculate % improvements (lower is better for lpips, ewarp, tof, tlp)
-                    psnr_imp = ((row['avg_psnr'] - baseline_metrics['psnr']) / baseline_metrics['psnr']) * 100
-                    ssim_imp = ((row['avg_ssim'] - baseline_metrics['ssim']) / baseline_metrics['ssim']) * 100
-                    vif_imp = ((row['avg_vif'] - baseline_metrics['vif']) / baseline_metrics['vif']) * 100
-                    lpips_imp = ((baseline_metrics['lpips'] - row['avg_lpips']) / baseline_metrics['lpips']) * 100
-                    ewarp_imp = ((baseline_metrics['ewarp'] - row['E_warp']) / baseline_metrics['ewarp']) * 100
-                    tof_imp = ((baseline_metrics['tof'] - row['tOF']) / baseline_metrics['tof']) * 100
-                    tlp_imp = ((baseline_metrics['tlp'] - row['tLP']) / baseline_metrics['tlp']) * 100
-                    
-                    file.write(f"{config_label:<15} | ")
-                    file.write(f"{psnr_imp:>+7.2f}% | {ssim_imp:>+7.2f}% | {vif_imp:>+7.2f}% | ")
-                    file.write(f"{lpips_imp:>+7.2f}% | {ewarp_imp:>+7.2f}% | {tof_imp:>+7.2f}% | {tlp_imp:>+7.2f}%\n")
-            
-            file.write("\n")
-        
-        # Per-sequence breakdown
-        file.write("=" * 120 + "\n")
-        file.write("PER-SEQUENCE BREAKDOWN\n")
-        file.write("=" * 120 + "\n\n")
-        
-        seq_summary = self.summarize_by_sequence()
-        
-        # Group by sequence
-        for sequence in seq_summary['input_path'].unique():
-            seq_data = seq_summary[seq_summary['input_path'] == sequence]
-            
-            file.write(f"\nSequence: {sequence}\n")
-            file.write("-" * 120 + "\n")
-            file.write(f"{'Configuration':<15} | ")
-            file.write(f"{'PSNR':>8} | {'SSIM':>8} | {'VIF':>8} | ")
-            file.write(f"{'LPIPS':>8} | {'E_warp':>8} | {'tOF':>8} | {'tLP':>8}\n")
-            file.write("-" * 120 + "\n")
-            
-            for _, row in seq_data.iterrows():
-                config_label = self.get_configuration_label(row['ac_enabled'], row['spo_enabled'])
-                file.write(f"{config_label:<15} | ")
-                file.write(f"{row['avg_psnr']:>8.3f} | {row['avg_ssim']:>8.4f} | {row['avg_vif']:>8.4f} | ")
-                file.write(f"{row['avg_lpips']:>8.4f} | {row['E_warp']:>8.5f} | {row['tOF']:>8.3f} | {row['tLP']:>8.3f}\n")
-            
-            file.write("\n")
-        
-        # Raw data table
-        file.write("=" * 120 + "\n")
-        file.write("RAW EXPERIMENT DATA\n")
-        file.write("=" * 120 + "\n\n")
-        
-        file.write(f"{'Sequence':<40} | {'Config':<12} | ")
-        file.write(f"{'PSNR':>8} | {'SSIM':>8} | {'VIF':>8} | ")
-        file.write(f"{'LPIPS':>8} | {'E_warp':>8} | {'tOF':>8} | {'tLP':>8}\n")
-        file.write("-" * 120 + "\n")
-        
-        for _, row in self.df.iterrows():
-            config_label = self.get_configuration_label(row['ac_enabled'], row['spo_enabled'])
+        # Write each experiment row
+        for idx, row in df.iterrows():
+            # Extract sequence name from path
             seq_name = Path(row['input_path']).name if pd.notna(row['input_path']) else 'N/A'
-            file.write(f"{seq_name:<40} | {config_label:<12} | ")
-            file.write(f"{row['avg_psnr']:>8.3f} | {row['avg_ssim']:>8.4f} | {row['avg_vif']:>8.4f} | ")
-            file.write(f"{row['avg_lpips']:>8.4f} | {row['E_warp']:>8.5f} | {row['tOF']:>8.3f} | {row['tLP']:>8.3f}\n")
+            seq_name = seq_name[:35]  # Truncate if too long
+            
+            # AC and SPO status
+            ac_status = 'Yes' if row.get('ac_enabled', False) else 'No'
+            spo_status = 'Yes' if row.get('spo_enabled', False) else 'No'
+            
+            f.write(f"{idx+1:<4} | {row['dataset']:<20} | {seq_name:<35} | ")
+            f.write(f"{ac_status:<4} | {spo_status:<4} | ")
+            f.write(f"{row['avg_psnr']:>8.3f} | ")
+            if 'global_psnr' in df.columns:
+                f.write(f"{row['global_psnr']:>8.3f} | ")
+            f.write(f"{row['avg_ssim']:>8.4f} | {row['avg_vif']:>8.4f} | ")
+            f.write(f"{row['avg_lpips']:>8.4f} | {row['E_warp']:>9.5f} | ")
+            f.write(f"{row['tOF']:>8.3f} | {row['tLP']:>8.3f}\n")
         
-        file.write("\n")
+        f.write("\n")
+        f.write("=" * 130 + "\n")
+        f.write("END OF REPORT\n")
+        f.write("=" * 130 + "\n")
     
-    def print_summary(self):
-        """Print summary to console."""
-        print(f"\n{'='*120}")
-        print(f"Dataset: {self.dataset_name}")
-        print(f"{'='*120}\n")
-        
-        summary = self.summarize_by_configuration()
-        
-        # Print header
-        print(f"{'Configuration':<15} | ", end="")
-        print(f"{'PSNR':<12} | {'SSIM':<12} | {'VIF':<12} | ", end="")
-        print(f"{'LPIPS':<12} | {'E_warp':<12} | {'tOF':<12} | {'tLP':<12} | {'n':<4}")
-        print("-" * 120)
-        
-        # Print data
-        for _, row in summary.iterrows():
-            config_label = self.get_configuration_label(row['ac_enabled'], row['spo_enabled'])
-            print(f"{config_label:<15} | ", end="")
-            print(f"{row['avg_psnr']:>6.3f}±{row['avg_psnr_std']:>4.3f} | ", end="")
-            print(f"{row['avg_ssim']:>6.4f}±{row['avg_ssim_std']:>4.4f} | ", end="")
-            print(f"{row['avg_vif']:>6.4f}±{row['avg_vif_std']:>4.4f} | ", end="")
-            print(f"{row['avg_lpips']:>6.4f}±{row['avg_lpips_std']:>4.4f} | ", end="")
-            print(f"{row['E_warp']:>7.5f}±{row['E_warp_std']:>4.5f} | ", end="")
-            print(f"{row['tOF']:>6.3f}±{row['tOF_std']:>4.3f} | ", end="")
-            print(f"{row['tLP']:>6.3f}±{row['tLP_std']:>4.3f} | ", end="")
-            print(f"{int(row['num_experiments']):>4}")
-        
-        print()
+    print(f"\nReport saved to: {output_file}")
 
 
-class MultiDatasetAnalyzer:
-    """Analyzer for multiple datasets."""
+def print_console_summary(df: pd.DataFrame):
+    """
+    Print summary statistics to console.
     
-    def __init__(self, csv_paths: List[str]):
-        """
-        Initialize with multiple CSV files.
-        
-        Args:
-            csv_paths: List of paths to metrics CSV files
-        """
-        self.analyzers = [AblationAnalyzer(path) for path in csv_paths]
-        self.dataset_names = [a.dataset_name for a in self.analyzers]
+    Args:
+        df: DataFrame with all experiment data
+    """
+    metric_cols = ['avg_psnr', 'avg_ssim', 'avg_vif', 'avg_lpips', 'E_warp', 'tOF', 'tLP']
+    if 'global_psnr' in df.columns:
+        metric_cols.insert(1, 'global_psnr')
     
-    def write_combined_summary(self, output_path: str):
-        """
-        Write combined summary for all datasets to a single file.
-        
-        Args:
-            output_path: Path to output text file
-        """
-        with open(output_path, 'w') as f:
-            f.write("=" * 120 + "\n")
-            f.write("MULTI-DATASET ABLATION STUDY SUMMARY\n")
-            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"Datasets: {', '.join(self.dataset_names)}\n")
-            f.write("=" * 120 + "\n\n")
+    print("\n" + "=" * 130)
+    print("SUMMARY STATISTICS (All Experiments)")
+    print("=" * 130)
+    print(f"\n{'Metric':<15} | {'Mean':<12} | {'Std':<12} | {'Min':<12} | {'Max':<12}")
+    print("-" * 130)
+    
+    for col in metric_cols:
+        if col in df.columns:
+            mean_val = df[col].mean()
+            std_val = df[col].std()
+            min_val = df[col].min()
+            max_val = df[col].max()
             
-            # Write summary for each dataset
-            for analyzer in self.analyzers:
-                analyzer.write_summary_to_file(f)
-                f.write("\n" + "=" * 120 + "\n\n")
+            metric_name = col.replace('avg_', '').replace('_', ' ').upper()
+            if col == 'avg_psnr':
+                metric_name = 'mPSNR'
+            elif col == 'global_psnr':
+                metric_name = 'gPSNR'
             
-            # Cross-dataset comparison
-            f.write("=" * 120 + "\n")
-            f.write("CROSS-DATASET COMPARISON\n")
-            f.write("=" * 120 + "\n\n")
-            
-            all_summaries = []
-            for analyzer in self.analyzers:
-                summary = analyzer.summarize_by_configuration()
-                summary['dataset'] = analyzer.dataset_name
-                all_summaries.append(summary)
-            
-            combined = pd.concat(all_summaries, ignore_index=True)
-            
-            # Group by configuration and show average across datasets
-            for config in [(False, False), (True, False), (False, True), (True, True)]:
-                ac_enabled, spo_enabled = config
-                config_data = combined[(combined['ac_enabled'] == ac_enabled) & 
-                                      (combined['spo_enabled'] == spo_enabled)]
-                
-                if len(config_data) > 0:
-                    config_label = self.analyzers[0].get_configuration_label(ac_enabled, spo_enabled)
-                    
-                    f.write(f"\n{config_label}:\n")
-                    f.write("-" * 120 + "\n")
-                    f.write(f"{'Dataset':<15} | ")
-                    f.write(f"{'PSNR':>8} | {'SSIM':>8} | {'VIF':>8} | ")
-                    f.write(f"{'LPIPS':>8} | {'tLP':>8}\n")
-                    f.write("-" * 120 + "\n")
-                    
-                    for _, row in config_data.iterrows():
-                        f.write(f"{row['dataset']:<15} | ")
-                        f.write(f"{row['avg_psnr']:>8.3f} | {row['avg_ssim']:>8.4f} | {row['avg_vif']:>8.4f} | ")
-                        f.write(f"{row['avg_lpips']:>8.4f} | {row['tLP']:>8.3f}\n")
-                    
-                    # Average across datasets
-                    f.write("-" * 120 + "\n")
-                    f.write(f"{'Average':<15} | ")
-                    f.write(f"{config_data['avg_psnr'].mean():>8.3f} | ")
-                    f.write(f"{config_data['avg_ssim'].mean():>8.4f} | ")
-                    f.write(f"{config_data['avg_vif'].mean():>8.4f} | ")
-                    f.write(f"{config_data['avg_lpips'].mean():>8.4f} | ")
-                    f.write(f"{config_data['tLP'].mean():>8.3f}\n")
-                    f.write("\n")
+            print(f"{metric_name:<15} | {mean_val:>12.4f} | {std_val:>12.4f} | "
+                  f"{min_val:>12.4f} | {max_val:>12.4f}")
+    
+    print("\n" + "=" * 130)
+    print(f"Total experiments: {len(df)}")
+    print(f"Datasets: {', '.join(sorted(df['dataset'].unique()))}")
+    print("=" * 130 + "\n")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Analyze ablation study results from CSV files"
+        description="Analyze ablation study results from multiple CSV files"
     )
     parser.add_argument(
         'csv_files',
@@ -329,9 +347,9 @@ def main():
         help='One or more CSV files with ablation study results'
     )
     parser.add_argument(
-        '--output-dir',
-        default='./outputs/ablation_analysis',
-        help='Directory to save analysis (default: ./outputs/ablation_analysis)'
+        '--output-file',
+        default='./outputs/ablation_analysis/ablation_report.txt',
+        help='Output text file path (default: ./outputs/ablation_analysis/ablation_report.txt)'
     )
     
     args = parser.parse_args()
@@ -348,45 +366,22 @@ def main():
         print("Error: No valid CSV files found")
         return 1
     
-    # Create output directory
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\nAnalyzing {len(csv_files)} CSV file(s)...\n")
     
-    print(f"\nAnalyzing {len(csv_files)} dataset(s)...\n")
+    # Load and process all CSVs
+    df = load_and_process_csvs(csv_files)
     
-    if len(csv_files) == 1:
-        # Single dataset analysis
-        analyzer = AblationAnalyzer(csv_files[0])
-        analyzer.print_summary()
-        
-        # Write detailed report
-        output_file = output_dir / f'ablation_report_{analyzer.dataset_name}.txt'
-        with open(output_file, 'w') as f:
-            analyzer.write_summary_to_file(f)
-        
-        print(f"\nDetailed report saved to: {output_file}")
-        
-    else:
-        # Multi-dataset analysis
-        multi_analyzer = MultiDatasetAnalyzer(csv_files)
-        
-        # Print summaries for all datasets
-        for analyzer in multi_analyzer.analyzers:
-            analyzer.print_summary()
-        
-        # Write individual reports
-        for analyzer in multi_analyzer.analyzers:
-            output_file = output_dir / f'ablation_report_{analyzer.dataset_name}.txt'
-            with open(output_file, 'w') as f:
-                analyzer.write_summary_to_file(f)
-            print(f"Report saved: {output_file}")
-        
-        # Write combined report
-        combined_output = output_dir / 'ablation_report_combined.txt'
-        multi_analyzer.write_combined_summary(str(combined_output))
-        print(f"\nCombined report saved to: {combined_output}")
+    # Print console summary
+    print_console_summary(df)
     
-    print(f"\nAnalysis complete!")
+    # Create output directory if needed
+    output_path = Path(args.output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Write detailed report
+    write_summary_report(df, args.output_file)
+    
+    print("\nAnalysis complete!")
     
     return 0
 
