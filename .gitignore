@@ -61,6 +61,11 @@ images/hwar/*
 
 images/videos/*
 
+images/DAVIS/*
+images/Sintel-albedo/*
+images/Sintel-final/*
+images/VIRAT/*
+
 wandb
 
 visualization_output

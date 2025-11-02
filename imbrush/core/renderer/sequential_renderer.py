@@ -24,7 +24,7 @@ USE_CUDA_GRADIENT_COMPUTATION = False
 
 # =============================================================================
 
-DIFF_MASK_EXPORT_PATH = "./outputs/vis_class/diff_mask_sequential"  # Directory to save diff mask images
+DIFF_MASK_EXPORT_PATH = None  # Directory to save diff mask images
 
 
 
