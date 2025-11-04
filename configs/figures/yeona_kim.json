@@ -4,21 +4,19 @@
             512
         ],
         "img_path": [
-            "images/spatial_constraint/flowers.jpg"
+            "images/spatial_constraint/2022_September_27_-_Yuna_Kim_wearing_Hanbok.jpg"
         ],
-        "mask_path": [
-            "images/spatial_constraint/masks/flower_mask.png"
+        "mask_path" : [
+            "images/spatial_constraint/masks/2022_September_27_-_Yuna_Kim_wearing_Hanbok_mask.jpg"
         ],
         "exist_bg" : false,
         "debug_save_intermediates" : true
     },
     "primitive": {
-        "primitive_file": ["flowers/Lady_Jane.png",
-            "flowers/rose_of_sharon_1.png",
-            "flowers/rose_of_sharon_2.png",
-            "flowers/rose_of_sharon_3.png",
-            "flowers/rose_of_sharon_4.png"
-    ],
+        "primitive_file": ["flowers/rose_of_sharon_1.png", 
+        "flowers/rose_of_sharon_2.png", 
+        "flowers/rose_of_sharon_3.png", 
+        "flowers/rose_of_sharon_4.png"],
         "convert_to_svg": false,
         "svg_hollow": false,
         "output_width": 128
@@ -26,15 +24,15 @@
     "initialization": {
         "initializer": "structure_aware",
         "N": [
-            1000
+            400
         ],
         "radii_min": 2,
-        "radii_max": 31,
+        "radii_max": 10,
         "debug_mode": true
     },
     "optimization": {
         "use_fp16": false,
-        "num_iterations": 300,
+        "num_iterations": 260,
         "learning_rate": {
             "default": 0.1,
             "gain_v":5.0
@@ -61,6 +59,6 @@
     "postprocessing": {
         "output_folder": "outputs/",
         "compute_psnr": true,
-        "export_psd": true
-        }
+        "export_psd": false
+    }
 } 

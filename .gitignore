@@ -29,6 +29,8 @@ output_webpage/src_sequential_lyrics/index.html
 !assets/primitives/fingerprint.jpg
 !assets/primitives/circle.png
 !assets/primitives/paw_complicated.png
+!assets/primitives/flowers
+!assets/primitives/dancheong
 
 assets/font/*
 !assets/font/arial.ttf
@@ -41,6 +43,7 @@ configs/*
 !configs/default*.json
 !configs/sequential*.json
 !configs/seurat*.json
+!configs/figures
 
 images/person/*
 !images/person/pororo.jpg
