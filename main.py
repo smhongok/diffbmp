@@ -25,19 +25,12 @@ from imbrush.util.svg_converter import FontParser, ImageToSVG
 from imbrush.core.initializer.svgsplat_initializater import StructureAwareInitializer
 from imbrush.core.initializer.random_initializater import RandomInitializer
 from imbrush.util.primitive_utils import expand_primitive_wildcards
-
-# Route visualization flag - set to True to enable primitive movement visualization
-ENABLE_ROUTE_VISUALIZATION = False
-
+from imbrush.util.transition_exporter import export_transition_video_with_holds
 # Import our modules
 from imbrush.core.preprocessing import Preprocessor
 from imbrush.util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
 from imbrush.util.pdf_exporter import PDFExporter
 import imbrush.util.target_masks as target_masks
-
-# Conditional import for route visualization
-if ENABLE_ROUTE_VISUALIZATION:
-    from imbrush.util.route_visualizer import create_route_visualization
 
 
 
@@ -177,6 +170,14 @@ except Exception as e:
         device=device
     )
     primitive_loader = None
+
+if config['postprocessing'].get('export_transition', False):
+    transition_x_list = []
+    transition_y_list = []
+    transition_r_list = []
+    transition_c_list = []
+    transition_v_list = []
+    transition_theta_list = []
 
 # Process each image in the list
 for img_idx, img_path in enumerate(img_paths):
@@ -431,6 +432,41 @@ for img_idx, img_path in enumerate(img_paths):
                 
         except ImportError as e:
             print(f"Required library missing: {e}. Cannot compute metrics.")
+
+    if config['postprocessing'].get('export_transition', False):
+        transition_x_list.append(x)
+        transition_y_list.append(y)
+        transition_r_list.append(r)
+        transition_c_list.append(c)
+        transition_v_list.append(v)
+        transition_theta_list.append(theta)
+        
+if config['postprocessing'].get('export_transition', False):
+    print(f"\n{'='*80}")
+    print("Starting transition video export...")
+    print(f"Collected {len(transition_x_list)} image states for transition")
+    
+    # Get transition configuration
+    transition_config = config['postprocessing'].get('transition_config', {})
+    # Export transition video with holds
+    video_path = export_transition_video_with_holds(
+        transition_x_list,
+        transition_y_list,
+        transition_r_list,
+        transition_c_list,
+        transition_v_list,
+        transition_theta_list,
+        renderer=renderer,
+        output_folder=config['postprocessing'].get('output_folder', 'outputs/'),
+        fps=transition_config.get('fps', 30),
+        transition_frames=transition_config.get('transition_frames', 60),
+        hold_frames=transition_config.get('hold_frames', 30),
+        interpolation_style=transition_config.get('interpolation_style', 'linear'),
+        device=device
+    )
+    
+    if video_path:
+        print(f"Transition video saved to: {video_path}")
 
 end_time = time.time()
 formatted_time = str(timedelta(seconds=int(end_time - start_time)))
