@@ -778,8 +778,9 @@ class SimpleTileRenderer(VectorRenderer):
             if self.use_fp16:
                 with autocast('cuda'):
                     if is_no_bg_mode:
+                        random_bg = torch.rand((self.H, self.W, 3), device=self.device)
                         rendered, rendered_alpha = self.render_from_params(
-                            x, y, r, theta, v, c, sigma=current_sigma, I_bg=None, lr_conf=lr_conf, return_alpha=True
+                            x, y, r, theta, v, c, sigma=current_sigma, I_bg=random_bg, lr_conf=lr_conf, return_alpha=True
                         )
                     else:
                         white_bg = torch.ones((self.H, self.W, 3), device=self.device)
@@ -809,8 +810,9 @@ class SimpleTileRenderer(VectorRenderer):
 
             else:
                 if is_no_bg_mode:
+                    random_bg = torch.rand((self.H, self.W, 3), device=self.device)
                     rendered, rendered_alpha = self.render_from_params(
-                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=None, lr_conf=lr_conf, return_alpha=True
+                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=random_bg, lr_conf=lr_conf, return_alpha=True
                     )
                 else:
                     white_bg = torch.ones((self.H, self.W, 3), device=self.device)
