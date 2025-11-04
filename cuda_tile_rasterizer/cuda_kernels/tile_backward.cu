@@ -18,7 +18,7 @@
 #define DEBUG_CUDA_KERNELS 0
 #define DEBUG_SEQUENTIAL 0  // Set to 1 for sequential debugging, 0 for parallel execution
 #define EPS1 1e-6f
-#define SIZE_BASED_OPTIM 1  // Set to 1 to use size-based c_blend and rotation (image_width * SIZE_THRESHOLD_RATIO threshold), 0 for original global c_blend
+#define SIZE_BASED_OPTIM 0  // Set to 1 to use size-based c_blend and rotation (image_width * SIZE_THRESHOLD_RATIO threshold), 0 for original global c_blend
 #define SIZE_THRESHOLD_RATIO 0.2f  // Threshold ratio for size-based optimization (image_width * SIZE_THRESHOLD_RATIO)
 #define C_BLEND_INVERSE 0  // Set to 1 to apply c_blend to large primitives (s > threshold), 0 to apply to small primitives (s <= threshold)
 
