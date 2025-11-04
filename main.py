@@ -333,15 +333,6 @@ for img_idx, img_path in enumerate(img_paths):
     # Single image final rendering and export
     with torch.no_grad():
         white_bg = torch.ones((renderer.H, renderer.W, 3), device=renderer.device)
-        dense_mask_path = config['postprocessing'].get('dense_mask', None)
-        if dense_mask_path is not None:
-            dense_mask_img = cv2.imread(dense_mask_path, cv2.IMREAD_GRAYSCALE)
-            dense_mask_img = cv2.resize(dense_mask_img, (renderer.W, renderer.H))
-        import imbrush.util.app as app
-        x, y, r, v, theta, c = app.mask_blur(x, y, r, v, theta, c,
-                      I_target,
-                      target_binary_mask=target_binary_mask,
-                      dense_mask=dense_mask_img if dense_mask_path is not None else None)
         
         # Check if PSD export is requested
         psd_export = config.get('postprocessing', {}).get('export_psd', False)
