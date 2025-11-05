@@ -18,7 +18,7 @@ VARIANCE_BASE_PROB = 0.1  # Base probability for low-variance areas
 # V_INIT_BIAS = -5.0
 # V_INIT_SLOPE = 3.0
 
-MAX_PRIMS_PER_PIXEL = 200
+MAX_PRIMS_PER_PIXEL = 300
 
 # ==================== Optimization Constants ====================
 LR_DEFAULT = 0.1

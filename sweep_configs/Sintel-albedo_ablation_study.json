@@ -1,19 +1,19 @@
 {
-    "experiment_name": "ablation_Sintel-albedo",
+    "experiment_name": "ablation_Sintel-albedo_16",
     "base_config": "configs/sequential.json",
     "sweep_type": "grid",
     "parameters": {
         "preprocessing.img_path": [
-            "images/Sintel-albedo/alley_1/",
-            "images/Sintel-albedo/alley_2/",
-            "images/Sintel-albedo/ambush_2/",
-            "images/Sintel-albedo/ambush_4/"
+            "images/Sintel-albedo_fps_drop_8/alley_1/",
+            "images/Sintel-albedo_fps_drop_8/alley_2/",
+            "images/Sintel-albedo_fps_drop_8/ambush_2/",
+            "images/Sintel-albedo_fps_drop_8/ambush_4/"
         ],
         "sequential.adaptive_control.enabled": [true, false],
         "sequential.selective_parameter_optimization.enabled": [true, false]
     },
     "fixed_overrides": {
-        "sequential.export.metrics_csv_path": "./outputs/metrics_Sintel-albedo.csv"
+        "sequential.export.metrics_csv_path": "./outputs/metrics_Sintel-albedo_16.csv"
     },
-    "output_base": "./outputs/experiments_Sintel-albedo"
+    "output_base": "./outputs/experiments_Sintel-albedo_16"
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Script to create FPS-dropped versions of image sequence datasets.
-Keeps only 1 in every 4 images from each sequence (FPS is 4x lower).
+Keeps only 1 in every N images from each sequence (configurable FPS reduction).
 """
 
 import os
@@ -26,7 +26,7 @@ def apply_fps_drop(src_dir: Path, dst_dir: Path, keep_pattern: int = 4):
     Args:
         src_dir: Source directory containing image sequence
         dst_dir: Destination directory for FPS-dropped sequence
-        keep_pattern: Keep 1 image every N images (default: 4, meaning keep 1, drop 3)
+        keep_pattern: Keep 1 image every N images (default: 4, meaning keep 1, drop N-1)
     """
     # Create destination directory
     dst_dir.mkdir(parents=True, exist_ok=True)
@@ -43,7 +43,7 @@ def apply_fps_drop(src_dir: Path, dst_dir: Path, keep_pattern: int = 4):
     dropped_count = 0
     
     for idx, img_file in enumerate(image_files):
-        # Keep only every 4th image (indices 0, 4, 8, 12, ...)
+        # Keep only every Nth image (indices 0, N, 2N, 3N, ...)
         if idx % keep_pattern == 0:
             # Copy the image
             dst_file = dst_dir / img_file.name
@@ -55,16 +55,18 @@ def apply_fps_drop(src_dir: Path, dst_dir: Path, keep_pattern: int = 4):
     print(f"  {src_dir.name}: Copied {copied_count} images, dropped {dropped_count} images")
 
 
-def process_dataset(dataset_name: str, base_dir: Path):
+def process_dataset(dataset_name: str, base_dir: Path, output_suffix: str, keep_pattern: int):
     """
     Process a single dataset by creating FPS-dropped version.
     
     Args:
         dataset_name: Name of the dataset (e.g., 'DAVIS', 'Sintel-final')
         base_dir: Base directory containing all image datasets
+        output_suffix: Suffix to append to output folder name
+        keep_pattern: Keep 1 image every N images
     """
     src_dataset_dir = base_dir / dataset_name
-    dst_dataset_dir = base_dir / f"{dataset_name}_fps_drop"
+    dst_dataset_dir = base_dir / f"{dataset_name}{output_suffix}"
     
     if not src_dataset_dir.exists():
         print(f"Warning: Source directory {src_dataset_dir} does not exist. Skipping.")
@@ -87,26 +89,53 @@ def process_dataset(dataset_name: str, base_dir: Path):
     for subdir in sorted(subdirs):
         src_seq_dir = subdir
         dst_seq_dir = dst_dataset_dir / subdir.name
-        apply_fps_drop(src_seq_dir, dst_seq_dir)
+        apply_fps_drop(src_seq_dir, dst_seq_dir, keep_pattern)
     
     print(f"  ✓ Completed {dataset_name}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Create FPS-dropped versions of image sequence datasets"
+        description="Create FPS-dropped versions of image sequence datasets",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Keep 1 in every 4 images (default)
+  python create_fps_drop_datasets.py
+  
+  # Keep 1 in every 2 images (50% FPS reduction)
+  python create_fps_drop_datasets.py --keep-pattern 2 --output-suffix "_fps_drop_2"
+  
+  # Keep 1 in every 8 images (8x FPS reduction)
+  python create_fps_drop_datasets.py --keep-pattern 8 --output-suffix "_fps_drop_8"
+  
+  # Process only specific datasets
+  python create_fps_drop_datasets.py --datasets DAVIS Sintel-final
+        """
     )
     parser.add_argument(
         '--base-dir',
         type=str,
         default='/data/insoo_chung/repo/xy_dynamics/circle_art/images',
-        help='Base directory containing image datasets'
+        help='Base directory containing image datasets (default: ./images)'
     )
     parser.add_argument(
         '--datasets',
         nargs='+',
         default=['DAVIS', 'Sintel-final', 'Sintel-albedo', 'VIRAT'],
-        help='List of dataset names to process'
+        help='List of dataset names to process (default: DAVIS Sintel-final Sintel-albedo VIRAT)'
+    )
+    parser.add_argument(
+        '--keep-pattern',
+        type=int,
+        default=4,
+        help='Keep 1 image every N images (default: 4, meaning keep 1 drop 3)'
+    )
+    parser.add_argument(
+        '--output-suffix',
+        type=str,
+        default='_fps_drop',
+        help='Suffix to append to output folder names (default: "_fps_drop")'
     )
     
     args = parser.parse_args()
@@ -116,16 +145,21 @@ def main():
         print(f"Error: Base directory {base_dir} does not exist.")
         return
     
+    if args.keep_pattern < 1:
+        print(f"Error: --keep-pattern must be at least 1")
+        return
+    
     print("=" * 60)
     print("Creating FPS-Dropped Image Sequence Datasets")
     print("=" * 60)
-    print(f"Drop pattern: Keep 1 image, drop 3 images (FPS is 4x lower)")
+    print(f"Keep pattern: Keep 1 image, drop {args.keep_pattern - 1} images (FPS is {args.keep_pattern}x lower)")
+    print(f"Output suffix: {args.output_suffix}")
     print(f"Base directory: {base_dir}")
     print(f"Datasets to process: {', '.join(args.datasets)}")
     
     # Process each dataset
     for dataset_name in args.datasets:
-        process_dataset(dataset_name, base_dir)
+        process_dataset(dataset_name, base_dir, args.output_suffix, args.keep_pattern)
     
     print("\n" + "=" * 60)
     print("✓ All datasets processed successfully!")

@@ -1,0 +1,20 @@
+{
+    "experiment_name": "ablation_GIFs",
+    "base_config": "configs/sequential.json",
+    "sweep_type": "grid",
+    "parameters": {
+        "preprocessing.img_path": [
+            "images/gif/pororo_monkey_crop_first2.gif",
+            "images/gif/bruce_almighty.gif",
+            "images/gif/cat.gif",
+            "images/gif/green_jumper.gif",
+            "images/gif/simpson_jumping.gif"
+        ],
+        "sequential.adaptive_control.enabled": [true, false],
+        "sequential.selective_parameter_optimization.enabled": [true, false]
+    },
+    "fixed_overrides": {
+        "sequential.export.metrics_csv_path": "./outputs/metrics_GIFs.csv"
+    },
+    "output_base": "./outputs/experiments_GIFs"
+}

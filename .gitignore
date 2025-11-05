@@ -71,6 +71,10 @@ images/DAVIS_fps_drop/*
 images/Sintel-albedo_fps_drop/*
 images/Sintel-final_fps_drop/*
 images/VIRAT_fps_drop/*
+images/DAVIS_fps_drop_8/*
+images/Sintel-albedo_fps_drop_8/*
+images/Sintel-final_fps_drop_8/*
+images/VIRAT_fps_drop_8/*
 
 wandb
 

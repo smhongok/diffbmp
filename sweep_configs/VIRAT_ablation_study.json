@@ -1,19 +1,19 @@
 {
-    "experiment_name": "ablation_VIRAT",
+    "experiment_name": "ablation_VIRAT_16",
     "base_config": "configs/sequential.json",
     "sweep_type": "grid",
     "parameters": {
         "preprocessing.img_path": [
-            "images/VIRAT/frames1",
-            "images/VIRAT/frames2",
-            "images/VIRAT/frames3",
-            "images/VIRAT/frames4"
+            "images/VIRAT_fps_drop_8/frames1",
+            "images/VIRAT_fps_drop_8/frames2",
+            "images/VIRAT_fps_drop_8/frames3",
+            "images/VIRAT_fps_drop_8/frames4"
         ],
         "sequential.adaptive_control.enabled": [true, false],
         "sequential.selective_parameter_optimization.enabled": [true, false]
     },
     "fixed_overrides": {
-        "sequential.export.metrics_csv_path": "./outputs/metrics_VIRAT.csv"
+        "sequential.export.metrics_csv_path": "./outputs/metrics_VIRAT_16.csv"
     },
-    "output_base": "./outputs/experiments_VIRAT"
+    "output_base": "./outputs/experiments_VIRAT_16"
 }

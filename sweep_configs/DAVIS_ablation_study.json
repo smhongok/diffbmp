@@ -1,20 +1,20 @@
 {
-    "experiment_name": "ablation_DAVIS",
+    "experiment_name": "ablation_DAVIS_16",
     "base_config": "configs/sequential.json",
     "sweep_type": "grid",
     "parameters": {
         "preprocessing.img_path": [
-            "images/DAVIS/bear/",
-            "images/DAVIS/blackswan/",
-            "images/DAVIS/bmx-bumps/",
-            "images/DAVIS/bmx-trees/",
-            "images/DAVIS/parkour/"
+            "images/DAVIS_fps_drop_8/bear/",
+            "images/DAVIS_fps_drop_8/blackswan/",
+            "images/DAVIS_fps_drop_8/bmx-bumps/",
+            "images/DAVIS_fps_drop_8/bmx-trees/",
+            "images/DAVIS_fps_drop_8/parkour/"
         ],
         "sequential.adaptive_control.enabled": [true, false],
         "sequential.selective_parameter_optimization.enabled": [true, false]
     },
     "fixed_overrides": {
-        "sequential.export.metrics_csv_path": "./outputs/metrics_DAVIS.csv"
+        "sequential.export.metrics_csv_path": "./outputs/metrics_DAVIS_16.csv"
     },
-    "output_base": "./outputs/experiments_DAVIS"
+    "output_base": "./outputs/experiments_DAVIS_16"
 }

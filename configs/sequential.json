@@ -16,9 +16,9 @@
     "initialization": {
         "initializer": "structure_aware",
         "N": [
-            2000
+            1000
         ],
-        "radii_min": 2,
+        "radii_min": 8,
         "debug_mode": true
     },
     "optimization": {
