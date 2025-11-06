@@ -61,6 +61,24 @@ images/hwar/*
 
 images/videos/*
 
+images/DAVIS_fps_drop_8/*
+images/Sintel-albedo_fps_drop_8/*
+images/Sintel-final_fps_drop_8/*
+images/VIRAT_fps_drop_8/*
+
+images/DAVIS/*
+images/Sintel-albedo/*
+images/Sintel-final/*
+images/VIRAT/*
+
+images/DAVIS_fps_drop/*
+images/Sintel-albedo_fps_drop/*
+images/Sintel-final_fps_drop/*
+images/VIRAT_fps_drop/*
+
+images/transition/*
+
+
 wandb
 
 visualization_output
