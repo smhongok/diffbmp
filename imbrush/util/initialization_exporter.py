@@ -225,7 +225,8 @@ def load_primitive_templates(device):
             primitive_paths=svg_path,
             output_width=SVG_CONFIG.get("output_width", 128),
             device=device,
-            bg_threshold=SVG_CONFIG.get("bg_threshold", 250)
+            bg_threshold=SVG_CONFIG.get("bg_threshold", 250),
+            resampling=SVG_CONFIG.get("resampling", "LANCZOS")
         )
         # Keep reference for backward compatibility
         svg_loader = primitive_loader

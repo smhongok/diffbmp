@@ -18,6 +18,7 @@ class BaseInitializer(ABC):
         self.debug_mode = init_opt.get("debug_mode", False)
         self.detail_first = init_opt.get("detail_first", True)
         self.v_init_bias = init_opt.get("v_init_bias", OPACITY_INIT_VALUE)
+        self.theta_init = init_opt.get("theta_init", None)  # If set, use this value for all theta
         
     @abstractmethod
     def initialize(self, I_target, target_binary_mask = None, I_bg=None, renderer:VectorRenderer=None, opt_conf:Dict[str, Any]=None):
@@ -40,7 +41,11 @@ class BaseInitializer(ABC):
 
         v = self._rand_leaf((N,), self.v_init_bias - 0.5, self.v_init_bias + 0.5, device)
 
-        theta = self._rand_leaf((N,), 0, 2 * torch.pi, device)
+        # Initialize theta: use theta_init if specified, otherwise random
+        if self.theta_init is not None:
+            theta = torch.full((N,), self.theta_init, dtype=torch.float32, device=device, requires_grad=True)
+        else:
+            theta = self._rand_leaf((N,), 0, 2 * torch.pi, device)
         c     = self._rand_leaf((N,3), 0, 1, device)
         return x, y, r, v, theta, c
     

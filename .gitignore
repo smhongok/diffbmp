@@ -271,4 +271,4 @@ frame_counter.py
 cuda_tile_rasterizer/build_bypass.py
 test_gradient_basic.png
 **/ignore_*/
-
+**/ipa/
