@@ -14,6 +14,7 @@ import math,random
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
 import cv2
+from imbrush.util.constants import get_resampling_method
 
 base_folder = Path(__file__).resolve().parent.parent.parent
 font_folder = os.path.join(base_folder, "assets", "font") # .ttf or .otf path
@@ -460,7 +461,7 @@ class ImageToSVG:
         return output_path
     
     def vectorize_image(self, img_path, output_path=None, threshold=128, 
-                       simplify=True, width=None, height=None):
+                       simplify=True, width=None, height=None, resampling='LANCZOS'):
         """
         Vectorizes a bitmap image to SVG outlines.
         
@@ -471,6 +472,7 @@ class ImageToSVG:
             simplify: Whether to simplify paths for smaller file size
             width: Output width (default: same as input)
             height: Output height (default: same as input)
+            resampling: Resampling method ('LANCZOS', 'NEAREST', 'BILINEAR', 'BICUBIC')
             
         Returns:
             Path to the generated SVG file
@@ -486,7 +488,8 @@ class ImageToSVG:
         if width is not None or height is not None:
             width = width or int(img.width * height / img.height)
             height = height or int(img.height * width / img.width)
-            img = img.resize((width, height), Image.LANCZOS)
+            resampling_method = get_resampling_method(resampling)
+            img = img.resize((width, height), resampling_method)
         
         # Convert to grayscale
         img_gray = img.convert('L')

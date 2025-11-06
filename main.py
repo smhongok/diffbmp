@@ -156,7 +156,8 @@ try:
         output_width=config["primitive"]["output_width"],
         device=device,
         bg_threshold=config["primitive"]["bg_threshold"],
-        radial_transparency=config["primitive"]["radial_transparency"]
+        radial_transparency=config["primitive"]["radial_transparency"],
+        resampling=config["primitive"]["resampling"]
     )
     # Keep reference for backward compatibility
     svg_loader = primitive_loader
@@ -254,6 +255,7 @@ for img_idx, img_path in enumerate(img_paths):
         "sigma": opt_conf["blur_sigma"] if opt_conf.get("do_gaussian_blur", False) else 0.0,
         "c_blend": config["optimization"].get("c_blend", 0.0),  # Pass c_blend from config
         "primitive_colors": primitive_colors,  # Pass primitive colors for c_o initialization
+        "max_prims_per_pixel": config["initialization"].get("max_prims_per_pixel"),  # Pass max_prims_per_pixel from config
     }
 
     renderer = renderer_class(**renderer_kwargs)

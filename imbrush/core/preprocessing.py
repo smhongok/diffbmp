@@ -1,6 +1,7 @@
 import numpy as np
 from PIL import Image, ImageOps, ImageFilter
 from imbrush.util.target_masks import binary_mask
+from imbrush.util.constants import get_resampling_method
 import cv2
 import os
 class Preprocessor:
@@ -65,7 +66,8 @@ class Preprocessor:
         new_h = int(h * ratio)
         self.final_width = new_w
         self.final_height = new_h
-        resized_img = padded_img.resize((new_w, new_h), Image.LANCZOS)
+        resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
+        resized_img = padded_img.resize((new_w, new_h), resampling)
 
         # (1) Histogram equalization
         if config["do_equalize"]:
@@ -139,7 +141,8 @@ class Preprocessor:
                 new_w = target_size
                 new_h = int(target_size / img_aspect)
             
-            resized_img = img.resize((new_w, new_h), Image.LANCZOS)
+            resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
+            resized_img = img.resize((new_w, new_h), resampling)
             
             # Center crop to exact target_size x target_size
             left = (new_w - target_size) // 2
@@ -155,7 +158,8 @@ class Preprocessor:
             new_h = int(h * ratio)
             self.final_width = new_w
             self.final_height = new_h
-            resized_img = img.resize((new_w, new_h), Image.LANCZOS)
+            resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
+            resized_img = img.resize((new_w, new_h), resampling)
 
         # (1) Histogram equalization
         if config["do_equalize"]:
@@ -234,7 +238,8 @@ class Preprocessor:
                 new_w = target_size
                 new_h = int(target_size / img_aspect)
             
-            resized_img = img.resize((new_w, new_h), Image.LANCZOS)
+            resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
+            resized_img = img.resize((new_w, new_h), resampling)
             
             # Center crop to exact target_size x target_size
             left = (new_w - target_size) // 2
@@ -255,7 +260,8 @@ class Preprocessor:
             new_h = int(h * ratio)
             self.final_width = new_w
             self.final_height = new_h
-            resized_img = img.resize((new_w, new_h), Image.LANCZOS)
+            resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
+            resized_img = img.resize((new_w, new_h), resampling)
 
             # Resize binary mask to match
             binary_image = Image.fromarray(binary_image, mode='L')
@@ -475,8 +481,9 @@ class Preprocessor:
         # Store final dimensions for consistency
         if not hasattr(self, 'final_height'):
             self.final_height = new_h
-            
-        resized_img = padded_img.resize((new_w, new_h), Image.LANCZOS)
+        
+        resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
+        resized_img = padded_img.resize((new_w, new_h), resampling)
 
         # Apply post-processing (same as load_image_8bit_color)
         if config["do_equalize"]:

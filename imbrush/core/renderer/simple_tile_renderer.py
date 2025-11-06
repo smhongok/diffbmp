@@ -86,7 +86,7 @@ class SimpleTileRenderer(VectorRenderer):
     """
     
     def __init__(self, canvas_size: Tuple[int, int], S: torch.Tensor, 
-                 tile_size: int = 32, **kwargs):
+                 tile_size: int = 32, max_prims_per_pixel: int = None, **kwargs):
         """
         Initialize the tile renderer.
         
@@ -94,6 +94,7 @@ class SimpleTileRenderer(VectorRenderer):
             canvas_size: Tuple of (height, width) for the output canvas
             S: Primitive shapes tensor
             tile_size: Size of each tile (default: 32)
+            max_prims_per_pixel: Maximum number of primitives per pixel (default: MAX_PRIMS_PER_PIXEL constant)
             **kwargs: Additional arguments passed to VectorRenderer
         """
         print("="*10,"Initializing SimpleTileRenderer...","="*10)
@@ -110,7 +111,7 @@ class SimpleTileRenderer(VectorRenderer):
         # Compute bounding boxes for each primitive in self.S
         self.primitive_bboxes = self._compute_primitive_bboxes()
         
-        self.max_prims_per_pixel = MAX_PRIMS_PER_PIXEL
+        self.max_prims_per_pixel = max_prims_per_pixel if max_prims_per_pixel is not None else MAX_PRIMS_PER_PIXEL
         
         # PyTorch timing variables
         self.pytorch_forward_time = 0.0

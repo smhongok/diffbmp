@@ -196,7 +196,11 @@ class StructureAwareInitializer(BaseInitializer):
         #v = (self.v_init_bias - 0.5 + self.v_init_slope * rank).clone().detach()
         #v += torch.empty_like(v).normal_(mean=0.0, std=0.05)
 
-        theta = torch.rand(num_points, dtype=dtype, device=device, requires_grad=True) * 2 * np.pi
+        # Initialize theta: use theta_init if specified, otherwise random
+        if self.theta_init is not None:
+            theta = torch.full((num_points,), self.theta_init, dtype=dtype, device=device, requires_grad=True)
+        else:
+            theta = torch.rand(num_points, dtype=dtype, device=device, requires_grad=True) * 2 * np.pi
         c = torch.tensor(c_init, dtype=dtype, device=device, requires_grad=True)
         print("len(x): ", len(x))
         

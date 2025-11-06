@@ -41,6 +41,31 @@ BLUR_SIGMA = 1.0
 # Background threshold for image processing
 BG_THRESHOLD = 250  # Pixels >= this value are considered white background
 
+# Image resampling method
+# Options: 'LANCZOS', 'NEAREST', 'BILINEAR', 'BICUBIC'
+DEFAULT_RESAMPLING = 'LANCZOS'
+
+
+def get_resampling_method(resampling_str):
+    """
+    Convert resampling string to PIL resampling constant.
+    
+    Args:
+        resampling_str: String like 'LANCZOS', 'NEAREST', 'BILINEAR', 'BICUBIC'
+    
+    Returns:
+        PIL resampling constant
+    """
+    from PIL import Image
+    
+    resampling_map = {
+        'LANCZOS': Image.LANCZOS,
+        'NEAREST': Image.NEAREST,
+        'BILINEAR': Image.BILINEAR,
+        'BICUBIC': Image.BICUBIC,
+    }
+    return resampling_map.get(resampling_str.upper(), Image.LANCZOS)
+
 # Preprocessing flags (usually disabled)
 DO_EQUALIZE = False
 DO_LOCAL_CONTRAST = False
@@ -114,10 +139,12 @@ def apply_constants_to_config(config: dict) -> dict:
         config["initialization"].setdefault("std_c_init", STD_C_INIT)
         config["initialization"].setdefault("variance_window_size", VARIANCE_WINDOW_SIZE)
         config["initialization"].setdefault("variance_base_prob", VARIANCE_BASE_PROB)
+        config["initialization"].setdefault("max_prims_per_pixel", MAX_PRIMS_PER_PIXEL)
     
     # Apply constants as defaults for preprocessing
     if "preprocessing" in config:
         config["preprocessing"].setdefault("bg_threshold", BG_THRESHOLD)
+        config["preprocessing"].setdefault("resampling", DEFAULT_RESAMPLING)
         config["preprocessing"].setdefault("do_equalize", DO_EQUALIZE)
         config["preprocessing"].setdefault("do_local_contrast", DO_LOCAL_CONTRAST)
         config["preprocessing"].setdefault("do_tone_curve", DO_TONE_CURVE)
@@ -170,6 +197,7 @@ def apply_constants_to_config(config: dict) -> dict:
     if "primitive" in config:
         config["primitive"].setdefault("output_width", DEFAULT_OUTPUT_WIDTH)
         config["primitive"].setdefault("bg_threshold", BG_THRESHOLD)
+        config["primitive"].setdefault("resampling", DEFAULT_RESAMPLING)
         config["primitive"].setdefault("convert_to_svg", CONVERT_TO_SVG_DEFAULT)
         config["primitive"].setdefault("primitive_hollow", PRIMITIVE_HOLLOW_DEFAULT)
         config["primitive"].setdefault("remove_punctuation", REMOVE_PUNCTUATION_DEFAULT)

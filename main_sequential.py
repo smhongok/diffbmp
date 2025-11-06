@@ -187,7 +187,8 @@ try:
         primitive_paths=svg_path,
         output_width=config["primitive"]["output_width"],
         device=device,
-        bg_threshold=config["primitive"]["bg_threshold"]
+        bg_threshold=config["primitive"]["bg_threshold"],
+        resampling=config["primitive"]["resampling"]
     )
     # Keep reference for backward compatibility
     svg_loader = primitive_loader
