@@ -24,9 +24,13 @@ output_webpage/src_sequential_lyrics/index.html
 !assets/primitives/baby_footprint*
 !assets/primitives/oldhangul*
 !assets/primitives/razor*
-!assets/primitives/CelebA/
+!assets/primitives/logos/
 !assets/primitives/*seurat*
 !assets/primitives/fingerprint.jpg
+!assets/primitives/finger-tip.jpg
+!assets/primitives/praying_hands.png
+!assets/primitives/soccerball2.png
+
 
 assets/font/*
 !assets/font/arial.ttf
@@ -76,7 +80,12 @@ images/Sintel-albedo_fps_drop/*
 images/Sintel-final_fps_drop/*
 images/VIRAT_fps_drop/*
 
+
 images/transition/*
+!images/transition/ronaldo2.png
+!images/transition/messi2.png
+!images/transition/Adam_creation_1.jpg
+!images/transition/Adam_creation_2.jpg
 
 
 wandb
@@ -273,3 +282,4 @@ frame_counter.py
 cuda_tile_rasterizer/build_bypass.py
 test_gradient_basic.png
 **/ignore_*/
+**/ipa/

@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 from typing import Union, List, Tuple
 import base64
 import io
+from imbrush.util.constants import get_resampling_method
 
 class PrimitiveLoader:
     """
@@ -19,7 +20,7 @@ class PrimitiveLoader:
     Backward compatible with SVGLoader interface.
     """
     
-    def __init__(self, primitive_paths: Union[str, List[str]], output_width: int = 128, device=None, bg_threshold: int = 250, radial_transparency: bool = False):
+    def __init__(self, primitive_paths: Union[str, List[str]], output_width: int = 128, device=None, bg_threshold: int = 250, radial_transparency: bool = False, resampling: str = 'LANCZOS'):
         # Accept single path or list of paths
         if isinstance(primitive_paths, (list, tuple)):
             self.primitive_paths = primitive_paths
@@ -30,6 +31,7 @@ class PrimitiveLoader:
         self.device = device or torch.device('cpu')
         self.bg_threshold = bg_threshold  # Threshold for background removal (0-255)
         self.radial_transparency = radial_transparency  # Apply radial gradient alpha mask
+        self.resampling = get_resampling_method(resampling)  # PIL resampling method
         
         # Analyze primitive types and set dimensions
         self.primitive_types = []
@@ -176,7 +178,7 @@ class PrimitiveLoader:
         img = data['image']
         
         # Resize to target size while maintaining aspect ratio
-        img.thumbnail((self.output_width, self.output_width), Image.Resampling.LANCZOS)
+        img.thumbnail((self.output_width, self.output_width), self.resampling)
         
         # Convert to RGB first, then create alpha channel based on background removal
         if img.mode == 'RGBA':
@@ -357,7 +359,7 @@ class PrimitiveLoader:
         img = data['image']
         
         # Use same resizing logic as _load_raster_bitmap to maintain consistency
-        img.thumbnail((self.output_width, self.output_width), Image.Resampling.LANCZOS)
+        img.thumbnail((self.output_width, self.output_width), self.resampling)
         arr = np.array(img)
         
         # Handle RGBA images properly
@@ -449,7 +451,7 @@ class PrimitiveLoader:
         else:
             # For raster primitives, convert to grayscale
             img = self.primitive_data[0]['image'].convert('L')
-            img.thumbnail((self.output_width, self.output_width), Image.Resampling.LANCZOS)
+            img.thumbnail((self.output_width, self.output_width), self.resampling)
             return np.array(img)
 
     def extract_angles(self, img: np.ndarray) -> np.ndarray:

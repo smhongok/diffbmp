@@ -1,6 +1,7 @@
 import numpy as np
 from PIL import Image, ImageOps, ImageFilter
 from imbrush.util.target_masks import binary_mask
+from imbrush.util.constants import get_resampling_method
 import cv2
 import os
 class Preprocessor:
@@ -65,7 +66,8 @@ class Preprocessor:
         new_h = int(h * ratio)
         self.final_width = new_w
         self.final_height = new_h
-        resized_img = padded_img.resize((new_w, new_h), Image.LANCZOS)
+        resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
+        resized_img = padded_img.resize((new_w, new_h), resampling)
 
         # (1) Histogram equalization
         if config["do_equalize"]:
@@ -110,60 +112,54 @@ class Preprocessor:
 
     def load_image_8bit_color(self, config):
         """
-        Load image as 8-bit color (RGB), and if large, apply CenterCrop → White Padding → resize to final size.
-        Then invert with (255 - arr).
+        Load image as 8-bit color (RGB) and resize.
+        If square_crop is enabled: produces exact final_width x final_width output.
+        Otherwise: maintains aspect ratio with variable height.
         Apply post-processing based on transform_mode and FM_halftone options.
         """
-        img = Image.open(config["img_path"]).convert('RGB')  # 8-bit color
+        img = Image.open(config["img_path"]).convert('RGB')
         w, h = img.size
         
-        # Store original image dimensions for reference
-        original_w, original_h = w, h
-        
-        # Use target dimensions for cropping/padding (don't overwrite with actual dimensions)
-        target_w = getattr(self, 'width', w)  # Use existing width or default to image width
-        target_h = getattr(self, 'height', h)  # Use existing height or default to image height
-        
         if self.trim:
-            # Not yet implemented
             raise NotImplementedError("trim=True is not yet implemented.")
 
-        # 1) CenterCrop (if too large)
-        if w > target_w or h > target_h:
-            crop_w = min(w, target_w)
-            crop_h = min(h, target_h)
-            left = (w - crop_w) // 2
-            top = (h - crop_h) // 2
-            img = img.crop((left, top, left + crop_w, top + crop_h))
-            w, h = img.size
-
-        # 2) Padding (white=255)
-        pad_w = target_w
-        pad_h = target_h
+        # Check if square cropping is enabled
+        square_crop = config.get("square_crop", False)
         
-        # Update self.width and self.height to the target dimensions for consistency
-        self.width = target_w
-        self.height = target_h
-        padded_arr = np.full((pad_h, pad_w, 3), fill_value=255, dtype=np.uint8)  # 3-channel white padding
-
-        img_arr = np.array(img, dtype=np.uint8)
-        img_h, img_w, _ = img_arr.shape
-        if img_w > pad_w or img_h > pad_h:
-            raise ValueError("Cropping failed: image is still larger than target.")
-
-        left = (pad_w - img_w) // 2
-        top = (pad_h - img_h) // 2
-        padded_arr[top:top + img_h, left:left + img_w, :] = img_arr
-
-        # 3) Resize to final_width x final_width (aspect ratio is enforced here)
-        padded_img = Image.fromarray(padded_arr)
-        w, h = padded_img.size
-        ratio = self.final_width / float(w)
-        new_w = self.final_width
-        new_h = int(h * ratio)
-        self.final_width = new_w
-        self.final_height = new_h
-        resized_img = padded_img.resize((new_w, new_h), Image.LANCZOS)
+        if square_crop:
+            # Smart resize + center crop to produce exact square output
+            target_size = self.final_width
+            
+            # Resize to cover the target dimensions (maintain aspect ratio)
+            img_aspect = w / h
+            if img_aspect > 1:
+                # Image is wider - match height and crop width
+                new_h = target_size
+                new_w = int(target_size * img_aspect)
+            else:
+                # Image is taller - match width and crop height
+                new_w = target_size
+                new_h = int(target_size / img_aspect)
+            
+            resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
+            resized_img = img.resize((new_w, new_h), resampling)
+            
+            # Center crop to exact target_size x target_size
+            left = (new_w - target_size) // 2
+            top = (new_h - target_size) // 2
+            resized_img = resized_img.crop((left, top, left + target_size, top + target_size))
+            
+            self.final_width = target_size
+            self.final_height = target_size
+        else:
+            # Original behavior: resize to final_width, maintaining aspect ratio
+            ratio = self.final_width / float(w)
+            new_w = self.final_width
+            new_h = int(h * ratio)
+            self.final_width = new_w
+            self.final_height = new_h
+            resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
+            resized_img = img.resize((new_w, new_h), resampling)
 
         # (1) Histogram equalization
         if config["do_equalize"]:
@@ -208,61 +204,72 @@ class Preprocessor:
 
     def load_image_8bit_color_opacity(self, config):
         """
-        Load image as 8-bit color and opacity(RGBA), and if large, apply CenterCrop → White Padding → resize to final size.
+        Load image as 8-bit color with opacity (RGBA) and resize.
+        If square_crop is enabled: produces exact final_width x final_width output.
+        Otherwise: maintains aspect ratio with variable height.
         Returns:
-            arr (np.ndarray): Processed image array.
+            arr (np.ndarray): Processed RGBA image array.
             binary_image (np.ndarray): Binary mask of the alpha channel.
         """
-        img = Image.open(config["img_path"]).convert('RGBA')  # 8-bit color with alpha
-        binary_image = (1-(np.array(img)[:, :, 3] > 0).astype(np.uint8)) * 255
+        img = Image.open(config["img_path"]).convert('RGBA')
         w, h = img.size
-        self.width = w
-        self.height = h
+        
+        # Extract alpha channel as binary mask before resizing
+        binary_image = (1 - (np.array(img)[:, :, 3] > 0).astype(np.uint8)) * 255
 
         if self.trim:
-            # Not yet implemented
             raise NotImplementedError("trim=True is not yet implemented.")
 
-        # 1) CenterCrop (if too large)
-        if w > self.width or h > self.height:
-            crop_w = min(w, self.width)
-            crop_h = min(h, self.height)
-            left = (w - crop_w) // 2
-            top = (h - crop_h) // 2
-            img = img.crop((left, top, left + crop_w, top + crop_h))
-            w, h = img.size
+        # Check if square cropping is enabled
+        square_crop = config.get("square_crop", False)
+        
+        if square_crop:
+            # Smart resize + center crop to produce exact square output
+            target_size = self.final_width
+            
+            # Resize to cover the target dimensions (maintain aspect ratio)
+            img_aspect = w / h
+            if img_aspect > 1:
+                # Image is wider - match height and crop width
+                new_h = target_size
+                new_w = int(target_size * img_aspect)
+            else:
+                # Image is taller - match width and crop height
+                new_w = target_size
+                new_h = int(target_size / img_aspect)
+            
+            resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
+            resized_img = img.resize((new_w, new_h), resampling)
+            
+            # Center crop to exact target_size x target_size
+            left = (new_w - target_size) // 2
+            top = (new_h - target_size) // 2
+            resized_img = resized_img.crop((left, top, left + target_size, top + target_size))
+            
+            # Resize and crop binary mask to match
+            binary_image = Image.fromarray(binary_image, mode='L')
+            binary_image = binary_image.resize((new_w, new_h), Image.BICUBIC)
+            binary_image = binary_image.crop((left, top, left + target_size, top + target_size))
+            
+            self.final_width = target_size
+            self.final_height = target_size
+        else:
+            # Original behavior: resize to final_width, maintaining aspect ratio
+            ratio = self.final_width / float(w)
+            new_w = self.final_width
+            new_h = int(h * ratio)
+            self.final_width = new_w
+            self.final_height = new_h
+            resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
+            resized_img = img.resize((new_w, new_h), resampling)
 
-        # 2) Padding (white=255, alpha=0 for transparent background)
-        pad_w = self.width
-        pad_h = self.height
-        padded_arr = np.full((pad_h, pad_w, 4), fill_value=[255, 255, 255, 0], dtype=np.uint8)  # 4-channel white padding with transparent background
-
-        img_arr = np.array(img, dtype=np.uint8)
-        img_h, img_w, _ = img_arr.shape
-        if img_w > pad_w or img_h > pad_h:
-            raise ValueError("Cropping failed: image is still larger than target.")
-
-        left = (pad_w - img_w) // 2
-        top = (pad_h - img_h) // 2
-        padded_arr[top:top + img_h, left:left + img_w, :] = img_arr
-
-        # 3) Resize to final_width x final_width (aspect ratio is enforced here)
-        padded_img = Image.fromarray(padded_arr, mode='RGBA')
-        w, h = padded_img.size
-        ratio = self.final_width / float(w)
-        new_w = self.final_width
-        new_h = int(h * ratio)
-        self.final_width = new_w
-        self.final_height = new_h
-        resized_img = padded_img.resize((new_w, new_h), Image.LANCZOS)
-
-        binary_image = Image.fromarray(binary_image, mode='L')  # Convert binary image to PIL Image
-        binary_image = binary_image.resize((new_w, new_h), Image.BICUBIC)  # Resize binary image to match resized_img
+            # Resize binary mask to match
+            binary_image = Image.fromarray(binary_image, mode='L')
+            binary_image = binary_image.resize((new_w, new_h), Image.BICUBIC)
 
         arr = np.array(resized_img, dtype=np.uint8)
-
         binary_image = np.array(binary_image, dtype=np.uint8)
-        binary_image = (binary_image>0) * 255
+        binary_image = (binary_image > 0) * 255
         binary_image = binary_image.astype(np.uint8)
 
         return arr, binary_image
@@ -474,8 +481,9 @@ class Preprocessor:
         # Store final dimensions for consistency
         if not hasattr(self, 'final_height'):
             self.final_height = new_h
-            
-        resized_img = padded_img.resize((new_w, new_h), Image.LANCZOS)
+        
+        resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
+        resized_img = padded_img.resize((new_w, new_h), resampling)
 
         # Apply post-processing (same as load_image_8bit_color)
         if config["do_equalize"]:
