@@ -9,6 +9,9 @@
 
 #define DEBUG_CUDA_KERNELS 0
 #define DEBUG_SEQUENTIAL 0  // Set to 1 for sequential debugging, 0 for parallel execution
+#define SIZE_BASED_OPTIM 0  // Set to 1 to use size-based c_blend and rotation (image_width * SIZE_THRESHOLD_RATIO threshold), 0 for original global c_blend
+#define SIZE_THRESHOLD_RATIO 0.2f  // Threshold ratio for size-based optimization (image_width * SIZE_THRESHOLD_RATIO)
+#define C_BLEND_INVERSE 0  // Set to 1 to apply c_blend to large primitives (s > threshold), 0 to apply to small primitives (s <= threshold)
 
 // Color map sampling function
 __device__ __forceinline__ float3 sample_color_map(
@@ -213,22 +216,44 @@ __global__ void tile_rasterize_forward_kernel(
         }
         
 
-        if (local_k >= prim_config.max_prims_per_pixel) {
-            // cache overflow guard: ignore remaining
-            printf("@@@@@@@@@@@@@@@@@@@@@@@@@[ERROR]CUDA Kernel: cache overflow guard: ignore remaining@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
-            break;
-        }
+        // if (local_k >= prim_config.max_prims_per_pixel) {
+        //     // cache overflow guard: ignore remaining
+        //     printf("@@@@@@@@@@@@@@@@@@@@@@@@@[ERROR]CUDA Kernel: cache overflow guard: ignore remaining@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
+        //     break;
+        // }
 
         // Opacity: logits -> prob via sigmoid
         const float op_logit = inputs.opacities[n];
         const float s_op     = sigmoidf_safe(op_logit);           // in [0,1]
         const float alpha_max= tile_config.alpha_upper_bound;
 
+#if SIZE_BASED_OPTIM
+        // Calculate rotation_scale early for use in template mask computation
+        const float threshold = (float)tile_config.image_width * SIZE_THRESHOLD_RATIO;
+        const float s_radius = inputs.radii[n];
+        // const float c_blend_local = fmaxf(0.0f, fminf(1.0f, 1.0f - (s_radius / threshold)));
+        // const float rotation_scale = 1.0f - c_blend_local;  // Same as c_blend: large primitives get 0 rotation, small get full rotation
+#if C_BLEND_INVERSE
+        // Binary c_blend: s > threshold -> inputs.c_blend, s <= threshold -> 0 (apply to large primitives)
+        const float c_blend_local = (s_radius > threshold) ? inputs.c_blend : 0.0f;
+        const float rotation_scale = (s_radius > threshold) ? 1.0f : 0.0f;  // Large primitives get full rotation, small get 0 rotation
+#else
+        // Binary c_blend: s > threshold -> 0, s <= threshold -> inputs.c_blend (apply to small primitives)
+        const float c_blend_local = (s_radius <= threshold) ? inputs.c_blend : 0.0f;
+        const float rotation_scale = (s_radius <= threshold) ? 1.0f : 0.0f;  // Small primitives get full rotation, large get 0 rotation
+#endif
+#endif
+
         // Template mask via bilinear
         float mask_value = 0.f;
         if (template_idx >= 0 && template_idx < prim_config.num_templates) {
             const float r_inv = r > 1e-6f ? (1.f / r) : 1e6f;     // avoid div0
+#if SIZE_BASED_OPTIM
+            const float phi_original = inputs.rotations[n];
+            const float phi = phi_original * rotation_scale;  // Apply size-based rotation scaling
+#else
             const float phi = inputs.rotations[n];
+#endif
             const float c = __cosf(phi), s = __sinf(phi);
             const float ndx = dx * r_inv;
             const float ndy = dy * r_inv;
@@ -259,6 +284,37 @@ __global__ void tile_rasterize_forward_kernel(
         const float c_i_b = sigmoidf_safe(inputs.colors[3*n + 2]);
         
         float sr, sg, sb;
+#if SIZE_BASED_OPTIM
+        // c_blend_local and rotation_scale already calculated above for template mask
+        // Reuse the same values here
+        
+        if (inputs.colors_orig != nullptr && c_blend_local > 0.0f) {
+            // Sample color from color map at current pixel position
+            float3 c_o = sample_color_map(
+                inputs.colors_orig + n * prim_config.template_height * prim_config.template_width * 3,
+                prim_config.template_height, prim_config.template_width,
+                (float)x - inputs.means2D[2*n + 0], (float)y - inputs.means2D[2*n + 1],
+                inputs.radii[n], 
+#if SIZE_BASED_OPTIM
+                inputs.rotations[n] * rotation_scale
+#else
+                inputs.rotations[n]
+#endif
+            );
+            // c_o is already in [0, 1] range, no need for sigmoid
+            const float c_o_r = c_o.x;
+            const float c_o_g = c_o.y;
+            const float c_o_b = c_o.z;
+            sr = (1.0f - c_blend_local) * c_i_r + c_blend_local * c_o_r;
+            sg = (1.0f - c_blend_local) * c_i_g + c_blend_local * c_o_g;
+            sb = (1.0f - c_blend_local) * c_i_b + c_blend_local * c_o_b;
+        } else {
+            sr = c_i_r;
+            sg = c_i_g;
+            sb = c_i_b;
+        }
+#else
+        // Original global c_blend
         if (inputs.colors_orig != nullptr && inputs.c_blend > 0.0f) {
             // Sample color from color map at current pixel position
             float3 c_o = sample_color_map(
@@ -279,6 +335,7 @@ __global__ void tile_rasterize_forward_kernel(
             sg = c_i_g;
             sb = c_i_b;
         }
+#endif
 
         const int idx = base + local_k;
         
@@ -468,22 +525,44 @@ __global__ void tile_rasterize_forward_kernel_debug(
                     }
                 }
 
-                if (local_k >= prim_config.max_prims_per_pixel) {
-                    // cache overflow guard: ignore remaining
-                    printf("CUDA Kernel: DEBUG MODE - cache overflow guard: ignore remaining\n");
-                    break;
-                }
+                // if (local_k >= prim_config.max_prims_per_pixel) {
+                //     // cache overflow guard: ignore remaining
+                //     printf("CUDA Kernel: DEBUG MODE - cache overflow guard: ignore remaining\n");
+                //     break;
+                // }
 
                 // Opacity: logits -> prob via sigmoid
                 const float op_logit = inputs.opacities[n];
                 const float s_op     = sigmoidf_safe(op_logit);           // in [0,1]
                 const float alpha_max= tile_config.alpha_upper_bound;
 
+#if SIZE_BASED_OPTIM
+                // Calculate rotation_scale early for use in template mask computation
+                const float threshold = (float)tile_config.image_width * SIZE_THRESHOLD_RATIO;
+                const float s_radius = inputs.radii[n];
+                // const float c_blend_local = fmaxf(0.0f, fminf(1.0f, 1.0f - (s_radius / threshold)));
+                // const float rotation_scale = 1.0f - c_blend_local;  // Same as c_blend: large primitives get 0 rotation, small get full rotation
+#if C_BLEND_INVERSE
+                // Binary c_blend: s > threshold -> inputs.c_blend, s <= threshold -> 0 (apply to large primitives)
+                const float c_blend_local = (s_radius > threshold) ? inputs.c_blend : 0.0f;
+                const float rotation_scale = (s_radius > threshold) ? 1.0f : 0.0f;  // Large primitives get full rotation, small get 0 rotation
+#else
+                // Binary c_blend: s > threshold -> 0, s <= threshold -> inputs.c_blend (apply to small primitives)
+                const float c_blend_local = (s_radius <= threshold) ? inputs.c_blend : 0.0f;
+                const float rotation_scale = (s_radius <= threshold) ? 1.0f : 0.0f;  // Small primitives get full rotation, large get 0 rotation
+#endif
+#endif
+
                 // Template mask via bilinear
                 float mask_value = 0.f;
                 if (template_idx >= 0 && template_idx < prim_config.num_templates) {
                     const float r_inv = r > 1e-6f ? (1.f / r) : 1e6f;     // avoid div0
+#if SIZE_BASED_OPTIM
+                    const float phi_original = inputs.rotations[n];
+                    const float phi = phi_original * rotation_scale;  // Apply size-based rotation scaling
+#else
                     const float phi = inputs.rotations[n];
+#endif
                     const float c = __cosf(phi), s = __sinf(phi);
                     const float ndx = dx * r_inv;
                     const float ndy = dy * r_inv;
@@ -509,6 +588,37 @@ __global__ void tile_rasterize_forward_kernel_debug(
                 const float c_i_b = sigmoidf_safe(inputs.colors[3*n + 2]);
                 
                 float sr, sg, sb;
+#if SIZE_BASED_OPTIM
+                // c_blend_local and rotation_scale already calculated above for template mask
+                // Reuse the same values here
+                
+                if (inputs.colors_orig != nullptr && c_blend_local > 0.0f) {
+                    // Sample color from color map at current pixel position
+                    float3 c_o = sample_color_map(
+                        inputs.colors_orig + n * prim_config.template_height * prim_config.template_width * 3,
+                        prim_config.template_height, prim_config.template_width,
+                        (float)x - inputs.means2D[2*n + 0], (float)y - inputs.means2D[2*n + 1],
+                        inputs.radii[n], 
+#if SIZE_BASED_OPTIM
+                        inputs.rotations[n] * rotation_scale
+#else
+                        inputs.rotations[n]
+#endif
+                    );
+                    // c_o is already in [0, 1] range, no need for sigmoid
+                    const float c_o_r = c_o.x;
+                    const float c_o_g = c_o.y;
+                    const float c_o_b = c_o.z;
+                    sr = (1.0f - c_blend_local) * c_i_r + c_blend_local * c_o_r;
+                    sg = (1.0f - c_blend_local) * c_i_g + c_blend_local * c_o_g;
+                    sb = (1.0f - c_blend_local) * c_i_b + c_blend_local * c_o_b;
+                } else {
+                    sr = c_i_r;
+                    sg = c_i_g;
+                    sb = c_i_b;
+                }
+#else
+                // Original global c_blend
                 if (inputs.colors_orig != nullptr && inputs.c_blend > 0.0f) {
                     // Sample color from color map at current pixel position
                     float3 c_o = sample_color_map(
@@ -529,6 +639,7 @@ __global__ void tile_rasterize_forward_kernel_debug(
                     sg = c_i_g;
                     sb = c_i_b;
                 }
+#endif
 
                 const int idx = base + local_k;
                 

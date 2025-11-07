@@ -17,6 +17,84 @@
 
 #define DEBUG_CUDA_KERNELS_FP16_BACKWARD 0
 #define DEBUG_SEQUENTIAL_FP16 0  // Set to 1 for sequential debugging, 0 for parallel execution
+#define SIZE_BASED_OPTIM 0  // Set to 1 to use size-based c_blend and rotation (image_width * SIZE_THRESHOLD_RATIO threshold), 0 for original global c_blend
+#define SIZE_THRESHOLD_RATIO 0.2f  // Threshold ratio for size-based optimization (image_width * SIZE_THRESHOLD_RATIO)
+#define C_BLEND_INVERSE 0  // Set to 1 to apply c_blend to large primitives (s > threshold), 0 to apply to small primitives (s <= threshold)
+
+// Color map sampling function (same as tile_forward_fp16.cu)
+__device__ __forceinline__ float3 sample_color_map_fp16(
+    const __half* color_map, int map_h, int map_w, 
+    float x, float y, float radius, float rotation) {
+    
+    // Transform coordinates to color map space
+    // 1. Normalize by primitive radius to get [-1, 1] range
+    float r_inv = radius > 1e-6f ? (1.0f / radius) : 1e6f;
+    float norm_x = x * r_inv;
+    float norm_y = y * r_inv;
+    
+    // 2. Rotate
+    float cos_theta = cosf(rotation);
+    float sin_theta = sinf(rotation);
+    float rot_x =  cos_theta * norm_x + sin_theta * norm_y;
+    float rot_y = -sin_theta * norm_x + cos_theta * norm_y;
+    
+    // 3. Convert normalized [-1, 1] coordinates to color map pixel coordinates [0, W-1], [0, H-1]
+    float coord_x = (rot_x + 1.0f) * 0.5f * (map_w - 1);
+    float coord_y = (rot_y + 1.0f) * 0.5f * (map_h - 1);
+    
+    // Clamp coordinates
+    coord_x = fmaxf(0.0f, fminf(map_w - 1, coord_x));
+    coord_y = fmaxf(0.0f, fminf(map_h - 1, coord_y));
+    
+    // Bilinear interpolation
+    int x0 = (int)coord_x;
+    int y0 = (int)coord_y;
+    int x1 = min(x0 + 1, map_w - 1);
+    int y1 = min(y0 + 1, map_h - 1);
+    
+    float fx = coord_x - x0;
+    float fy = coord_y - y0;
+    
+    // Sample colors (convert from __half to float)
+    float3 c00 = make_float3(
+        __half2float(color_map[3 * (y0 * map_w + x0) + 0]),
+        __half2float(color_map[3 * (y0 * map_w + x0) + 1]),
+        __half2float(color_map[3 * (y0 * map_w + x0) + 2])
+    );
+    float3 c01 = make_float3(
+        __half2float(color_map[3 * (y1 * map_w + x0) + 0]),
+        __half2float(color_map[3 * (y1 * map_w + x0) + 1]),
+        __half2float(color_map[3 * (y1 * map_w + x0) + 2])
+    );
+    float3 c10 = make_float3(
+        __half2float(color_map[3 * (y0 * map_w + x1) + 0]),
+        __half2float(color_map[3 * (y0 * map_w + x1) + 1]),
+        __half2float(color_map[3 * (y0 * map_w + x1) + 2])
+    );
+    float3 c11 = make_float3(
+        __half2float(color_map[3 * (y1 * map_w + x1) + 0]),
+        __half2float(color_map[3 * (y1 * map_w + x1) + 1]),
+        __half2float(color_map[3 * (y1 * map_w + x1) + 2])
+    );
+    
+    // Interpolate
+    float3 c0 = make_float3(
+        c00.x * (1.0f - fx) + c10.x * fx,
+        c00.y * (1.0f - fx) + c10.y * fx,
+        c00.z * (1.0f - fx) + c10.z * fx
+    );
+    float3 c1 = make_float3(
+        c01.x * (1.0f - fx) + c11.x * fx,
+        c01.y * (1.0f - fx) + c11.y * fx,
+        c01.z * (1.0f - fx) + c11.z * fx
+    );
+    
+    return make_float3(
+        c0.x * (1.0f - fy) + c1.x * fy,
+        c0.y * (1.0f - fy) + c1.y * fy,
+        c0.z * (1.0f - fy) + c1.z * fy
+    );
+}
 
 __device__ __half2* d_grad_mxy_h2 = nullptr; // (mx,my)
 __device__ __half2* d_grad_or_h2 = nullptr; // (opacity, radius)
@@ -161,9 +239,31 @@ __device__ inline void backward_over_one_pixel_fp16(
 
         // Get mask value early for gradient computation decisions
         __half mask_val = H0;
+#if SIZE_BASED_OPTIM
+        // Calculate rotation_scale early for use in mask computation
+        const float threshold = (float)tile_config.image_width * SIZE_THRESHOLD_RATIO;
+        const float s_radius = __half2float(inputs.radii[n]);
+        // const float c_blend_local = fmaxf(0.0f, fminf(1.0f, 1.0f - (s_radius / threshold)));
+        // const float rotation_scale = 1.0f - c_blend_local;
+#if C_BLEND_INVERSE
+        // Binary c_blend: s > threshold -> inputs.c_blend, s <= threshold -> 0 (apply to large primitives)
+        const float c_blend_local = (s_radius > threshold) ? inputs.c_blend : 0.0f;
+        const float rotation_scale = (s_radius > threshold) ? 1.0f : 0.0f;
+#else
+        // Binary c_blend: s > threshold -> 0, s <= threshold -> inputs.c_blend (apply to small primitives)
+        const float c_blend_local = (s_radius <= threshold) ? inputs.c_blend : 0.0f;
+        const float rotation_scale = (s_radius <= threshold) ? 1.0f : 0.0f;
+#endif
+#endif
         if (template_idx >= 0 && template_idx < prim_config.num_templates) {
             const __half inv_r = __hgt(r, EPS1_FP16) ? __hdiv(H1, r) : EPS6_FP16;
+#if SIZE_BASED_OPTIM
+            const __half phi_original = inputs.rotations[n];
+            const __half rotation_scale_h = __float2half(rotation_scale);
+            const __half phi = __hmul(phi_original, rotation_scale_h);  // Apply size-based rotation scaling
+#else
             const __half phi = inputs.rotations[n];
+#endif
             const __half c = hcos(phi), s = hsin(phi);
             const __half ndx = __hmul(dx, inv_r);
             const __half ndy = __hmul(dy, inv_r);
@@ -236,7 +336,13 @@ __device__ inline void backward_over_one_pixel_fp16(
 
         // Template coords (forward-identical): (u,v) from rotation φ and scale r
         const __half inv_r = __hgt(r, EPS1_FP16) ? __hdiv(H1, r) : EPS6_FP16;
+#if SIZE_BASED_OPTIM
+        const __half phi_original = inputs.rotations[n];
+        const __half rotation_scale_h = __float2half(rotation_scale);
+        const __half phi = __hmul(phi_original, rotation_scale_h);  // Apply size-based rotation scaling
+#else
         const __half phi = inputs.rotations[n];
+#endif
         const __half c = hcos(phi), s = hsin(phi);
         const __half ndx = __hmul(dx, inv_r);
         const __half ndy = __hmul(dy, inv_r);
@@ -262,9 +368,33 @@ __device__ inline void backward_over_one_pixel_fp16(
         // Only compute gradients if mask value is significant (not transparent)
         if (__hgt(mask_val, EPS1_FP16)) {
             // colors
+#if SIZE_BASED_OPTIM
+            // Size-based c_blend and rotation: threshold = image_width * SIZE_THRESHOLD_RATIO
+            const float threshold = (float)tile_config.image_width * SIZE_THRESHOLD_RATIO;
+            const float s_radius = __half2float(inputs.radii[n]);
+            // const float c_blend_local = fmaxf(0.0f, fminf(1.0f, 1.0f - (s_radius / threshold)));
+            // const float rotation_scale = 1.0f - c_blend_local;  // Same as c_blend: large primitives get 0 rotation, small get full rotation
+#if C_BLEND_INVERSE
+            // Binary c_blend: s > threshold -> inputs.c_blend, s <= threshold -> 0 (apply to large primitives)
+            const float c_blend_local = (s_radius > threshold) ? inputs.c_blend : 0.0f;
+            const float rotation_scale = (s_radius > threshold) ? 1.0f : 0.0f;  // Large primitives get full rotation, small get 0 rotation
+#else
+            // Binary c_blend: s > threshold -> 0, s <= threshold -> inputs.c_blend (apply to small primitives)
+            const float c_blend_local = (s_radius <= threshold) ? inputs.c_blend : 0.0f;
+            const float rotation_scale = (s_radius <= threshold) ? 1.0f : 0.0f;  // Small primitives get full rotation, large get 0 rotation
+#endif
+            // c_i gradient: ∂L/∂c_i = gCx * (1 - c_blend) * (α_k T_k)
+            const __half c_blend_h = __float2half(c_blend_local);
+            const __half inv_blend = __hsub(H1, c_blend_h);
+            add_r = __hmul(__hmul(__hmul(gCx, aT), inv_blend), __hmul(sr, __hsub(__float2half(1.0f), sr)));
+            add_g = __hmul(__hmul(__hmul(gCy, aT), inv_blend), __hmul(sg, __hsub(__float2half(1.0f), sg)));
+            add_b = __hmul(__hmul(__hmul(gCz, aT), inv_blend), __hmul(sb, __hsub(__float2half(1.0f), sb)));
+#else
+            // Original: no c_blend consideration for c_i gradient
             add_r = __hmul(__hmul(gCx, aT), __hmul(sr, __hsub(__float2half(1.0f), sr)));
             add_g = __hmul(__hmul(gCy, aT), __hmul(sg, __hsub(__float2half(1.0f), sg)));
             add_b = __hmul(__hmul(gCz, aT), __hmul(sb, __hsub(__float2half(1.0f), sb)));
+#endif
 
             // opacity
             const __half s_op = sigmoidf_safe_fp16(inputs.opacities[n]);
@@ -297,7 +427,67 @@ __device__ inline void backward_over_one_pixel_fp16(
             add_mx = __hfma(dL_dv, dv_dmx, __hmul(dL_du, du_dmx));
             add_my = __hfma(dL_dv, dv_dmy, __hmul(dL_du, du_dmy));
             add_radius  = __hfma(dL_dv, dv_dr,  __hmul(dL_du, du_dr));
+#if SIZE_BASED_OPTIM
+            // rotation gradient: ∂L/∂phi_original = ∂L/∂phi * ∂phi/∂phi_original = ∂L/∂phi * rotation_scale
+            const __half rotation_scale_h = __float2half(rotation_scale);
+            add_rot     = __hmul(__hfma(dL_dv, dv_dphi, __hmul(dL_du, du_dphi)), rotation_scale_h);
+#else
             add_rot     = __hfma(dL_dv, dv_dphi, __hmul(dL_du, du_dphi));
+#endif
+            
+#if SIZE_BASED_OPTIM
+            // Additional gradient for r through c_blend
+            // ∂L/∂r += ∂L/∂sr * ∂sr/∂c_blend * ∂c_blend/∂r * (α_k T_k)
+            if (inputs.colors_orig != nullptr) {
+                const float threshold = (float)tile_config.image_width * SIZE_THRESHOLD_RATIO;
+                const float s_radius = __half2float(inputs.radii[n]);
+                // const float c_blend_local = fmaxf(0.0f, fminf(1.0f, 1.0f - (s_radius / threshold)));
+                // const float rotation_scale = 1.0f - c_blend_local;
+#if C_BLEND_INVERSE
+                // Binary c_blend: s > threshold -> inputs.c_blend, s <= threshold -> 0 (apply to large primitives)
+                const float c_blend_local = (s_radius > threshold) ? inputs.c_blend : 0.0f;
+                const float rotation_scale = (s_radius > threshold) ? 1.0f : 0.0f;
+#else
+                // Binary c_blend: s > threshold -> 0, s <= threshold -> inputs.c_blend (apply to small primitives)
+                const float c_blend_local = (s_radius <= threshold) ? inputs.c_blend : 0.0f;
+                const float rotation_scale = (s_radius <= threshold) ? 1.0f : 0.0f;
+#endif
+                
+                // Only compute gradient if c_blend is active (s <= threshold and inputs.c_blend > 0)
+                if (c_blend_local > 0.0f) {
+                    // Forward에서 사용한 c_i와 c_o 재계산
+                    const __half c_i_r = sigmoidf_safe_fp16(inputs.colors[3*n+0]);
+                    const __half c_i_g = sigmoidf_safe_fp16(inputs.colors[3*n+1]);
+                    const __half c_i_b = sigmoidf_safe_fp16(inputs.colors[3*n+2]);
+                    
+                    // c_o 샘플링 (forward와 동일한 로직)
+                    float3 c_o = sample_color_map_fp16(
+                        inputs.colors_orig + n * prim_config.template_height * prim_config.template_width * 3,
+                        prim_config.template_height, prim_config.template_width,
+                        (float)x - __half2float(inputs.means2D[2*n + 0]), (float)y - __half2float(inputs.means2D[2*n + 1]),
+                        __half2float(inputs.radii[n]), 
+#if SIZE_BASED_OPTIM
+                        __half2float(inputs.rotations[n]) * rotation_scale
+#else
+                        __half2float(inputs.rotations[n])
+#endif
+                    );
+                    
+                    // ∂c_blend/∂r = -1/threshold
+                    // const float dc_blend_dr = (-1.0f / threshold);
+                    // ∂c_blend/∂r: For binary c_blend, gradient is 0 at threshold (step function)
+                    // Actually, for binary case, gradient is infinite at threshold, but we use 0 for simplicity
+                    const float dc_blend_dr = 0.0f;  // Binary function has zero gradient except at threshold
+                    
+                    // ∂L/∂r += ∂L/∂sr * ∂sr/∂c_blend * ∂c_blend/∂r * (α_k T_k)
+                    // = gCx * (c_o - c_i) * dc_blend_dr * (α_k T_k)
+                    const float dLdr_blend = (__half2float(gCx) * (c_o.x - __half2float(c_i_r)) + 
+                                              __half2float(gCy) * (c_o.y - __half2float(c_i_g)) + 
+                                              __half2float(gCz) * (c_o.z - __half2float(c_i_b))) * dc_blend_dr * __half2float(aT);
+                    add_radius = __hadd(add_radius, __float2half(dLdr_blend));
+                }
+            }
+#endif
         }
 
         // ---- __half2 packed atomics (프림 단위) ----

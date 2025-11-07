@@ -18,6 +18,7 @@
         "N": [
             2000
         ],
+        "max_prims_per_pixel": 200, 
         "radii_min": 2,
         "debug_mode": true
     },
