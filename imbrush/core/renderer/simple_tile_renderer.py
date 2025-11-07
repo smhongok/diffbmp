@@ -13,7 +13,7 @@ from imbrush.util.constants import MAX_PRIMS_PER_PIXEL
 
 DEBUG_MODE = False
 DEBUG_MODE_DETAIL = False
-DEBUG_MODE_SAVE = True
+DEBUG_MODE_SAVE = False
 
 # Try to import CUDA extension, fallback to PyTorch if not available
 try:

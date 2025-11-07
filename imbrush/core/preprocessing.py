@@ -2,7 +2,6 @@ import numpy as np
 from PIL import Image, ImageOps, ImageFilter
 from imbrush.util.target_masks import binary_mask
 from imbrush.util.constants import get_resampling_method
-from imbrush.util.constants import get_resampling_method
 import cv2
 import os
 class Preprocessor:
@@ -119,11 +118,7 @@ class Preprocessor:
         If square_crop is enabled: produces exact final_width x final_width output.
         Otherwise: maintains aspect ratio with variable height.
         Load image as 8-bit color (RGB) and resize.
-        If square_crop is enabled: produces exact final_width x final_width output.
-        Otherwise: maintains aspect ratio with variable height.
-        Apply post-processing based on transform_mode and FM_halftone options.
         """
-        img = Image.open(config["img_path"]).convert('RGB')
         img = Image.open(config["img_path"]).convert('RGB')
         w, h = img.size
         
