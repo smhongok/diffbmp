@@ -68,8 +68,6 @@ class Preprocessor:
         self.final_height = new_h
         resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
         resized_img = padded_img.resize((new_w, new_h), resampling)
-        resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
-        resized_img = padded_img.resize((new_w, new_h), resampling)
 
         # (1) Histogram equalization
         if config["do_equalize"]:
@@ -162,43 +160,6 @@ class Preprocessor:
             self.final_height = new_h
             resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
             resized_img = img.resize((new_w, new_h), resampling)
-        # Check if square cropping is enabled
-        square_crop = config.get("square_crop", False)
-        
-        if square_crop:
-            # Smart resize + center crop to produce exact square output
-            target_size = self.final_width
-            
-            # Resize to cover the target dimensions (maintain aspect ratio)
-            img_aspect = w / h
-            if img_aspect > 1:
-                # Image is wider - match height and crop width
-                new_h = target_size
-                new_w = int(target_size * img_aspect)
-            else:
-                # Image is taller - match width and crop height
-                new_w = target_size
-                new_h = int(target_size / img_aspect)
-            
-            resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
-            resized_img = img.resize((new_w, new_h), resampling)
-            
-            # Center crop to exact target_size x target_size
-            left = (new_w - target_size) // 2
-            top = (new_h - target_size) // 2
-            resized_img = resized_img.crop((left, top, left + target_size, top + target_size))
-            
-            self.final_width = target_size
-            self.final_height = target_size
-        else:
-            # Original behavior: resize to final_width, maintaining aspect ratio
-            ratio = self.final_width / float(w)
-            new_w = self.final_width
-            new_h = int(h * ratio)
-            self.final_width = new_w
-            self.final_height = new_h
-            resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
-            resized_img = img.resize((new_w, new_h), resampling)
 
         # (1) Histogram equalization
         if config["do_equalize"]:
@@ -248,7 +209,6 @@ class Preprocessor:
             config (dict): Configuration dictionary containing 'img_path'.
             make_bg_white (bool): If True, convert transparent background to white. This is for some cases that the input image has wierd RGB values in transparent area.
         Returns:
-            arr (np.ndarray): Processed RGBA image array.
             arr (np.ndarray): Processed RGBA image array.
             binary_image (np.ndarray): Binary mask of the alpha channel.
         """
@@ -303,9 +263,6 @@ class Preprocessor:
 
 
         w, h = img.size
-        
-        # Extract alpha channel as binary mask before resizing
-        binary_image = (1 - (np.array(img)[:, :, 3] > 0).astype(np.uint8)) * 255
         
         # Extract alpha channel as binary mask before resizing
         binary_image = (1 - (np.array(img)[:, :, 3] > 0).astype(np.uint8)) * 255
