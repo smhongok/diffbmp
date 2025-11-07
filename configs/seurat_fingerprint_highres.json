@@ -2,7 +2,7 @@
   "preprocessing": {
     "final_width": [1024],
     "img_path": [
-      "images/artwork/seurat_painting_small.jpg"
+      "images/artwork/seurat_painting_small_mid.jpg"
     ]
   },
   "primitive": {
@@ -14,7 +14,7 @@
   },
   "initialization": {
     "initializer": "structure_aware",
-    "N": [4000],
+    "N": [3000],
     "v_init_bias": -4.0,
     "radii_min": 2,
     "radii_max": 8,
@@ -40,7 +40,7 @@
   "postprocessing": {
     "output_folder": "outputs/",
     "compute_psnr": true,
-    "export_psd": false,
+    "export_psd": true,
     "psd_scale_factor": 2.0
   }
 }

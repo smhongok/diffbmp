@@ -4,13 +4,19 @@
             512
         ],
         "img_path": [
-            "images/spatial_constraint/Imagen_Korean_girl.png"
+            "images/spatial_constraint/177.jpg"
+        ],
+        "mask_path": [
+            "images/spatial_constraint/masks/00177_hair.png",
+            "images/spatial_constraint/masks/00177_skin.png",
+            "images/spatial_constraint/masks/00177_neck.png",
+            "images/spatial_constraint/masks/00177_cloth.png"
         ],
         "exist_bg" : false,
         "debug_save_intermediates" : true
     },
     "primitive": {
-        "primitive_file": ["flowers/Lady_Jane.png", "flowers/rose_of_sharon_1.png"],
+        "primitive_file": ["flowers/Lady_Jane.png", "flowers/Gerbera1.png", "flowers/Gerbera2.png", "flowers/Gerbera3.png"],
         "convert_to_svg": false,
         "svg_hollow": false,
         "output_width": 128
