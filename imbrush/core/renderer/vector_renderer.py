@@ -1141,7 +1141,8 @@ class VectorRenderer:
     def _optimize_parameters_whole(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                                   v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
                                   target_image: torch.Tensor, opt_conf: dict,
-                                  target_binary_mask: torch.Tensor = None
+                                  target_binary_mask: torch.Tensor = None,
+                                  initializer: Optional[Any] = None
                                   ):
         """
         Override optimization to use tile-based rendering instead of cached_masks.
