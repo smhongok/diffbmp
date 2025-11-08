@@ -19,6 +19,7 @@ from imbrush.util.constants import apply_constants_to_config
 
 # Converters
 from imbrush.util.svg_converter import FontParser, ImageToSVG
+from imbrush.util.spatial_constrain_visualizer import save_spatial_constraints 
 
 __all__ = [
     # Loaders

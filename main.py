@@ -20,6 +20,7 @@ from datetime import datetime
 from imbrush.core.renderer.sequential_renderer import SequentialFrameRenderer
 from imbrush.core.renderer.simple_tile_renderer import SimpleTileRenderer
 from imbrush.util.svg_loader import SVGLoader
+from imbrush.util.spatial_constrain_visualizer import save_spatial_constraints
 from imbrush.util.primitive_loader import PrimitiveLoader
 from imbrush.util.svg_converter import FontParser, ImageToSVG
 from imbrush.core.initializer.svgsplat_initializater import StructureAwareInitializer
@@ -279,11 +280,10 @@ for img_idx, img_path in enumerate(img_paths):
 
     if not exist_bg:
         target_binary_mask = torch.from_numpy(target_binary_mask_np[:,:]>0).to(device)
-        x, y, r, v, theta, c, adjusted_pts = renderer.initialize_parameters(initializer, I_target, target_binary_mask, return_pts = True)
+        x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target, target_binary_mask)
 
     else:
         x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target, target_binary_mask)
-        adjusted_pts = None
 
     bmp_image_tensor = svg_loader.load_alpha_bitmap()
     
@@ -293,7 +293,7 @@ for img_idx, img_path in enumerate(img_paths):
         I_target, 
         opt_conf=opt_conf,
         target_binary_mask=target_binary_mask,
-        adjusted_pts=adjusted_pts
+        initializer=initializer
     )
 
     if not exist_bg:
@@ -350,11 +350,14 @@ for img_idx, img_path in enumerate(img_paths):
                 rendered_np = rendered.detach().cpu().numpy()
                 rendered_np = (rendered_np * 255).astype(np.uint8)
                 Image.fromarray(rendered_np).save(output_path)
+                if not exist_bg:
+                    save_spatial_constraints(rendered, rendered_alpha, output_path)
 
         else:
             # Still render final PNG for preview/compatibility
-            rendered, output_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
-
+            rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
+            if not exist_bg:
+                save_spatial_constraints(rendered, rendered_alpha, output_path)
             # Save rendered image directly from rendered tensor 
             rendered_np = rendered.detach().cpu().numpy()
             rendered_np = (rendered_np * 255).astype(np.uint8)

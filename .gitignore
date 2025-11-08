@@ -27,6 +27,14 @@ output_webpage/src_sequential_lyrics/index.html
 !assets/primitives/logos/
 !assets/primitives/*seurat*
 !assets/primitives/fingerprint.jpg
+!assets/primitives/circle.png
+!assets/primitives/paw_complicated.png
+!assets/primitives/flowers
+!assets/primitives/dancheong
+!assets/primitives/finger-tip.jpg
+!assets/primitives/praying_hands.png
+!assets/primitives/soccerball2.png
+
 !assets/primitives/finger-tip.jpg
 !assets/primitives/praying_hands.png
 !assets/primitives/soccerball2.png
@@ -43,6 +51,7 @@ configs/*
 !configs/default*.json
 !configs/sequential*.json
 !configs/seurat*.json
+!configs/figures
 
 images/person/*
 !images/person/pororo.jpg
