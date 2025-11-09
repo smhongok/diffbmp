@@ -686,6 +686,43 @@ class SimpleTileRenderer(VectorRenderer):
         """
         # Use parent class's render method for compatibility
         return super().render(cached_masks, v, c, return_alpha, I_bg)
+
+    def _get_background_for_render(self, bg_type:str) -> torch.Tensor:
+        """
+        Get background image tensor based on bg_type.
+        Supports: white, black, random, and all rainbow colors (red, orange, yellow, green, blue, indigo, violet)
+        """
+        if bg_type == "white":
+            I_bg = torch.ones((self.H, self.W, 3), device=self.device)
+        elif bg_type == "black":
+            I_bg = torch.zeros((self.H, self.W, 3), device=self.device)
+        elif bg_type == "random":
+            I_bg = torch.rand((self.H, self.W, 3), device=self.device)
+        elif bg_type == "red":
+            I_bg = torch.full((self.H, self.W, 3), fill_value=torch.tensor([1.0, 0.0, 0.0]), device=self.device)
+        elif bg_type == "orange":
+            I_bg = torch.full((self.H, self.W, 3), fill_value=torch.tensor([1.0, 0.647, 0.0]), device=self.device)  # RGB(255, 165, 0)
+        elif bg_type == "yellow":
+            I_bg = torch.full((self.H, self.W, 3), fill_value=torch.tensor([1.0, 1.0, 0.0]), device=self.device)
+        elif bg_type == "green":
+            I_bg = torch.full((self.H, self.W, 3), fill_value=torch.tensor([0.0, 1.0, 0.0]), device=self.device)
+        elif bg_type == "blue":
+            I_bg = torch.full((self.H, self.W, 3), fill_value=torch.tensor([0.0, 0.0, 1.0]), device=self.device)
+        elif bg_type == "indigo":
+            I_bg = torch.full((self.H, self.W, 3), fill_value=torch.tensor([0.294, 0.0, 0.510]), device=self.device)  # RGB(75, 0, 130)
+        elif bg_type == "violet" or bg_type == "purple":
+            I_bg = torch.full((self.H, self.W, 3), fill_value=torch.tensor([0.580, 0.0, 0.827]), device=self.device)  # RGB(148, 0, 211)
+        elif bg_type == "gray" or bg_type == "grey":
+            I_bg = torch.full((self.H, self.W, 3), fill_value=0.5, device=self.device)
+        elif bg_type == "pink":
+            I_bg = torch.full((self.H, self.W, 3), fill_value=torch.tensor([1.0, 0.753, 0.796]), device=self.device)  # RGB(255, 192, 203)
+        elif bg_type == "cyan":
+            I_bg = torch.full((self.H, self.W, 3), fill_value=torch.tensor([0.0, 1.0, 1.0]), device=self.device)
+        elif bg_type == "magenta":
+            I_bg = torch.full((self.H, self.W, 3), fill_value=torch.tensor([1.0, 0.0, 1.0]), device=self.device)
+        else:
+            raise ValueError(f"Unsupported bg_type: {bg_type}. Supported types: white, black, random, red, orange, yellow, green, blue, indigo, violet/purple, gray/grey, pink, cyan, magenta")
+        return I_bg
     
     def _optimize_parameters_whole(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                                   v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
@@ -703,6 +740,7 @@ class SimpleTileRenderer(VectorRenderer):
         import os
         
         is_no_bg_mode = target_image.shape[2] == 4
+        I_bg = self._get_background_for_render(opt_conf.get("bg_color", "white"))
         
         # Initialize loss composer from config
         loss_config = opt_conf.get("loss_config", {"type": "mse"})
@@ -779,14 +817,12 @@ class SimpleTileRenderer(VectorRenderer):
             if self.use_fp16:
                 with autocast('cuda'):
                     if is_no_bg_mode:
-                        random_bg = torch.rand((self.H, self.W, 3), device=self.device)
                         rendered, rendered_alpha = self.render_from_params(
-                            x, y, r, theta, v, c, sigma=current_sigma, I_bg=random_bg, lr_conf=lr_conf, return_alpha=True
+                            x, y, r, theta, v, c, sigma=current_sigma, I_bg=I_bg, lr_conf=lr_conf, return_alpha=True
                         )
                     else:
-                        white_bg = torch.ones((self.H, self.W, 3), device=self.device)
                         rendered = self.render_from_params(
-                            x, y, r, theta, v, c, sigma=current_sigma, I_bg=white_bg, lr_conf=lr_conf
+                            x, y, r, theta, v, c, sigma=current_sigma, I_bg=I_bg, lr_conf=lr_conf
                         )
                         rendered_alpha = None
                     
@@ -811,14 +847,12 @@ class SimpleTileRenderer(VectorRenderer):
 
             else:
                 if is_no_bg_mode:
-                    random_bg = torch.rand((self.H, self.W, 3), device=self.device)
                     rendered, rendered_alpha = self.render_from_params(
-                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=random_bg, lr_conf=lr_conf, return_alpha=True
+                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=I_bg, lr_conf=lr_conf, return_alpha=True
                     )
                 else:
-                    white_bg = torch.ones((self.H, self.W, 3), device=self.device)
                     rendered = self.render_from_params(
-                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=white_bg, lr_conf=lr_conf
+                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=I_bg, lr_conf=lr_conf
                     )
                     rendered_alpha = None
                 
