@@ -740,7 +740,6 @@ class SimpleTileRenderer(VectorRenderer):
         import os
         
         is_no_bg_mode = target_image.shape[2] == 4
-        I_bg = self._get_background_for_render(opt_conf.get("bg_color", "white"))
         
         # Initialize loss composer from config
         loss_config = opt_conf.get("loss_config", {"type": "mse"})
@@ -793,6 +792,7 @@ class SimpleTileRenderer(VectorRenderer):
         
         # Optimization loop
         for iteration in tqdm(range(num_iterations), desc="Optimizing"):
+            I_bg = self._get_background_for_render(opt_conf.get("bg_color", "white"))
             optimizer.zero_grad()
 
             # Pruning(Restart)
