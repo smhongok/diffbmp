@@ -483,8 +483,8 @@ for frame_idx, frame_result in enumerate(frame_results):
         # Pass c_blend and primitive_colors to PSDExporter
         c_blend = config["optimization"].get("c_blend", 0.0)
         exporter = PSDExporter(
-            renderer.W, renderer.H, 
-            alpha_upper_bound=renderer.alpha_upper_bound, 
+            sequential_renderer.W, sequential_renderer.H, 
+            alpha_upper_bound=sequential_renderer.alpha_upper_bound, 
             scale_factor=psd_scale_factor,
             c_blend=c_blend,
             primitive_colors=primitive_colors
@@ -492,7 +492,7 @@ for frame_idx, frame_result in enumerate(frame_results):
         
         # Use batched processing - all data preparation handled internally
         exporter.add_layers_batch_optimized(
-            renderer.S, x, y, r, theta, v, c
+            sequential_renderer.S, x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame
         )
             
         # Export PSD file

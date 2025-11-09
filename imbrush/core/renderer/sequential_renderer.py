@@ -30,6 +30,14 @@ DIFF_MASK_EXPORT_PATH = None  # Directory to save diff mask images
 
 # =============================================================================
 
+ # Import necessary functions for statistics
+from .simple_tile_renderer import vram_used_by_pid
+try:
+    from cuda_tile_rasterizer import print_cuda_timing_stats, print_cuda_timing_stats_fp16
+    CUDA_AVAILABLE = True
+except ImportError:
+    CUDA_AVAILABLE = False
+
 class SequentialFrameRenderer(SimpleTileRenderer):
     """
     Specialized renderer for subsequent frames in sequential optimization.
@@ -187,7 +195,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 
                 # Create binary mask of changed regions (threshold at 0.1 for robustness)
                 diff_magnitude_threshold = selective_parameter_optimization_config.get('diff_magnitude_threshold', 0.1)
-                print(f"Diff magnitude threshold: {diff_magnitude_threshold}")
+                #print(f"Diff magnitude threshold: {diff_magnitude_threshold}")
                 diff_mask_for_freeze = diff_magnitude > diff_magnitude_threshold  # [H, W]
                 
                 # DIFF MASK DEBUG VISUALIZATION
@@ -202,7 +210,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                     # Convert boolean mask to float and add batch/channel dimensions for save_image
                     diff_mask_float = diff_mask_for_freeze.float().unsqueeze(0)  # [1, H, W]
                     save_image(diff_mask_float, diff_mask_path)
-                    print(f"[Selective Freeze] Saved diff mask to: {diff_mask_path}")
+                    #print(f"[Selective Freeze] Saved diff mask to: {diff_mask_path}")
         
         pbar = tqdm(range(num_iter), desc="Optimizing with warmup scheduling")
         
@@ -290,6 +298,51 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 postfix['adaptive'] = 'applied'
             pbar.set_postfix(postfix)
         
+        print(f"Tile-based optimization completed. Final loss: {loss.item():.6f}")
+        
+        used = vram_used_by_pid()
+        mb = lambda b: b / (1024**2)
+        gb = lambda b: b / (1024**3)
+        
+        # Print CUDA timing statistics
+        if CUDA_AVAILABLE:
+            print("\n" + "="*60)
+            print("CUDA Performance Statistics:")
+            print("="*60)
+            if self.use_fp16:
+                print_cuda_timing_stats_fp16()
+            else:
+                print_cuda_timing_stats()
+            print("-"*60)
+            print(f"VRAM used: {mb(used):.0f} MiB, {gb(used):.3f} GB")
+            print("="*60)
+        else:
+            # Print PyTorch timing statistics
+            print("\n" + "="*60)
+            print("PyTorch Performance Statistics:")
+            print("="*60)
+            print("Forward Pass:")
+            print(f"  Total time: {self.pytorch_forward_time:.2f} ms")
+            print(f"  Iterations: {self.pytorch_forward_count}")
+            if self.pytorch_forward_count > 0:
+                print(f"  Average time per iteration: {self.pytorch_forward_time / self.pytorch_forward_count:.2f} ms")
+            
+            print("Backward Pass:")
+            print(f"  Total time: {self.pytorch_backward_time:.2f} ms")
+            print(f"  Iterations: {self.pytorch_backward_count}")
+            if self.pytorch_backward_count > 0:
+                print(f"  Average time per iteration: {self.pytorch_backward_time / self.pytorch_backward_count:.2f} ms")
+            
+            print("Combined:")
+            print(f"  Total time: {self.pytorch_forward_time + self.pytorch_backward_time:.2f} ms")
+            print(f"  Total iterations: {self.pytorch_forward_count + self.pytorch_backward_count}")
+            if (self.pytorch_forward_count + self.pytorch_backward_count) > 0:
+                avg_time = (self.pytorch_forward_time + self.pytorch_backward_time) / (self.pytorch_forward_count + self.pytorch_backward_count)
+                print(f"  Average time per iteration: {avg_time:.2f} ms")
+            print("-"*60)
+            print(f"VRAM used: {mb(used):.0f} MiB, {gb(used):.3f} GB")
+            print("="*60)
+        
         return x, y, r, v, theta, c
     
 
@@ -336,7 +389,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             
             if tight_freezemask:
                 # NEW: Bounding box-based overlap detection (more accurate)
-                print("[Selective Freeze] Using tight bounding box overlap detection")
+                #print("[Selective Freeze] Using tight bounding box overlap detection")
                 
                 # Use shared helper to compute world-space bounding boxes
                 bbox_x_min, bbox_x_max, bbox_y_min, bbox_y_max = self._compute_primitive_world_bboxes(x, y, r, theta)
@@ -379,14 +432,14 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 # Log statistics
                 num_frozen = torch.sum(freeze_mask).item()
                 num_optimized = N - num_frozen
-                print(f"[Selective Freeze] Freeze threshold: {freeze_distance_threshold:.4f} (margin: {margin:.1f}px)")
-                print(f"[Selective Freeze] Changed pixels: {changed_coords.shape[0]}")
-                print(f"[Selective Freeze] Frozen primitives: {num_frozen}/{N} ({100*num_frozen/N:.1f}%)")
-                print(f"[Selective Freeze] Optimized primitives: {num_optimized}/{N} ({100*num_optimized/N:.1f}%)")
+                #print(f"[Selective Freeze] Freeze threshold: {freeze_distance_threshold:.4f} (margin: {margin:.1f}px)")
+                #print(f"[Selective Freeze] Changed pixels: {changed_coords.shape[0]}")
+                #print(f"[Selective Freeze] Frozen primitives: {num_frozen}/{N} ({100*num_frozen/N:.1f}%)")
+                #print(f"[Selective Freeze] Optimized primitives: {num_optimized}/{N} ({100*num_optimized/N:.1f}%)")
                 
             else:
                 # LEGACY: Center-based distance check (original implementation)
-                print("[Selective Freeze] Using legacy center-based distance check")
+                #print("[Selective Freeze] Using legacy center-based distance check")
                 
                 # Convert primitive positions to pixel coordinates (already in pixel space)
                 prim_x_pixel = x  # Already in pixel coordinates
@@ -409,10 +462,10 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 # Log statistics
                 num_frozen = torch.sum(freeze_mask).item()
                 num_optimized = N - num_frozen
-                print(f"[Selective Freeze] Freeze threshold: {freeze_distance_threshold:.1f}px")
-                print(f"[Selective Freeze] Changed pixels: {changed_coords.shape[0]}")
-                print(f"[Selective Freeze] Frozen primitives: {num_frozen}/{N} ({100*num_frozen/N:.1f}%)")
-                print(f"[Selective Freeze] Optimized primitives: {num_optimized}/{N} ({100*num_optimized/N:.1f}%)")
+                #print(f"[Selective Freeze] Freeze threshold: {freeze_distance_threshold:.1f}px")
+                #print(f"[Selective Freeze] Changed pixels: {changed_coords.shape[0]}")
+                #print(f"[Selective Freeze] Frozen primitives: {num_frozen}/{N} ({100*num_frozen/N:.1f}%)")
+                #print(f"[Selective Freeze] Optimized primitives: {num_optimized}/{N} ({100*num_optimized/N:.1f}%)")
             
             # Optional: gradual freeze based on distance
             if use_gradual_freeze:
@@ -462,7 +515,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         # Extract gradient_ranking configuration
         gradient_ranking_config = adaptive_config.get('gradient_ranking', {})
         gradient_ranking_enabled = gradient_ranking_config.get('enabled', True)
-        print(f"[Adaptive Control] Gradient ranking enabled: {gradient_ranking_enabled}")
+        #print(f"[Adaptive Control] Gradient ranking enabled: {gradient_ranking_enabled}")
         
         # Create new leaf tensors - single detach operation
         x_adapted = x.detach().requires_grad_(True)
@@ -516,7 +569,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 # Apply opacity reduction using in-place operation to maintain leaf tensor status
                 if len(problematic_indices) > 0:
                     with torch.no_grad():
-                        v_adapted[problematic_indices] *= opacity_reduction_factor
+                        v_adapted[problematic_indices] = v_adapted[problematic_indices] - 10.0*opacity_reduction_factor
+                        print("[Adaptive Control] Reduced opacity")
       
         return x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted
     
@@ -578,10 +632,10 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         front_percentage = int((1.0 - front_primitives_percentile) * 100)
 
         # Debug: Print criteria counts
-        print(f"[Adaptive Control Debug] Tile criteria counts:")
-        print(f"  - Large scale (>={scale_threshold}): {large_scale_mask.sum().item()}/{len(tile_indices)}")
-        print(f"  - High opacity (>={opacity_threshold:.2f}): {high_opacity_mask.sum().item()}/{len(tile_indices)}")
-        print(f"  - Front primitives (top {front_percentage}%): {front_mask.sum().item()}/{len(tile_indices)}")
+        #print(f"[Adaptive Control Debug] Tile criteria counts:")
+        #print(f"  - Large scale (>={scale_threshold}): {large_scale_mask.sum().item()}/{len(tile_indices)}")
+        #print(f"  - High opacity (>={opacity_threshold:.2f}): {high_opacity_mask.sum().item()}/{len(tile_indices)}")
+        #print(f"  - Front primitives (top {front_percentage}%): {front_mask.sum().item()}/{len(tile_indices)}")
         
         # Combine criteria: primitives meeting minimum criteria count
         criteria_count = (large_scale_mask.float() + high_opacity_mask.float() + front_mask.float())
@@ -593,10 +647,9 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             tile_freeze_mask = freeze_mask[tile_indices]
             # Keep only primitives that are problematic AND not frozen
             problematic_mask = problematic_mask & (~tile_freeze_mask)
-            print(f"  - Problematic by criteria (>={min_criteria_count}/3): {(criteria_count >= float(min_criteria_count)).sum().item()}/{len(tile_indices)}")
-            print(f"  - After excluding frozen: {problematic_mask.sum().item()}/{len(tile_indices)}")
-        else:
-            print(f"  - Problematic by criteria (>={min_criteria_count}/3): {problematic_mask.sum().item()}/{len(tile_indices)}")
+            #print(f"  - Problematic by criteria (>={min_criteria_count}/3): {(criteria_count >= float(min_criteria_count)).sum().item()}/{len(tile_indices)}")
+            #print(f"  - After excluding frozen: {problematic_mask.sum().item()}/{len(tile_indices)}")
+
         
         # Get indices of problematic primitives within the tile
         problematic_tile_indices = torch.where(problematic_mask)[0]
@@ -612,10 +665,10 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             if num_to_select < len(problematic_global_indices):
                 _, top_gradient_indices = torch.topk(problematic_gradients, num_to_select)
                 selected_indices = problematic_global_indices[top_gradient_indices]
-                print(f"  - Selected top-{num_to_select} by gradient: {num_to_select}/{len(problematic_global_indices)}")
+                #print(f"  - Selected top-{num_to_select} by gradient: {num_to_select}/{len(problematic_global_indices)}")
             else:
                 selected_indices = problematic_global_indices
-                print(f"  - Selected all problematic: {len(problematic_global_indices)}/{len(problematic_global_indices)}")
+                #print(f"  - Selected all problematic: {len(problematic_global_indices)}/{len(problematic_global_indices)}")
         else:
             # Use scale*opacity ranking (either disabled by config or gradient magnitudes unavailable)
             num_to_select = min(max_primitives_per_tile, len(problematic_global_indices))
@@ -624,10 +677,10 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 _, top_indices = torch.topk(scores, num_to_select)
                 selected_indices = problematic_global_indices[top_indices]
                 ranking_method = "gradient (unavailable)" if gradient_ranking_enabled else "scale*opacity (config)"
-                print(f"  - Selected top-{num_to_select} by {ranking_method}: {num_to_select}/{len(problematic_global_indices)}")
+                #print(f"  - Selected top-{num_to_select} by {ranking_method}: {num_to_select}/{len(problematic_global_indices)}")
             else:
                 selected_indices = problematic_global_indices
-                print(f"  - Selected all problematic: {len(problematic_global_indices)}/{len(problematic_global_indices)}")
+                #print(f"  - Selected all problematic: {len(problematic_global_indices)}/{len(problematic_global_indices)}")
         
         return selected_indices
     

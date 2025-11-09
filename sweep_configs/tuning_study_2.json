@@ -22,12 +22,12 @@
             "images/VIRAT_fps_drop_8/frames3",
             "images/VIRAT_fps_drop_8/frames4"
         ],
-        "sequential.adaptive_control.enabled": [true, false],
-        "sequential.selective_parameter_optimization.enabled": [true, false],
-        "initialization.N": [400, 800, 1000, 1200]
+        "sequential.adaptive_control.opacity_reduction_factor": [0.1, 0.3, 0.5, 0.7]
     },
     "fixed_overrides": {
-        "sequential.export.metrics_csv_path": "./outputs/metrics_tuning_study_2.csv"
+        "sequential.export.metrics_csv_path": "./outputs/metrics_tuning_study_2.csv",
+        "sequential.adaptive_control.enabled": true,
+        "sequential.selective_parameter_optimization.enabled": false
     },
     "output_base": "./outputs/experiments_tuning_study_2"
 }

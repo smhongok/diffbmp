@@ -76,6 +76,8 @@ images/Sintel-albedo_fps_drop_8/*
 images/Sintel-final_fps_drop_8/*
 images/VIRAT_fps_drop_8/*
 
+images/figure1/*
+
 wandb
 
 visualization_output
