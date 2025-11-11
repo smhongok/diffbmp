@@ -24,6 +24,7 @@ from imbrush.util.primitive_loader import PrimitiveLoader
 from imbrush.util.svg_converter import FontParser, ImageToSVG
 from imbrush.core.initializer.svgsplat_initializater import StructureAwareInitializer
 from imbrush.core.initializer.random_initializater import RandomInitializer
+from imbrush.util.spatial_constrain_visualizer import save_spatial_constraints
 
 # Route visualization flag - set to True to enable primitive movement visualization
 ENABLE_ROUTE_VISUALIZATION = False
@@ -341,6 +342,16 @@ for frame_idx, I_target_frame in enumerate(I_targets):
         # Remove alpha channel if exists after optimization
         if not exist_bg and I_target_frame.shape[-1] == 4:
             I_target_frame = I_target_frame[..., :3]
+            
+            # Manually set background to white using the binary mask
+            # target_binary_mask_np: 1 at background, 0 at foreground
+            if target_binary_mask_np is not None:
+                # Convert numpy mask to torch tensor if needed
+                bg_mask = torch.from_numpy(target_binary_mask_np > 0).to(device)  # True at background
+                # Set background pixels to white (1.0) in all RGB channels
+                I_target_frame[bg_mask] = 1.0
+                print(f"Set background to white using binary mask. Background pixels: {bg_mask.sum().item()}/{bg_mask.numel()}")
+            
             # Update the I_targets list so subsequent frames use the 3-channel version
             I_targets[frame_idx] = I_target_frame
             print(f"Stripped alpha channel from first frame. Shape: {I_target_frame.shape}")
@@ -457,12 +468,18 @@ for frame_idx, frame_result in enumerate(frame_results):
     # Still render final PNG for preview/compatibility using tile-based rendering
     with torch.no_grad():
         white_bg = torch.ones((sequential_renderer.H, sequential_renderer.W, 3), device=sequential_renderer.device)
-        frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, I_bg=white_bg, sigma=0.0, is_final=True)
+        #frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, I_bg=white_bg, sigma=0.0, is_final=True)
+        frame_rendered, frame_rendered_alpha = renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
     # Save rendered frame directly
     frame_rendered_np = frame_rendered.detach().cpu().numpy()
     frame_rendered_np = (frame_rendered_np * 255).astype(np.uint8)
     frame_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}.png')
     Image.fromarray(frame_rendered_np).save(frame_path)
+
+    if not exist_bg:
+        # Save spatial constraints
+        frame_spatial_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}_spatial.png')
+        save_spatial_constraints(frame_rendered, frame_rendered_alpha, frame_spatial_path)
     
     # Store rendered frame for GIF/MP4 export
     frame_np = rendered_frame.cpu().numpy()
@@ -482,8 +499,8 @@ for frame_idx, frame_result in enumerate(frame_results):
         # Pass c_blend and primitive_colors to PSDExporter
         c_blend = config["optimization"].get("c_blend", 0.0)
         exporter = PSDExporter(
-            renderer.W, renderer.H, 
-            alpha_upper_bound=renderer.alpha_upper_bound, 
+            sequential_renderer.W, sequential_renderer.H, 
+            alpha_upper_bound=sequential_renderer.alpha_upper_bound, 
             scale_factor=psd_scale_factor,
             c_blend=c_blend,
             primitive_colors=primitive_colors
@@ -491,7 +508,7 @@ for frame_idx, frame_result in enumerate(frame_results):
         
         # Use batched processing - all data preparation handled internally
         exporter.add_layers_batch_optimized(
-            renderer.S, x, y, r, theta, v, c
+            sequential_renderer.S, x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame
         )
             
         # Export PSD file
