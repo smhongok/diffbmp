@@ -115,7 +115,7 @@ class Preprocessor:
         Load image as 8-bit color (RGB) and resize.
         If square_crop is enabled: produces exact final_width x final_width output.
         Otherwise: maintains aspect ratio with variable height.
-        Apply post-processing based on transform_mode and FM_halftone options.
+        Load image as 8-bit color (RGB) and resize.
         """
         img = Image.open(config["img_path"]).convert('RGB')
         w, h = img.size
@@ -202,16 +202,66 @@ class Preprocessor:
 
         return arr
 
-    def load_image_8bit_color_opacity(self, config):
+    def load_image_8bit_color_opacity(self, config, make_bg_white=True):
         """
-        Load image as 8-bit color with opacity (RGBA) and resize.
-        If square_crop is enabled: produces exact final_width x final_width output.
-        Otherwise: maintains aspect ratio with variable height.
+        Load image as 8-bit color and opacity(RGBA), and if large, apply CenterCrop → White Padding → resize to final size.
+        Args:
+            config (dict): Configuration dictionary containing 'img_path'.
+            make_bg_white (bool): If True, convert transparent background to white. This is for some cases that the input image has wierd RGB values in transparent area.
         Returns:
             arr (np.ndarray): Processed RGBA image array.
             binary_image (np.ndarray): Binary mask of the alpha channel.
         """
-        img = Image.open(config["img_path"]).convert('RGBA')
+        img = Image.open(config["img_path"]).convert('RGBA')  # 8-bit color with alpha
+        binary_image = (1-(np.array(img)[:, :, 3] > 0).astype(np.uint8)) * 255
+        img_array = np.array(img)
+        if config.get("mask_path") is not None:
+            # Use provided mask path(s) to create binary mask
+            mask_paths = config["mask_path"]
+            
+            # Handle both single path (string) and multiple paths (list)
+            if isinstance(mask_paths, str):
+                mask_paths = [mask_paths]
+            
+            img_w, img_h = img.size
+            combined_mask = None
+            
+            # Load and combine all masks using OR operation
+            for mask_path in mask_paths:
+                mask_img = Image.open(mask_path).convert('L')
+                
+                # Resize mask to match image size if they don't match
+                mask_w, mask_h = mask_img.size
+                if (mask_w, mask_h) != (img_w, img_h):
+                    target_w = min(img_w, mask_w)
+                    target_h = min(img_h, mask_h)
+                    mask_img = mask_img.resize((target_w, target_h), Image.NEAREST)
+                    
+                    # Only resize img once (on first iteration if needed)
+                    if combined_mask is None and (img_w, img_h) != (target_w, target_h):
+                        img = img.resize((target_w, target_h), Image.NEAREST)
+                        img_w, img_h = target_w, target_h
+                
+                mask_array = np.array(mask_img)
+                
+                # Combine masks using OR operation (any non-zero pixel is considered filled)
+                if combined_mask is None:
+                    combined_mask = mask_array
+                else:
+                    combined_mask = np.maximum(combined_mask, mask_array)
+            
+            binary_image = 255 - combined_mask
+
+        if make_bg_white:
+            # Update img_array after potential resize
+            img_array = np.array(img)
+
+            # Convert transparent background (alpha=0) to white
+            img_array[binary_image!=0, :3] = 255  # Set RGB to white
+            img_array[binary_image!=0, 3] = 0  # Set alpha to 0
+            img = Image.fromarray(img_array, mode='RGBA')
+
+
         w, h = img.size
         
         # Extract alpha channel as binary mask before resizing
@@ -238,7 +288,7 @@ class Preprocessor:
                 new_w = target_size
                 new_h = int(target_size / img_aspect)
             
-            resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
+            resampling = get_resampling_method(config.get("resampling", "NEAREST"))
             resized_img = img.resize((new_w, new_h), resampling)
             
             # Center crop to exact target_size x target_size
@@ -248,7 +298,7 @@ class Preprocessor:
             
             # Resize and crop binary mask to match
             binary_image = Image.fromarray(binary_image, mode='L')
-            binary_image = binary_image.resize((new_w, new_h), Image.BICUBIC)
+            binary_image = binary_image.resize((new_w, new_h), Image.NEAREST)
             binary_image = binary_image.crop((left, top, left + target_size, top + target_size))
             
             self.final_width = target_size
@@ -260,12 +310,12 @@ class Preprocessor:
             new_h = int(h * ratio)
             self.final_width = new_w
             self.final_height = new_h
-            resampling = get_resampling_method(config.get("resampling", "LANCZOS"))
+            resampling = get_resampling_method(config.get("resampling", "NEAREST"))
             resized_img = img.resize((new_w, new_h), resampling)
 
             # Resize binary mask to match
             binary_image = Image.fromarray(binary_image, mode='L')
-            binary_image = binary_image.resize((new_w, new_h), Image.BICUBIC)
+            binary_image = binary_image.resize((new_w, new_h), Image.NEAREST)
 
         arr = np.array(resized_img, dtype=np.uint8)
         binary_image = np.array(binary_image, dtype=np.uint8)

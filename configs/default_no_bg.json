@@ -1,17 +1,18 @@
 {
     "preprocessing": {
         "final_width": [
-            256
+            512
         ],
         "img_path": [
-            "images/person/pororo_no_background.png"
+            "images/spatial_constraint/Imagen_dog.png"
         ],
-        "exist_bg": false
+        "exist_bg" : false,
+        "debug_save_intermediates" : true
     },
     "primitive": {
-        "primitive_file": "arial.ttf",
-        "text": "S",
-        "primitive_hollow": false,
+        "primitive_file": "paw_complicated.png",
+        "convert_to_svg": false,
+        "svg_hollow": false,
         "output_width": 128
     },
     "initialization": {
@@ -20,29 +21,29 @@
             2000
         ],
         "radii_min": 2,
-        "debug_mode": true,
-        "distance_factor": 0.7
+        "radii_max": 30,
+        "debug_mode": true
     },
     "optimization": {
         "use_fp16": false,
         "num_iterations": 300,
         "learning_rate": {
             "default": 0.1,
-            "gain_v": 5
+            "gain_v":5.0
         },
         "loss_config": {
             "type": "combined",
             "components": [
                 {"name": "mse", "weight": 1.0},
-                {"name": "alpha", "weight": 2.0}
+                {"name": "alpha", "weight": 0.3}
             ]
         },
-        "pruning": {
-            "do_pruning": true,
-            "prune_iterations": 10,
-            "no_prune_last_iterations": 50,
-            "no_prune_warmup_iterations": 200,
-            "prune_threshold": 0.3
+        "pruning":{
+            "do_pruning" : true,
+            "prune_iterations" : 50,
+            "no_prune_last_iterations" : 0,
+            "no_prune_warmup_iterations" : 199,
+            "prune_threshold" : 0.3
         },
         "do_decay": true,
         "do_gaussian_blur": true
@@ -50,6 +51,6 @@
     "postprocessing": {
         "output_folder": "outputs/",
         "compute_psnr": true,
-        "export_psd": true
-    }
-}
+        "export_psd": false
+        }
+} 

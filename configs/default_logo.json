@@ -1,0 +1,62 @@
+{
+    "preprocessing": {
+        "final_width": [
+            720
+        ],
+        "img_path": [
+            "images/logo.png"
+        ],
+        "exist_bg" : false,
+        "debug_save_intermediates" : true,
+        "prevent_overshooting" : {
+            "color_for_background": "random",
+            "anti_aliasing_sigma": 3,
+            "binary_threshold" : 80
+        }
+    },
+    "primitive": {
+        "primitive_file": "circle.png",
+        "convert_to_svg": false,
+        "svg_hollow": false,
+        "output_width": 128
+    },
+    "initialization": {
+        "initializer": "structure_aware",
+        "N": [
+            50
+        ],
+        "radii_min": 2,
+        "radii_max": 22.5,
+        "debug_mode": true
+    },
+    "optimization": {
+        "use_fp16": false,
+        "num_iterations": 100,
+        "learning_rate": {
+            "default": 0.1,
+            "gain_v":5.0
+        },
+        "loss_config": {
+            "type": "combined",
+            "components": [
+                {"name": "mse", "weight": 1.0},
+                {"name": "alpha", "weight": 3.0}
+            ]
+        },
+        "pruning":{
+            "do_pruning" : false,
+            "prune_iterations" : 50,
+            "no_prune_last_iterations" : 99,
+            "no_prune_warmup_iterations" : 199,
+            "prune_threshold" : 0.3
+        },
+        "do_decay": true,
+        "do_gaussian_blur": true,
+        "alpha_upper_bound" : 0.7
+    },
+    "postprocessing": {
+        "output_folder": "outputs/",
+        "compute_psnr": true,
+        "export_psd": false
+    }
+} 

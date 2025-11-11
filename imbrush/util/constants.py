@@ -37,6 +37,10 @@ DECAY_RATE = 0.99
 ALPHA_UPPER_BOUND = 1.0
 BLUR_SIGMA = 1.0
 
+# Default background blending
+DEFAULT_BG_COLOR = "white"
+DEFAULT_BG_COLOR_NO_BG = "random"
+
 # ==================== Preprocessing Constants ====================
 # Background threshold for image processing
 BG_THRESHOLD = 250  # Pixels >= this value are considered white background
@@ -173,8 +177,10 @@ def apply_constants_to_config(config: dict) -> dict:
         exist_bg = config.get("preprocessing", {}).get("exist_bg", True)
         if exist_bg:
             config["optimization"].setdefault("loss_config", DEFAULT_LOSS_CONFIG)
+            config["optimization"].setdefault("bg_color", DEFAULT_BG_COLOR)
         else:
             config["optimization"].setdefault("loss_config", DEFAULT_LOSS_CONFIG_NO_BG)
+            config["optimization"].setdefault("bg_color", DEFAULT_BG_COLOR_NO_BG)
         
         if "learning_rate" not in config["optimization"]:
             config["optimization"]["learning_rate"] = {}

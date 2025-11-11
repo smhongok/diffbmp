@@ -1,0 +1,64 @@
+{
+    "preprocessing": {
+        "final_width": [
+            512
+        ],
+        "img_path": [
+            "images/spatial_constraint/177.jpg"
+        ],
+        "mask_path": [
+            "images/spatial_constraint/masks/00177_hair.png",
+            "images/spatial_constraint/masks/00177_skin.png",
+            "images/spatial_constraint/masks/00177_neck.png",
+            "images/spatial_constraint/masks/00177_cloth.png"
+        ],
+        "exist_bg" : false,
+        "debug_save_intermediates" : true
+    },
+    "primitive": {
+        "primitive_file": ["flowers/Lady_Jane.png", "flowers/Gerbera1.png", "flowers/Gerbera2.png", "flowers/Gerbera3.png"],
+        "convert_to_svg": false,
+        "svg_hollow": false,
+        "output_width": 128
+    },
+    "initialization": {
+        "initializer": "structure_aware",
+        "N": [
+            1000
+        ],
+        "radii_min": 2,
+        "radii_max": 20,
+        "debug_mode": true
+    },
+    "optimization": {
+        "use_fp16": false,
+        "num_iterations": 300,
+        "learning_rate": {
+            "default": 0.1,
+            "gain_v":5.0
+        },
+        "loss_config": {
+            "type": "combined",
+            "components": [
+                {"name": "mse", "weight": 1.0},
+                {"name": "alpha", "weight": 0.3}
+            ]
+        },
+        "pruning":{
+            "do_pruning" : true,
+            "prune_iterations" : 50,
+            "no_prune_last_iterations" : 0,
+            "no_prune_warmup_iterations" : 199,
+            "prune_threshold" : 0.3
+        },
+        "do_decay": true,
+        "do_gaussian_blur": true,
+        "c_blend": 0.3,
+        "alpha_upper_bound" : 0.7
+    },
+    "postprocessing": {
+        "output_folder": "outputs/",
+        "compute_psnr": true,
+        "export_psd": true
+        }
+} 
