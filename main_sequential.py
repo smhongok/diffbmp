@@ -83,6 +83,9 @@ preprocessor = Preprocessor(
     transform_mode=pp_conf.get("transform", "none"),
 )
 
+# Check if background exists
+exist_bg = config["preprocessing"].get("exist_bg", True)
+
 # Sequential rendering mode - load frames
 sequential_config = config["sequential"]
 input_path = config["preprocessing"]["img_path"]
@@ -91,6 +94,33 @@ max_frames = sequential_config.get("max_frames", None)
 sequential_config = apply_constants_to_config(sequential_config)
 
 print(f"Loading {input_type} frames from: {input_path}")
+
+# For first frame with no background, we need special handling
+target_binary_mask_np = None
+if not exist_bg and input_type in ["sequence"]:
+    # Load first frame with opacity to get binary mask
+    print("First frame has no background, loading with opacity")
+    
+    # Get the first image file from the sequence directory
+    extensions = ('.png', '.jpg', '.jpeg')
+    image_files = []
+    for ext in extensions:
+        image_files.extend([f for f in os.listdir(input_path) if f.lower().endswith(ext)])
+    image_files.sort()  # Sort naturally to get the first frame
+    
+    if len(image_files) == 0:
+        raise ValueError(f"No image files found in sequence directory: {input_path}")
+    
+    # Construct path to first image
+    first_image_path = os.path.join(input_path, image_files[0])
+    print(f"Loading first frame from: {first_image_path}")
+    
+    # Temporarily modify config to point to the first image
+    preprocessing_config_copy = config["preprocessing"].copy()
+    preprocessing_config_copy["img_path"] = first_image_path
+    
+    first_frame_with_alpha, target_binary_mask_np = preprocessor.load_image_8bit_color_opacity(preprocessing_config_copy)
+    first_frame_rgb = first_frame_with_alpha.astype(np.float32) / 255.0
 
 if input_type == "gif":
     frames = preprocessor.load_gif_frames(input_path, config["preprocessing"])
@@ -105,10 +135,15 @@ print(f"Loaded {len(frames)} frames")
 
 # Convert frames to tensors
 I_targets = []
-for frame in frames:
-    frame_tensor = torch.tensor(frame.astype(np.float32) / 255.0, device=device)  # (H, W, 3)
+for idx, frame in enumerate(frames):
+    if idx == 0 and not exist_bg and target_binary_mask_np is not None:
+        # Use the first frame with alpha channel that we loaded earlier
+        frame_tensor = torch.tensor(first_frame_rgb, device=device)  # (H, W, 3) or (H, W, 4)
+    else:
+        frame_tensor = torch.tensor(frame.astype(np.float32) / 255.0, device=device)  # (H, W, 3)
     I_targets.append(frame_tensor)
-    print("There are {} frames in the input".format(len(I_targets)))
+
+print("There are {} frames in the input".format(len(I_targets)))
 
 # Use first frame dimensions
 H = preprocessor.final_height
@@ -282,16 +317,33 @@ for frame_idx, I_target_frame in enumerate(I_targets):
     if frame_idx == 0:
         # First frame: initialize from scratch using standard renderer
         print("First frame: initializing from scratch with SimpleTileRenderer")
-        x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target_frame)
+        
+        # Generate target binary mask if no background exists
+        target_binary_mask = None  # 1 at background, 0 at foreground
+        if not exist_bg and target_binary_mask_np is not None:
+            target_binary_mask = torch.from_numpy(target_binary_mask_np[:, :] > 0).to(device)
+            print("Using foreground boundary mask for first frame initialization")
+            x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target_frame, target_binary_mask)
+        else:
+            x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target_frame)
         
         # Optimize with standard renderer using optimization config
         start_time_frame = time.time()
         x, y, r, v, theta, c = renderer.optimize_parameters(
             x, y, r, v, theta, c,
             I_target_frame, 
-            opt_conf=opt_conf
+            opt_conf=opt_conf,
+            target_binary_mask=target_binary_mask,
+            initializer=initializer
         )
         end_time_frame = time.time()
+        
+        # Remove alpha channel if exists after optimization
+        if not exist_bg and I_target_frame.shape[-1] == 4:
+            I_target_frame = I_target_frame[..., :3]
+            # Update the I_targets list so subsequent frames use the 3-channel version
+            I_targets[frame_idx] = I_target_frame
+            print(f"Stripped alpha channel from first frame. Shape: {I_target_frame.shape}")
         
         # No need for neighbor computation with simple anchoring loss
         
