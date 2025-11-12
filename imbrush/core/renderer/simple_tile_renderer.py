@@ -685,6 +685,69 @@ class SimpleTileRenderer(VectorRenderer):
         """
         # Use parent class's render method for compatibility
         return super().render(cached_masks, v, c, return_alpha, I_bg)
+
+    def _get_background_for_render(self, bg_type:str, export:bool = False) -> torch.Tensor:
+        """
+        Get background image tensor based on bg_type.
+        Supports: white, black, random, and all rainbow colors (red, orange, yellow, green, blue, indigo, violet)
+        
+        Args:
+            bg_type: Background type string
+            export: If True, "random" background will be converted to white for consistent export
+        """
+        if bg_type == "white":
+            I_bg = torch.ones((self.H, self.W, 3), device=self.device)
+        elif bg_type == "black":
+            I_bg = torch.zeros((self.H, self.W, 3), device=self.device)
+        elif bg_type == "random":
+            if export:
+                # Use white background for exports when bg_type is random
+                I_bg = torch.ones((self.H, self.W, 3), device=self.device)
+            else:
+                I_bg = torch.rand((self.H, self.W, 3), device=self.device)
+        elif bg_type == "red":
+            I_bg = torch.zeros((self.H, self.W, 3), device=self.device)
+            I_bg[:, :, 0] = 1.0
+        elif bg_type == "orange":
+            I_bg = torch.zeros((self.H, self.W, 3), device=self.device)
+            I_bg[:, :, 0] = 1.0
+            I_bg[:, :, 1] = 0.647  # RGB(255, 165, 0)
+        elif bg_type == "yellow":
+            I_bg = torch.zeros((self.H, self.W, 3), device=self.device)
+            I_bg[:, :, 0] = 1.0
+            I_bg[:, :, 1] = 1.0
+        elif bg_type == "green":
+            I_bg = torch.zeros((self.H, self.W, 3), device=self.device)
+            I_bg[:, :, 1] = 1.0
+        elif bg_type == "blue":
+            I_bg = torch.zeros((self.H, self.W, 3), device=self.device)
+            I_bg[:, :, 2] = 1.0
+        elif bg_type == "indigo":
+            I_bg = torch.zeros((self.H, self.W, 3), device=self.device)
+            I_bg[:, :, 0] = 0.294
+            I_bg[:, :, 2] = 0.510  # RGB(75, 0, 130)
+        elif bg_type == "violet" or bg_type == "purple":
+            I_bg = torch.zeros((self.H, self.W, 3), device=self.device)
+            I_bg[:, :, 0] = 0.580
+            I_bg[:, :, 2] = 0.827  # RGB(148, 0, 211)
+        elif bg_type == "gray" or bg_type == "grey":
+            I_bg = torch.full((self.H, self.W, 3), fill_value=0.5, device=self.device)
+        elif bg_type == "pink":
+            I_bg = torch.zeros((self.H, self.W, 3), device=self.device)
+            I_bg[:, :, 0] = 1.0
+            I_bg[:, :, 1] = 0.753
+            I_bg[:, :, 2] = 0.796  # RGB(255, 192, 203)
+        elif bg_type == "cyan":
+            I_bg = torch.zeros((self.H, self.W, 3), device=self.device)
+            I_bg[:, :, 1] = 1.0
+            I_bg[:, :, 2] = 1.0
+        elif bg_type == "magenta":
+            I_bg = torch.zeros((self.H, self.W, 3), device=self.device)
+            I_bg[:, :, 0] = 1.0
+            I_bg[:, :, 2] = 1.0
+        else:
+            raise ValueError(f"Unsupported bg_type: {bg_type}. Supported types: white, black, random, red, orange, yellow, green, blue, indigo, violet/purple, gray/grey, pink, cyan, magenta")
+        return I_bg
     
     def _optimize_parameters_whole(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                                   v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
@@ -754,6 +817,7 @@ class SimpleTileRenderer(VectorRenderer):
         
         # Optimization loop
         for iteration in tqdm(range(num_iterations), desc="Optimizing"):
+            I_bg = self._get_background_for_render(opt_conf.get("bg_color", "white"))
             optimizer.zero_grad()
 
             # Pruning(Restart)
@@ -778,14 +842,12 @@ class SimpleTileRenderer(VectorRenderer):
             if self.use_fp16:
                 with autocast('cuda'):
                     if is_no_bg_mode:
-                        random_bg = torch.rand((self.H, self.W, 3), device=self.device)
                         rendered, rendered_alpha = self.render_from_params(
-                            x, y, r, theta, v, c, sigma=current_sigma, I_bg=random_bg, lr_conf=lr_conf, return_alpha=True
+                            x, y, r, theta, v, c, sigma=current_sigma, I_bg=I_bg, lr_conf=lr_conf, return_alpha=True
                         )
                     else:
-                        white_bg = torch.ones((self.H, self.W, 3), device=self.device)
                         rendered = self.render_from_params(
-                            x, y, r, theta, v, c, sigma=current_sigma, I_bg=white_bg, lr_conf=lr_conf
+                            x, y, r, theta, v, c, sigma=current_sigma, I_bg=I_bg, lr_conf=lr_conf
                         )
                         rendered_alpha = None
                     
@@ -810,14 +872,12 @@ class SimpleTileRenderer(VectorRenderer):
 
             else:
                 if is_no_bg_mode:
-                    random_bg = torch.rand((self.H, self.W, 3), device=self.device)
                     rendered, rendered_alpha = self.render_from_params(
-                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=random_bg, lr_conf=lr_conf, return_alpha=True
+                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=I_bg, lr_conf=lr_conf, return_alpha=True
                     )
                 else:
-                    white_bg = torch.ones((self.H, self.W, 3), device=self.device)
                     rendered = self.render_from_params(
-                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=white_bg, lr_conf=lr_conf
+                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=I_bg, lr_conf=lr_conf
                     )
                     rendered_alpha = None
                 
@@ -1284,7 +1344,8 @@ class SimpleTileRenderer(VectorRenderer):
                           v: torch.Tensor,
                           c: torch.Tensor,
                           video_path: str,
-                          fps: int = 60) -> None:
+                          fps: int = 60,
+                          bg_color: str = "white") -> None:
         """
         Export MP4 video showing progressive primitive addition.
         
@@ -1292,6 +1353,7 @@ class SimpleTileRenderer(VectorRenderer):
             x, y, r, theta, v, c: Primitive parameters
             video_path: Output video file path
             fps: Frames per second
+            bg_color: Background color (default: "white")
         """
         import cv2
         import tempfile
@@ -1310,11 +1372,11 @@ class SimpleTileRenderer(VectorRenderer):
             raise RuntimeError(f"Could not open video writer for {video_path}")
         
         try:
-            # Create white background frame
-            white_bg = torch.ones((self.H, self.W, 3), device=x.device, dtype=torch.float32)
+            # Create background frame with specified color (random -> white for export)
+            I_bg = self._get_background_for_render(bg_color, export=True)
             
-            # Write initial white frame
-            self._write_frame(writer, white_bg)
+            # Write initial background frame
+            self._write_frame(writer, I_bg)
             
             # Process primitives incrementally
             for frame_idx in range(N):
@@ -1325,7 +1387,7 @@ class SimpleTileRenderer(VectorRenderer):
                 frame = self.render_from_params(
                     x[:frame_idx+1], y[:frame_idx+1], r[:frame_idx+1],
                     theta[:frame_idx+1], v[:frame_idx+1], c[:frame_idx+1],
-                    sigma=0.0, I_bg=white_bg
+                    sigma=0.0, I_bg=I_bg
                 )
                 
                 self._write_frame(writer, frame)
