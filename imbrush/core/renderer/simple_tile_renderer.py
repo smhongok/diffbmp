@@ -100,8 +100,7 @@ class SimpleTileRenderer(VectorRenderer):
         """
         print("="*10,"Initializing SimpleTileRenderer...","="*10)
         super().__init__(canvas_size, S, **kwargs)
-        #self.tile_size = tile_size
-        self.tile_size = 32
+        self.tile_size = tile_size
         
         # Calculate tile grid dimensions
         self.tiles_h = (self.H + tile_size - 1) // tile_size
@@ -192,9 +191,6 @@ class SimpleTileRenderer(VectorRenderer):
             Rendered image tensor
         """
         
-        # Start timing for PyTorch forward pass
-        start_time = time.time()
-        
         N = x.shape[0]
         # Pre-compute global primitive template selection (before tile processing)
         
@@ -244,12 +240,15 @@ class SimpleTileRenderer(VectorRenderer):
         total_tiles = self.tiles_h * self.tiles_w
         use_parallel = total_tiles > 4 and torch.cuda.is_available()  # Parallel for larger tile counts
         
+        # Start timing for forward pass (actual computation only)
+        start_time = time.time()
+        
         if use_parallel:
             output = self._process_tiles_parallel(x, y, r, theta, v, c, sigma, I_bg, global_bmp_sel, output, lr_conf, is_final=is_final, return_alpha=return_alpha)
         else:
             output = self._process_tiles_sequential(x, y, r, theta, v, c, sigma, I_bg, global_bmp_sel, output, lr_conf, is_final=is_final)
         
-        # End timing and update statistics
+        # End timing for forward pass
         end_time = time.time()
         elapsed_time_ms = (end_time - start_time) * 1000.0
         
