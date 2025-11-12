@@ -123,7 +123,8 @@ def export_transition_video_with_holds(
     transition_frames=60,
     hold_frames=30,
     interpolation_style='linear',
-    device='cuda'
+    device='cuda',
+    bg_color='white'
 ):
     """
     Export a transition video with hold frames at each image state.
@@ -181,10 +182,11 @@ def export_transition_video_with_holds(
         # Render hold frames
         print(f"  Rendering {hold_frames} hold frames...")
         with torch.no_grad():
-            white_bg = torch.ones((renderer.H, renderer.W, 3), device=device)
+            # Use specified background color (random -> white for export)
+            I_bg = renderer._get_background_for_render(bg_color, export=True)
             rendered_frame = renderer.render_from_params(
                 x, y, r, theta, v, c,
-                I_bg=white_bg,
+                I_bg=I_bg,
                 sigma=0.0,
                 is_final=True
             )
@@ -216,10 +218,11 @@ def export_transition_video_with_holds(
                 x_t, y_t, r_t, c_t, v_t, theta_t = interpolate_params(params_start, params_end, t, interpolation_style)
                 
                 with torch.no_grad():
-                    white_bg = torch.ones((renderer.H, renderer.W, 3), device=device)
+                    # Use specified background color (random -> white for export)
+                    I_bg = renderer._get_background_for_render(bg_color, export=True)
                     rendered_frame = renderer.render_from_params(
                         x_t, y_t, r_t, theta_t, v_t, c_t,
-                        I_bg=white_bg,
+                        I_bg=I_bg,
                         sigma=0.0,
                         is_final=True
                     )
