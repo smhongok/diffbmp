@@ -33,7 +33,9 @@ def expand_primitive_wildcards(primitive_file_config):
         
         # Expand glob pattern
         full_pattern = os.path.join(base_dir, item)
-        matches = sorted(glob.glob(full_pattern))
+        # Use recursive=True if pattern contains **
+        recursive = "**" in item
+        matches = sorted(glob.glob(full_pattern, recursive=recursive))
         
         # Convert back to relative paths
         rels = []

@@ -306,9 +306,6 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
     float c_blend,
     torch::Tensor tile_primitive_mapping) {
     
-    // Start timing
-    forward_start_time = std::chrono::high_resolution_clock::now();
-    
     // Check if memory is allocated
     if (!memory_allocated) {
         throw std::runtime_error("TileRasterizer memory not allocated");
@@ -431,6 +428,9 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
     cudaMemset(out_color, 1.f, total_pixels * 3 * sizeof(float));
     cudaMemset(out_alpha, 1.f, total_pixels * sizeof(float));
     
+    // Start timing for kernel execution only (similar to backward pass)
+    forward_start_time = std::chrono::high_resolution_clock::now();
+    
     // Launch CUDA forward kernel
     CudaRasterizeTilesForwardKernel(
         InputTensors(
@@ -462,6 +462,14 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
         prim_config
     );
     
+    // End timing for kernel execution only
+    forward_end_time = std::chrono::high_resolution_clock::now();
+    auto forward_duration = std::chrono::duration_cast<std::chrono::microseconds>(forward_end_time - forward_start_time);
+    double forward_time_ms = forward_duration.count() / 1000.0;
+    
+    total_forward_time += forward_time_ms;
+    forward_iteration_count++;
+    
     // Create CUDA tensors directly (no CPU copy needed)
     auto out_color_tensor = torch::zeros({image_height, image_width, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
     auto out_alpha_tensor = torch::zeros({image_height, image_width}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
@@ -485,14 +493,6 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
 #if DEBUG_CUDA_KERNELS
     printf("TileRasterizer::forward: CUDA tensors created successfully\n");
 #endif
-    
-    // End timing and update statistics
-    forward_end_time = std::chrono::high_resolution_clock::now();
-    auto forward_duration = std::chrono::duration_cast<std::chrono::microseconds>(forward_end_time - forward_start_time);
-    double forward_time_ms = forward_duration.count() / 1000.0;
-    
-    total_forward_time += forward_time_ms;
-    forward_iteration_count++;
     
     return std::make_tuple(out_color_tensor, out_alpha_tensor);
 }
