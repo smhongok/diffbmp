@@ -30,6 +30,16 @@ DIFF_MASK_EXPORT_PATH = "./outputs/vis_class/diff_mask_sequential"  # Directory 
 
 # =============================================================================
 
+ # Import necessary functions for statistics
+from .simple_tile_renderer import vram_used_by_pid
+try:
+    from cuda_tile_rasterizer import print_cuda_timing_stats, print_cuda_timing_stats_fp16
+    CUDA_AVAILABLE = True
+except ImportError:
+    CUDA_AVAILABLE = False
+
+
+
 class SequentialFrameRenderer(SimpleTileRenderer):
     """
     Specialized renderer for subsequent frames in sequential optimization.
@@ -187,7 +197,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 
                 # Create binary mask of changed regions (threshold at 0.1 for robustness)
                 diff_magnitude_threshold = selective_parameter_optimization_config.get('diff_magnitude_threshold', 0.1)
-                print(f"Diff magnitude threshold: {diff_magnitude_threshold}")
+                #print(f"Diff magnitude threshold: {diff_magnitude_threshold}")
                 diff_mask_for_freeze = diff_magnitude > diff_magnitude_threshold  # [H, W]
                 
                 # DIFF MASK DEBUG VISUALIZATION
@@ -202,7 +212,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                     # Convert boolean mask to float and add batch/channel dimensions for save_image
                     diff_mask_float = diff_mask_for_freeze.float().unsqueeze(0)  # [1, H, W]
                     save_image(diff_mask_float, diff_mask_path)
-                    print(f"[Selective Freeze] Saved diff mask to: {diff_mask_path}")
+                    #print(f"[Selective Freeze] Saved diff mask to: {diff_mask_path}")
         
         pbar = tqdm(range(num_iter), desc="Optimizing with warmup scheduling")
         
@@ -289,6 +299,51 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             if (adaptive_config.get('enabled', False) and i in apply_epochs):
                 postfix['adaptive'] = 'applied'
             pbar.set_postfix(postfix)
+        
+        print(f"Tile-based optimization completed. Final loss: {loss.item():.6f}")
+        
+        used = vram_used_by_pid()
+        mb = lambda b: b / (1024**2)
+        gb = lambda b: b / (1024**3)
+        
+        # Print CUDA timing statistics
+        if CUDA_AVAILABLE:
+            print("\n" + "="*60)
+            print("CUDA Performance Statistics:")
+            print("="*60)
+            if self.use_fp16:
+                print_cuda_timing_stats_fp16()
+            else:
+                print_cuda_timing_stats()
+            print("-"*60)
+            print(f"VRAM used: {mb(used):.0f} MiB, {gb(used):.3f} GB")
+            print("="*60)
+        else:
+            # Print PyTorch timing statistics
+            print("\n" + "="*60)
+            print("PyTorch Performance Statistics:")
+            print("="*60)
+            print("Forward Pass:")
+            print(f"  Total time: {self.pytorch_forward_time:.2f} ms")
+            print(f"  Iterations: {self.pytorch_forward_count}")
+            if self.pytorch_forward_count > 0:
+                print(f"  Average time per iteration: {self.pytorch_forward_time / self.pytorch_forward_count:.2f} ms")
+            
+            print("Backward Pass:")
+            print(f"  Total time: {self.pytorch_backward_time:.2f} ms")
+            print(f"  Iterations: {self.pytorch_backward_count}")
+            if self.pytorch_backward_count > 0:
+                print(f"  Average time per iteration: {self.pytorch_backward_time / self.pytorch_backward_count:.2f} ms")
+            
+            print("Combined:")
+            print(f"  Total time: {self.pytorch_forward_time + self.pytorch_backward_time:.2f} ms")
+            print(f"  Total iterations: {self.pytorch_forward_count + self.pytorch_backward_count}")
+            if (self.pytorch_forward_count + self.pytorch_backward_count) > 0:
+                avg_time = (self.pytorch_forward_time + self.pytorch_backward_time) / (self.pytorch_forward_count + self.pytorch_backward_count)
+                print(f"  Average time per iteration: {avg_time:.2f} ms")
+            print("-"*60)
+            print(f"VRAM used: {mb(used):.0f} MiB, {gb(used):.3f} GB")
+            print("="*60)
         
         return x, y, r, v, theta, c
     
@@ -440,7 +495,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             Tuple of adapted parameters (x, y, r, v, theta, c)
         """
 
-        print("DEBUG: apply_adaptive_control")
+        #print("DEBUG: apply_adaptive_control")
 
 
         if adaptive_config is None or not adaptive_config.get('enabled', False):
@@ -462,7 +517,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         # Extract gradient_ranking configuration
         gradient_ranking_config = adaptive_config.get('gradient_ranking', {})
         gradient_ranking_enabled = gradient_ranking_config.get('enabled', True)
-        print(f"[Adaptive Control] Gradient ranking enabled: {gradient_ranking_enabled}")
+        #print(f"[Adaptive Control] Gradient ranking enabled: {gradient_ranking_enabled}")
         
         # Create new leaf tensors - single detach operation
         x_adapted = x.detach().requires_grad_(True)
