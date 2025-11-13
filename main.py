@@ -303,7 +303,54 @@ for img_idx, img_path in enumerate(img_paths):
         print("Gradient Visualization (Post-Optimization)")
         print("="*60)
         
-        primitive_indices = grad_vis_config.get("primitive_indices", [0, 5, 10])
+        # Check if primitive_indices is specified in config
+        config_indices = grad_vis_config.get("primitive_indices", None)
+        
+        if config_indices is not None and len(config_indices) > 0:
+            # Use indices from config
+            primitive_indices = config_indices
+            x_np = x.detach().cpu().numpy()
+            y_np = y.detach().cpu().numpy()
+            r_np = r.detach().cpu().numpy()
+            
+            print(f"\n[Config-specified] Using primitive indices from config: {primitive_indices}")
+            for idx in primitive_indices:
+                if idx < len(x_np):
+                    print(f"  Primitive {idx}: position=({x_np[idx]:.1f}, {y_np[idx]:.1f}), "
+                          f"radius={r_np[idx]:.1f}")
+        else:
+            # Auto-select primitive with largest radius in center region
+            H, W = I_target.shape[:2]
+            center_x, center_y = W / 2, H / 2
+            
+            # Define center region (middle 50% of image)
+            center_region_ratio = 0.5
+            x_min, x_max = center_x - W * center_region_ratio / 2, center_x + W * center_region_ratio / 2
+            y_min, y_max = center_y - H * center_region_ratio / 2, center_y + H * center_region_ratio / 2
+            
+            # Find primitives in center region
+            x_np = x.detach().cpu().numpy()
+            y_np = y.detach().cpu().numpy()
+            r_np = r.detach().cpu().numpy()
+            
+            in_center = (x_np >= x_min) & (x_np <= x_max) & (y_np >= y_min) & (y_np <= y_max)
+            center_indices = np.where(in_center)[0]
+            
+            if len(center_indices) > 0:
+                # Select the one with largest radius
+                center_radii = r_np[center_indices]
+                largest_idx = center_indices[np.argmax(center_radii)]
+                primitive_indices = [int(largest_idx)]
+                print(f"\n[Auto-selected] Primitive {largest_idx}: "
+                      f"position=({x_np[largest_idx]:.1f}, {y_np[largest_idx]:.1f}), "
+                      f"radius={r_np[largest_idx]:.1f}")
+            else:
+                # Fallback: use largest radius overall
+                largest_idx = int(np.argmax(r_np))
+                primitive_indices = [largest_idx]
+                print(f"\n[Auto-selected] No primitives in center, using largest overall: "
+                      f"Primitive {largest_idx}, radius={r_np[largest_idx]:.1f}")
+        
         save_path = grad_vis_config.get("save_path", "./outputs/gradient_vis")
         color_spectrum = grad_vis_config.get("color_spectrum", "full")
         force_pytorch = grad_vis_config.get("force_pytorch", False)

@@ -31,6 +31,7 @@ class GradientVisualizer:
                  background_color: Tuple[float, float, float] = (1.0, 1.0, 1.0),
                  primitive_radius_multiplier: float = 1.5,
                  gradient_threshold: float = 1e-6,
+                 gradient_max: float = 1e-3,
                  center_dot_radius: int = 3,
                  enable_logging: bool = True):
         """
@@ -42,7 +43,8 @@ class GradientVisualizer:
             color_spectrum: Color spectrum type ("full", "warm", "cool", "custom")
             background_color: RGB background color (default: white)
             primitive_radius_multiplier: Multiplier for primitive visualization radius
-            gradient_threshold: Threshold for considering gradients as non-zero
+            gradient_threshold: Minimum gradient magnitude (opacity=0, default: 1e-6)
+            gradient_max: Maximum gradient magnitude (opacity=1, default: 1e-3)
             center_dot_radius: Radius of center dots marking primitive positions
             enable_logging: Whether to enable detailed logging
         """
@@ -52,6 +54,7 @@ class GradientVisualizer:
         self.background_color = background_color
         self.primitive_radius_multiplier = primitive_radius_multiplier
         self.gradient_threshold = gradient_threshold
+        self.gradient_max = gradient_max
         self.center_dot_radius = center_dot_radius
         self.enable_logging = enable_logging
         
@@ -70,7 +73,8 @@ class GradientVisualizer:
         
         if self.enable_logging:
             print(f"[GradientVisualizer] Initialized with target image {self.H}x{self.W}, "
-                  f"color_spectrum='{color_spectrum}', save_path='{save_path}'")
+                  f"color_spectrum='{color_spectrum}', gradient_range=[{gradient_threshold:.0e}, {gradient_max:.0e}], "
+                  f"save_path='{save_path}'")
     
     def _get_color_spectrum_hue_range(self) -> Tuple[float, float]:
         """Get hue range for the selected color spectrum."""
@@ -121,7 +125,7 @@ class GradientVisualizer:
                                    primitive_indices: torch.Tensor,
                                    canvas: np.ndarray,
                                    gradient_mask: np.ndarray,
-                                   center_dot_color: Tuple[float, float, float]) -> None:
+                                   center_dot_color: Tuple[float, float, float]) -> Dict[str, Any]:
         """
         Process gradients for a set of primitives and update the visualization canvas.
         
@@ -133,8 +137,14 @@ class GradientVisualizer:
             canvas: Visualization canvas to update [H, W, 3]
             gradient_mask: Mask tracking processed pixels [H, W]
             center_dot_color: RGB color for center dots
+            
+        Returns:
+            Dictionary with circle info: {center_x, center_y, radius, circle_mask}
         """
         hue_min, hue_max = self._get_color_spectrum_hue_range()
+        
+        # Store circle info for the first primitive (for cropped save)
+        circle_info = None
         
         for idx, prim_idx in enumerate(primitive_indices):
             prim_idx = int(prim_idx.item()) if torch.is_tensor(prim_idx) else int(prim_idx)
@@ -154,7 +164,16 @@ class GradientVisualizer:
             # Find pixels within the circular region
             y_coords, x_coords = np.meshgrid(np.arange(self.H), np.arange(self.W), indexing='ij')
             distances = np.sqrt((x_coords - prim_x)**2 + (y_coords - prim_y)**2)
-            circle_mask = distances <= radius
+            circle_mask = distances <= radius / 1.7
+            
+            # Store circle info for first primitive
+            if idx == 0:
+                circle_info = {
+                    'center_x': prim_x,
+                    'center_y': prim_y,
+                    'radius': radius / 1.7,
+                    'circle_mask': circle_mask.copy()
+                }
             
             # Get pixel coordinates within the circle
             circle_pixels = np.where(circle_mask)
@@ -190,12 +209,12 @@ class GradientVisualizer:
                         grad_y = float(grads[1][prim_idx].item())
                         gradient_directions[pixel_idx] = [grad_x, grad_y]
             
-            # Compute magnitude statistics for adaptive normalization
+            # Compute magnitude statistics for logging
             magnitudes = np.sqrt(gradient_directions[:, 0]**2 + gradient_directions[:, 1]**2)
             non_zero_magnitudes = magnitudes[magnitudes > self.gradient_threshold]
             
             if len(non_zero_magnitudes) > 0:
-                # Adaptive normalization based on this primitive's gradient range
+                # Log statistics for debugging
                 mag_min = np.min(non_zero_magnitudes)
                 mag_max = np.max(non_zero_magnitudes)
                 mag_median = np.median(non_zero_magnitudes)
@@ -204,10 +223,10 @@ class GradientVisualizer:
                     print(f"[GradientVisualizer] Primitive {prim_idx} gradient stats: "
                           f"min={mag_min:.2e}, max={mag_max:.2e}, median={mag_median:.2e}")
                 
-                # Use logarithmic scaling to better visualize small gradients
-                log_min = np.log10(mag_min + self.gradient_threshold)
-                log_max = np.log10(mag_max + self.gradient_threshold)
-                log_range = log_max - log_min if log_max > log_min else 1.0
+                # Fixed logarithmic scaling: gradient_threshold -> 0, gradient_max -> 1
+                log_min = np.log10(self.gradient_threshold)
+                log_max = np.log10(self.gradient_max)
+                log_range = log_max - log_min
                 
                 # Convert gradient directions to colors and apply to canvas
                 for pixel_idx, (i, j) in enumerate(zip(circle_pixels[0], circle_pixels[1])):
@@ -224,26 +243,25 @@ class GradientVisualizer:
                         # Map to selected color spectrum
                         hue = hue_min + normalized_angle * (hue_max - hue_min)
                         
-                        # Enhanced saturation calculation using logarithmic scaling
-                        if log_range > 0:
-                            log_magnitude = np.log10(magnitude + self.gradient_threshold)
-                            normalized_log_mag = (log_magnitude - log_min) / log_range
-                            saturation = np.clip(normalized_log_mag, 0.1, 1.0)
-                        else:
-                            saturation = 0.5
-                        
-                        # Adaptive value (brightness) based on magnitude relative to median
-                        if magnitude >= mag_median:
-                            value = 0.9  # High brightness for above-median gradients
-                        else:
-                            relative_mag = magnitude / mag_median
-                            value = 0.4 + 0.4 * relative_mag
+                        # Full saturation and value for the base color
+                        saturation = 1.0
+                        value = 1.0
                         
                         # Convert HSV to RGB
-                        rgb_color = hsv_to_rgb([hue, saturation, value])
+                        rgb_color = np.array(hsv_to_rgb([hue, saturation, value]))
+                        
+                        # Compute log-scale opacity
+                        # opacity = 0 at gradient_threshold (1e-6), opacity = 1 at gradient_max (1e-3)
+                        log_magnitude = np.log10(magnitude)
+                        normalized_log_mag = (log_magnitude - log_min) / log_range
+                        opacity = np.clip(normalized_log_mag, 0.0, 1.0)
+                        
+                        # Blend with background using opacity
+                        background = np.array(self.background_color)
+                        blended_color = opacity * rgb_color + (1 - opacity) * background
                         
                         # Set color on canvas
-                        canvas[i, j] = rgb_color
+                        canvas[i, j] = blended_color
                         gradient_mask[i, j] = True
                     # else:
                     #     # For zero gradients, use light gray (DISABLED - gray circle removed)
@@ -252,6 +270,8 @@ class GradientVisualizer:
             else:
                 if self.enable_logging:
                     print(f"[GradientVisualizer] Primitive {prim_idx} has no significant gradients")
+        
+        return circle_info
         
         # Add primitive centers as dots (DISABLED - center dots removed)
         # for prim_idx in primitive_indices:
@@ -267,6 +287,70 @@ class GradientVisualizer:
         #                     nx, ny = prim_x + dx, prim_y + dy
         #                     if 0 <= nx < self.W and 0 <= ny < self.H:
         #                         canvas[ny, nx] = center_dot_color
+    
+    def _save_circular_crop(self,
+                          canvas: np.ndarray,
+                          circle_info: Dict[str, Any],
+                          suffix: str) -> str:
+        """
+        Save only the circular region that was analyzed.
+        
+        Args:
+            canvas: Full visualization canvas [H, W, 3]
+            circle_info: Dictionary with center_x, center_y, radius, circle_mask
+            suffix: Filename suffix
+            
+        Returns:
+            Path where the cropped visualization was saved
+        """
+        if circle_info is None:
+            return None
+            
+        center_x = circle_info['center_x']
+        center_y = circle_info['center_y']
+        radius = circle_info['radius']
+        circle_mask = circle_info['circle_mask']
+        
+        # Calculate bounding box for the circle
+        margin = 10  # Add small margin
+        x_min = max(0, int(center_x - radius - margin))
+        x_max = min(self.W, int(center_x + radius + margin))
+        y_min = max(0, int(center_y - radius - margin))
+        y_max = min(self.H, int(center_y + radius + margin))
+        
+        # Crop the canvas
+        cropped_canvas = canvas[y_min:y_max, x_min:x_max].copy()
+        cropped_mask = circle_mask[y_min:y_max, x_min:x_max]
+        
+        # Make pixels outside the circle transparent (or background color)
+        # Create an alpha channel version
+        h_crop, w_crop = cropped_canvas.shape[:2]
+        canvas_with_alpha = np.ones((h_crop, w_crop, 4), dtype=np.float32)
+        canvas_with_alpha[:, :, :3] = cropped_canvas
+        canvas_with_alpha[:, :, 3] = cropped_mask.astype(np.float32)  # Alpha channel
+        
+        # Create filename
+        save_dir = os.path.dirname(self.save_path)
+        filename = os.path.basename(self.save_path)
+        name, ext = os.path.splitext(filename)
+        if not ext:
+            ext = ".png"
+        
+        output_path = os.path.join(save_dir, f"{name}_{suffix}_crop{ext}")
+        
+        # Save directly without resampling to preserve exact pixel data
+        # Convert float [0, 1] to uint8 [0, 255]
+        canvas_uint8 = (canvas_with_alpha * 255).astype(np.uint8)
+        
+        # Save using PIL to avoid any resampling
+        from PIL import Image
+        img = Image.fromarray(canvas_uint8, mode='RGBA')
+        img.save(output_path, format='PNG')
+        
+        if self.enable_logging:
+            print(f"[GradientVisualizer] Saved cropped visualization to {output_path}")
+        
+        return output_path
     
     def _save_visualization(self, 
                           canvas: np.ndarray, 
@@ -365,18 +449,24 @@ class GradientVisualizer:
         canvas = np.ones((self.H, self.W, 3), dtype=np.float32) * np.array(self.background_color)
         gradient_mask = np.zeros((self.H, self.W), dtype=bool)
         
-        # Process primitive gradients
-        self._process_primitive_gradients(
+        # Process primitive gradients and get circle info
+        circle_info = self._process_primitive_gradients(
             renderer, x, y, r, v, theta, c, pixel_losses, primitive_indices,
             canvas, gradient_mask, center_dot_color)
         
         # Convert to tensor
         vis_tensor = torch.from_numpy(canvas).to(rendered.device)
         
-        # Save visualization
+        # Save full visualization
         saved_path = self._save_visualization(
             canvas, primitive_indices, suffix, title_prefix,
             f"Dots = primitive centers")
+        
+        # Save cropped circular region
+        if circle_info is not None:
+            cropped_path = self._save_circular_crop(canvas, circle_info, suffix)
+            if self.enable_logging and cropped_path:
+                print(f"[GradientVisualizer] Saved cropped version: {cropped_path}")
         
         if self.enable_logging:
             print(f"[GradientVisualizer] Completed visualization for {len(primitive_indices)} primitives")

@@ -20,8 +20,8 @@
         "detail_first": false
     },
     "optimization": {
-        "use_fp16": true,
-        "num_iterations": 100,
+        "use_fp16": false,
+        "num_iterations": 60,
         "learning_rate": {
             "default": 0.1
         },
@@ -40,5 +40,14 @@
         "output_folder": "outputs/",
         "compute_psnr": true,
         "export_psd": false
+    },
+    "gradient_visualization": {
+        "enabled": true,
+        "primitive_indices": [1669],
+        "save_path": "./outputs/gradient_vis",
+        "color_spectrum": "full",
+        "force_pytorch": true,
+        "primitive_radius_multiplier": 0.1,
+        "enable_logging": true
     }
 } 

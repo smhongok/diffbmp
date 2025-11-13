@@ -1510,6 +1510,7 @@ class SimpleTileRenderer(VectorRenderer):
                 background_color=(1.0, 1.0, 1.0),
                 primitive_radius_multiplier=2.,
                 gradient_threshold=1e-6,
+                gradient_max=1e-3,
                 center_dot_radius=0,
                 enable_logging=enable_logging
             )
