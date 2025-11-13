@@ -240,20 +240,15 @@ class SimpleTileRenderer(VectorRenderer):
         total_tiles = self.tiles_h * self.tiles_w
         use_parallel = total_tiles > 4 and torch.cuda.is_available()  # Parallel for larger tile counts
         
-        # Start timing for forward pass (actual computation only)
-        start_time = time.time()
+        self._forward_compute_time_accum = 0.0
         
         if use_parallel:
             output = self._process_tiles_parallel(x, y, r, theta, v, c, sigma, I_bg, global_bmp_sel, output, lr_conf, is_final=is_final, return_alpha=return_alpha)
         else:
             output = self._process_tiles_sequential(x, y, r, theta, v, c, sigma, I_bg, global_bmp_sel, output, lr_conf, is_final=is_final)
         
-        # End timing for forward pass
-        end_time = time.time()
-        elapsed_time_ms = (end_time - start_time) * 1000.0
-        
-        # Update PyTorch forward timing statistics
-        self.pytorch_forward_time += elapsed_time_ms
+        # Update PyTorch forward timing statistics (core compute only)
+        self.pytorch_forward_time += self._forward_compute_time_accum
         self.pytorch_forward_count += 1
         
         if return_alpha:
@@ -1182,6 +1177,7 @@ class SimpleTileRenderer(VectorRenderer):
                 
             except Exception as e:
                 # Fallback to PyTorch
+                _start_time = time.time()
                 tile_masks = self._generate_tile_masks(
                     tile_x, tile_y, tile_r, tile_theta, tile_X, tile_Y, sigma,
                     global_primitive_indices=primitive_indices,
@@ -1205,8 +1201,11 @@ class SimpleTileRenderer(VectorRenderer):
                 
                 # Composite using parent's function
                 comp_m, comp_a = self._transmit_over(m, a)
+                _end_time = time.time()
+                self._forward_compute_time_accum += (_end_time - _start_time) * 1000.0
         else:
             # Generate masks for selected primitives in this tile
+            _start_time = time.time()
             tile_masks = self._generate_tile_masks(
                 tile_x, tile_y, tile_r, tile_theta, tile_X, tile_Y, sigma,
                 global_primitive_indices=primitive_indices,
@@ -1235,6 +1234,8 @@ class SimpleTileRenderer(VectorRenderer):
             
             # Composite using parent's function
             comp_m, comp_a = self._transmit_over(m, a)
+            _end_time = time.time()
+            self._forward_compute_time_accum += (_end_time - _start_time) * 1000.0
         
         # Handle background
         if I_bg is None:
