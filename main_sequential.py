@@ -8,6 +8,7 @@ import warnings
 import torch
 import torch.nn.functional as F
 import numpy as np
+from torch.amp import autocast
 import matplotlib as mpl
 mpl.use("Agg")  
 import matplotlib.pyplot as plt
@@ -411,7 +412,12 @@ for frame_idx, I_target_frame in enumerate(I_targets):
     # Render final frame for export
     with torch.no_grad():
         white_bg = torch.ones((sequential_renderer.H, sequential_renderer.W, 3), device=sequential_renderer.device)
-        frame_rendered = sequential_renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0, is_final=True)
+        # Use autocast for FP16 rendering to prevent NaN
+        if use_fp16:
+            with autocast('cuda'):
+                frame_rendered = sequential_renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0, is_final=True)
+        else:
+            frame_rendered = sequential_renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0, is_final=True)
     
     # Store results for this frame
     current_params = {
@@ -468,10 +474,14 @@ for frame_idx, frame_result in enumerate(frame_results):
     # Still render final PNG for preview/compatibility using tile-based rendering
     with torch.no_grad():
         white_bg = torch.ones((sequential_renderer.H, sequential_renderer.W, 3), device=sequential_renderer.device)
-        #frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, I_bg=white_bg, sigma=0.0, is_final=True)
-        frame_rendered, frame_rendered_alpha = renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
-    # Save rendered frame directly
-    frame_rendered_np = frame_rendered.detach().cpu().numpy()
+        # Use autocast for FP16 rendering to prevent NaN
+        if use_fp16:
+            with autocast('cuda'):
+                frame_rendered, frame_rendered_alpha = renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
+        else:
+            frame_rendered, frame_rendered_alpha = renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
+    # Save rendered frame directly (convert to FP32 for safe numpy conversion)
+    frame_rendered_np = frame_rendered.detach().float().cpu().numpy()
     frame_rendered_np = (frame_rendered_np * 255).astype(np.uint8)
     frame_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}.png')
     Image.fromarray(frame_rendered_np).save(frame_path)
@@ -481,8 +491,8 @@ for frame_idx, frame_result in enumerate(frame_results):
         frame_spatial_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}_spatial.png')
         save_spatial_constraints(frame_rendered, frame_rendered_alpha, frame_spatial_path)
     
-    # Store rendered frame for GIF/MP4 export
-    frame_np = rendered_frame.cpu().numpy()
+    # Store rendered frame for GIF/MP4 export (convert to FP32 for safe numpy conversion)
+    frame_np = rendered_frame.float().cpu().numpy()
     frame_np = (frame_np * 255).astype(np.uint8)
     exported_frames.append(frame_np)
     

@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
+from torch.amp import autocast, GradScaler
 from .simple_tile_renderer import SimpleTileRenderer
 
 # =============================================================================
@@ -178,6 +179,9 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         # Use exponential decay scheduler
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=lr_config['decay_rate'])
         
+        # Mixed-precision scaler (only used if use_fp16 is True)
+        scaler = GradScaler('cuda') if self.use_fp16 else None
+        
         num_iter = opt_conf.get("num_iterations", opt_conf.get("num_iter", 50))
         adaptive_config = opt_conf.get('adaptive_control', {})
         # Read explicit epochs at which to apply adaptive control
@@ -265,33 +269,68 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             
             optimizer.zero_grad()
             
-            # Generate rendered image using tile-based rendering
+            # Generate rendered image using tile-based rendering with FP16 support
             I_bg = torch.ones((self.H, self.W, 3), device=self.device)
-            rendered = self.render_from_params(x, y, r, theta, v, c, I_bg=I_bg, sigma=0.0)
             
-            # Compute loss with warmup scheduling
-            loss_config = {
-                'reconstruction_weight': 1.0,
-                'warmup_steps': opt_conf.get('warmup_steps', 0)
-            }
-            loss = self.compute_loss_with_warmup(
-                rendered, target, x, y, theta, r, v, c, 
-                loss_config, i, num_iter
-            )
-            
-            loss.backward()
-
-            if selective_parameter_optimization_config.get("enabled", False):
+            if self.use_fp16:
+                # FP16 path with autocast and GradScaler
+                with autocast('cuda'):
+                    rendered = self.render_from_params(x, y, r, theta, v, c, I_bg=I_bg, sigma=0.0)
+                    
+                    # Compute loss with warmup scheduling
+                    loss_config = {
+                        'reconstruction_weight': 1.0,
+                        'warmup_steps': opt_conf.get('warmup_steps', 0)
+                    }
+                    loss = self.compute_loss_with_warmup(
+                        rendered, target, x, y, theta, r, v, c, 
+                        loss_config, i, num_iter
+                    )
                 
-                with torch.no_grad():
-                    x.grad[freeze_mask] = 0
-                    y.grad[freeze_mask] = 0
-                    r.grad[freeze_mask] = 0
-                    v.grad[freeze_mask] = 0
-                    theta.grad[freeze_mask] = 0
-                    c.grad[freeze_mask] = 0
+                # Scale the loss and call backward
+                scaler.scale(loss).backward()
+                
+                # Zero out gradients for frozen primitives if needed
+                if selective_parameter_optimization_config.get("enabled", False):
+                    with torch.no_grad():
+                        x.grad[freeze_mask] = 0
+                        y.grad[freeze_mask] = 0
+                        r.grad[freeze_mask] = 0
+                        v.grad[freeze_mask] = 0
+                        theta.grad[freeze_mask] = 0
+                        c.grad[freeze_mask] = 0
+                
+                # Update optimizer with gradient scaling
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                # FP32 path (original code)
+                rendered = self.render_from_params(x, y, r, theta, v, c, I_bg=I_bg, sigma=0.0)
+                
+                # Compute loss with warmup scheduling
+                loss_config = {
+                    'reconstruction_weight': 1.0,
+                    'warmup_steps': opt_conf.get('warmup_steps', 0)
+                }
+                loss = self.compute_loss_with_warmup(
+                    rendered, target, x, y, theta, r, v, c, 
+                    loss_config, i, num_iter
+                )
+                
+                loss.backward()
+                
+                # Zero out gradients for frozen primitives if needed
+                if selective_parameter_optimization_config.get("enabled", False):
+                    with torch.no_grad():
+                        x.grad[freeze_mask] = 0
+                        y.grad[freeze_mask] = 0
+                        r.grad[freeze_mask] = 0
+                        v.grad[freeze_mask] = 0
+                        theta.grad[freeze_mask] = 0
+                        c.grad[freeze_mask] = 0
+                
+                optimizer.step()
             
-            optimizer.step()
             scheduler.step()
             
             # Update progress bar
