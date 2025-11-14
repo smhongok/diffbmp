@@ -465,6 +465,32 @@ class PSDExporter:
         
         return sampled_colors  # (H, W, 3)
     
+    def add_background_layer(self, bg_color: tuple):
+        """
+        Add a solid background layer to the PSD.
+        
+        Args:
+            bg_color: (R, G, B) tuple with values in [0, 1] range
+        """
+        # Convert [0, 1] to [0, 255]
+        r = int(bg_color[0] * 255)
+        g = int(bg_color[1] * 255)
+        b = int(bg_color[2] * 255)
+        
+        # Create solid color background
+        bg_array = np.full((self.export_height, self.export_width, 4), 255, dtype=np.uint8)
+        bg_array[:, :, 0] = r
+        bg_array[:, :, 1] = g
+        bg_array[:, :, 2] = b
+        
+        # Create PIL image and layer
+        bg_image = Image.fromarray(bg_array, 'RGBA')
+        bg_layer = PixelLayer.frompil(bg_image, self.psd, "Background")
+        
+        # Insert at the bottom (index 0)
+        self.psd.insert(0, bg_layer)
+        print(f"🎨 Added background layer with color RGB({r}, {g}, {b})")
+    
     def export_psd(self, filepath: str):
         """Export as PSD file."""
         # Ensure .psd extension
