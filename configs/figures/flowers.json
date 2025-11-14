@@ -33,7 +33,7 @@
         "debug_mode": true
     },
     "optimization": {
-        "use_fp16": false,
+        "use_fp16": true,
         "num_iterations": 300,
         "learning_rate": {
             "default": 0.1,
