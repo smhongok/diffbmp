@@ -21,11 +21,11 @@
             2000
         ],
         "radii_min": 2,
-        "radii_max": 30,
+        "radii_max": 64,
         "debug_mode": true
     },
     "optimization": {
-        "use_fp16": false,
+        "use_fp16": true,
         "num_iterations": 300,
         "learning_rate": {
             "default": 0.1,
