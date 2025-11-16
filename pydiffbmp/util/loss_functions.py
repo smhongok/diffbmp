@@ -1,5 +1,5 @@
 """
-Flexible loss function registry for image-as-brush rendering optimization.
+Flexible loss function registry for diffbmp rendering optimization.
 Supports various loss types and weighted combinations.
 """
 

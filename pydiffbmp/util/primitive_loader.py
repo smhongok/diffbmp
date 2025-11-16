@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from typing import Union, List, Tuple
 import base64
 import io
-from imbrush.util.constants import get_resampling_method
+from pydiffbmp.util.constants import get_resampling_method
 
 class PrimitiveLoader:
     """

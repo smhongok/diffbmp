@@ -1,15 +1,15 @@
 import torch
 import torch.nn.functional as F
 from typing import Any, Tuple, List, Optional
-from imbrush.core.renderer.vector_renderer import VectorRenderer
+from pydiffbmp.core.renderer.vector_renderer import VectorRenderer
 import time
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 import cv2
-from imbrush.util.loss_functions import LossComposer
+from pydiffbmp.util.loss_functions import LossComposer
 import pynvml as nvml
-from imbrush.util.constants import MAX_PRIMS_PER_PIXEL
+from pydiffbmp.util.constants import MAX_PRIMS_PER_PIXEL
 
 DEBUG_MODE = False
 DEBUG_MODE_DETAIL = False
@@ -1267,7 +1267,7 @@ class SimpleTileRenderer(VectorRenderer):
         """
         from contextlib import nullcontext
         from torch.amp import autocast
-        from imbrush.util.utils import gaussian_blur
+        from pydiffbmp.util.utils import gaussian_blur
         
         num_primitives = x.shape[0]
         tile_h, tile_w = tile_X.shape[1], tile_X.shape[2]

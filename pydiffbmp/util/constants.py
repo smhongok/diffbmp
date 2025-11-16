@@ -1,5 +1,5 @@
 """
-Global constants for image-as-brush project.
+Global constants for diffbmp project.
 These values are fixed across all experiments and should not be changed per-config.
 """
 
