@@ -1,5 +1,5 @@
 """
-imbrush (image-as-brush): 2D Splatting with Arbitrary Primitives
+diffbmp: Differentiable Rendering with Bitmap Primitives
 
 A differentiable rendering framework for image synthesis using arbitrary primitives
 (SVG shapes, text glyphs, raster images) as "brushes" in a 2D splatting pipeline.
@@ -12,8 +12,8 @@ Key Features:
 - Structure-aware initialization
 
 Example:
-    >>> import imbrush
-    >>> from imbrush import SimpleTileRenderer, PrimitiveLoader
+    >>> import pydiffbmp
+    >>> from pydiffbmp import SimpleTileRenderer, PrimitiveLoader
     >>> 
     >>> # Load primitive
     >>> loader = PrimitiveLoader("circle.svg", output_width=256, device='cuda')
@@ -31,27 +31,27 @@ Example:
 """
 
 __version__ = '0.1.0'
-__author__ = 'ICL_SMH Team'
+__author__ = 'Anonymous'
 
 # Core renderer exports
-from imbrush.core.renderer.simple_tile_renderer import SimpleTileRenderer
-from imbrush.core.renderer.vector_renderer import VectorRenderer
-from imbrush.core.renderer.sequential_renderer import SequentialFrameRenderer
+from pydiffbmp.core.renderer.simple_tile_renderer import SimpleTileRenderer
+from pydiffbmp.core.renderer.vector_renderer import VectorRenderer
+from pydiffbmp.core.renderer.sequential_renderer import SequentialFrameRenderer
 
 # Initializer exports
-from imbrush.core.initializer.svgsplat_initializater import StructureAwareInitializer
-from imbrush.core.initializer.random_initializater import RandomInitializer
-from imbrush.core.initializer.base_initializer import BaseInitializer
+from pydiffbmp.core.initializer.svgsplat_initializater import StructureAwareInitializer
+from pydiffbmp.core.initializer.random_initializater import RandomInitializer
+from pydiffbmp.core.initializer.base_initializer import BaseInitializer
 
 # Utility exports
-from imbrush.util.primitive_loader import PrimitiveLoader
-from imbrush.util.svg_loader import SVGLoader
-from imbrush.util.psd_exporter import PSDExporter
-from imbrush.util.pdf_exporter import PDFExporter
-from imbrush.util.loss_functions import LossComposer
+from pydiffbmp.util.primitive_loader import PrimitiveLoader
+from pydiffbmp.util.svg_loader import SVGLoader
+from pydiffbmp.util.psd_exporter import PSDExporter
+from pydiffbmp.util.pdf_exporter import PDFExporter
+from pydiffbmp.util.loss_functions import LossComposer
 
 # Preprocessing
-from imbrush.core.preprocessing import Preprocessor
+from pydiffbmp.core.preprocessing import Preprocessor
 
 __all__ = [
     # Version
@@ -83,7 +83,7 @@ __all__ = [
 
 
 def get_version():
-    """Return the current version of image-as-brush."""
+    """Return the current version of diffbmp."""
     return __version__
 
 
@@ -106,7 +106,7 @@ def _print_welcome():
     import sys
     if 'pytest' not in sys.modules:  # Don't print during tests
         cuda_status = "✓ Available" if check_cuda_available() else "✗ Not compiled"
-        print(f"image-as-brush v{__version__} loaded")
+        print(f"diffbmp v{__version__} loaded")
         print(f"CUDA extensions: {cuda_status}")
         if not check_cuda_available():
             print("  → Build CUDA extensions: cd cuda_tile_rasterizer && python setup.py build_ext --inplace")

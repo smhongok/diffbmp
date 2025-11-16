@@ -1,7 +1,7 @@
 import numpy as np
 from PIL import Image, ImageOps, ImageFilter
-from imbrush.util.target_masks import binary_mask
-from imbrush.util.constants import get_resampling_method
+from pydiffbmp.util.target_masks import binary_mask
+from pydiffbmp.util.constants import get_resampling_method
 import cv2
 import os
 class Preprocessor:

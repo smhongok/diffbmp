@@ -1,8 +1,8 @@
-# Circle Art
+# DiffBMP
 
 ## Overview
 
-This project provides tools and methodologies for creating and evaluating svg-based vector art from images. It includes initialization techniques, rendering methods, and evaluation scripts aimed at comparing the effectiveness and quality of various svgsplat art generation algorithms.
+DiffBMP provides tools and methodologies for fast differentiable painting with any image primitives. It includes initialization techniques, rendering methods, and evaluation scripts aimed at comparing the effectiveness and quality of various vector art generation algorithms.
 
 
 ## Requirements

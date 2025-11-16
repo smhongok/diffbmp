@@ -14,7 +14,7 @@ import math,random
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
 import cv2
-from imbrush.util.constants import get_resampling_method
+from pydiffbmp.util.constants import get_resampling_method
 
 base_folder = Path(__file__).resolve().parent.parent.parent
 font_folder = os.path.join(base_folder, "assets", "font") # .ttf or .otf path
@@ -1641,21 +1641,5 @@ if __name__ == "__main__":
         output_width=128,
         device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     )
-    
-    # classify_svg = svg_loader.classify_svg()
-    # print(f"SVG is classified as: {classify_svg}")
-    
-    # img_converter = ImageToSVG()
-    # img_path = "/data/jameskim/repos/image-as-brush/assets/image/elec_stamp.png"
-    # #traced_svg = img_converter.trace_image(img_path, color_mode="color", quantize=True, simplify=False, num_colors=8)
-    
-    # #outline_svg = img_converter.extract_all_outlines(img_path, threshold=100, min_area_ratio=0.000001)
-    
-    # filled_outline_svg = img_converter.extract_filled_outlines(img_path, threshold=100, min_area_ratio=0.000001)
-    # out_svg = img_converter.create_logo_svg(img_path, simplify=False)
-    # img_converter.extract_logo_paths(img_path)
-    # img_converter.vectorize_image(img_path)
-    
-    #smooth_svg = img_converter.extract_smooth_outlines(img_path, threshold=100, min_area_ratio=0.000001)
-    
+
     
