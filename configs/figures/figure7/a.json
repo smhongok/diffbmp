@@ -1,7 +1,6 @@
 {
     "_comment" : {
-        "./imbrush/util/loss_functions.py" : "remove mask constraint from loss mse function of function.py",
-        "./imbrush/util/simple_tile_renderer.py" : "add white background bleding when optimize"
+        "./imbrush/util/loss_functions.py" : "remove mask constraint from loss mse function of function.py. This is for matching default mode"
     },
     "preprocessing": {
         "final_width": [
@@ -37,11 +36,7 @@
             "gain_v":5.0
         },
         "loss_config": {
-            "type": "combined",
-            "components": [
-                {"name": "mse", "weight": 1.0},
-                {"name": "alpha", "weight": 0.3}
-            ]
+            "type": "mse"
         },
         "pruning":{
             "do_pruning" : false,
@@ -52,7 +47,9 @@
         },
         "do_decay": true,
         "do_gaussian_blur": true,
-        "bg_color":"black"
+        "bg_color":"white",
+        "record_bg_path" : "images/utils/checkerboard_512x768.png",
+        "record_optimization" : true
     },
     "postprocessing": {
         "output_folder": "outputs/",

@@ -1,7 +1,7 @@
 {
     "preprocessing": {
         "final_width": [
-            512
+            312
         ],
         "img_path": [
             "images/BSDS500/101087.jpg"
@@ -42,7 +42,9 @@
             "prune_threshold" : 0.3
         },
         "do_decay": true,
-        "do_gaussian_blur": true
+        "do_gaussian_blur": true,
+        "record_bg_path" : "images/utils/checkerboard_321x481.png",
+        "record_optimization" : true
     },
     "postprocessing": {
         "output_folder": "outputs/",

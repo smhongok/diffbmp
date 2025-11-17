@@ -26,7 +26,7 @@
         "debug_mode": true
     },
     "optimization": {
-        "use_fp16": true,
+        "use_fp16": false,
         "num_iterations": 300,
         "learning_rate": {
             "default": 0.1,
@@ -48,7 +48,9 @@
         },
         "do_decay": true,
         "do_gaussian_blur": true,
-        "bg_color":"black"
+        "bg_color":"black",
+        "record_bg_path" : "images/utils/checkerboard_512x768.png",
+        "record_optimization" : true
     },
     "postprocessing": {
         "output_folder": "outputs/",
