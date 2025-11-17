@@ -287,6 +287,11 @@ for img_idx, img_path in enumerate(img_paths):
 
     bmp_image_tensor = svg_loader.load_alpha_bitmap()
     
+    # Set MP4 recording flag in opt_conf based on postprocessing config
+    if config['postprocessing'].get('export_mp4', False):
+        opt_conf['record_optimization'] = True
+        print("🎬 MP4 recording enabled - will record optimization process")
+    
     # Optimize parameters
     x, y, r, v, theta, c = renderer.optimize_parameters(
         x, y, r, v, theta, c,
@@ -395,11 +400,6 @@ for img_idx, img_path in enumerate(img_paths):
             # Export PSD file
             exporter.export_psd(psd_path)
     
-
-        if config['postprocessing'].get('export_mp4', False):
-            video_path = os.path.join(output_dir, f'output_{timestamp}{output_suffix}.mp4')
-            # Warning: this takes a long time. TODO: fix this
-            renderer.render_export_mp4(x, y, r, theta, v, c, video_path=video_path, bg_color=bg_color)
 
     # Compute metrics if requested
     if config['postprocessing'].get('compute_psnr', False):

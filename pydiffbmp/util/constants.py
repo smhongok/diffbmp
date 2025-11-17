@@ -193,6 +193,8 @@ def apply_constants_to_config(config: dict) -> dict:
         config["optimization"]["learning_rate"].setdefault("gain_theta", LR_GAIN_THETA)
         config["optimization"]["learning_rate"].setdefault("gain_c", LR_GAIN_C)
 
+        config["optimization"].setdefault("mp4_fps", 30)
+
     # Apply constants as defaults for postprocessing
     if "postprocessing" in config:
         config["postprocessing"].setdefault("psd_scale_factor", PSD_SCALE_FACTOR)

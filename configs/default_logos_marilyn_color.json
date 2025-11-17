@@ -23,7 +23,7 @@
     "debug_mode": false
   },
   "optimization": {
-    "use_fp16": true,
+    "use_fp16": false,
     "num_iterations": 100,
     "learning_rate": {
       "default": 0.1
@@ -44,7 +44,8 @@
   "postprocessing": {
     "output_folder": "outputs/",
     "compute_psnr": true,
-    "export_psd": false,
-    "psd_scale_factor": 2.0
+    "export_psd": true,
+    "export_mp4": true,
+    "psd_scale_factor": 4.0
   }
 }
