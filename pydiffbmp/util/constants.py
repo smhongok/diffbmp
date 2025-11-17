@@ -1,5 +1,5 @@
 """
-Global constants for image-as-brush project.
+Global constants for diffbmp project.
 These values are fixed across all experiments and should not be changed per-config.
 """
 
@@ -192,6 +192,8 @@ def apply_constants_to_config(config: dict) -> dict:
         config["optimization"]["learning_rate"].setdefault("gain_v", LR_GAIN_V)
         config["optimization"]["learning_rate"].setdefault("gain_theta", LR_GAIN_THETA)
         config["optimization"]["learning_rate"].setdefault("gain_c", LR_GAIN_C)
+
+        config["optimization"].setdefault("mp4_fps", 30)
 
     # Apply constants as defaults for postprocessing
     if "postprocessing" in config:

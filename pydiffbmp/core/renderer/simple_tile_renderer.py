@@ -1,15 +1,15 @@
 import torch
 import torch.nn.functional as F
 from typing import Any, Tuple, List, Optional
-from imbrush.core.renderer.vector_renderer import VectorRenderer
+from pydiffbmp.core.renderer.vector_renderer import VectorRenderer
 import time
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 import cv2
-from imbrush.util.loss_functions import LossComposer
+from pydiffbmp.util.loss_functions import LossComposer
 import pynvml as nvml
-from imbrush.util.constants import MAX_PRIMS_PER_PIXEL
+from pydiffbmp.util.constants import MAX_PRIMS_PER_PIXEL
 
 DEBUG_MODE = False
 DEBUG_MODE_DETAIL = False
@@ -810,6 +810,19 @@ class SimpleTileRenderer(VectorRenderer):
         # Adjust lr_conf['gain_v'] to include scaling as in vector_renderer.py
         lr_conf['gain_v'] = lr_conf.get('gain_v', 1.0) * (1000.0 / x.numel())
         
+        # Initialize MP4 recording if requested
+        record_mp4 = opt_conf.get("record_optimization", False)
+        if record_mp4:
+            optimization_history = {
+                'x': [],
+                'y': [],
+                'r': [],
+                'v': [],
+                'theta': [],
+                'c': []
+            }
+            print("🎬 Recording optimization process for MP4 export...")
+        
         # Optimization loop
         for iteration in tqdm(range(num_iterations), desc="Optimizing"):
             I_bg = self._get_background_for_render(opt_conf.get("bg_color", "white"))
@@ -941,6 +954,15 @@ class SimpleTileRenderer(VectorRenderer):
             
             self._clamp_params_inplace(x, y, r)
 
+            # Record parameters for MP4 if requested
+            if record_mp4:
+                optimization_history['x'].append(x.detach().clone())
+                optimization_history['y'].append(y.detach().clone())
+                optimization_history['r'].append(r.detach().clone())
+                optimization_history['v'].append(v.detach().clone())
+                optimization_history['theta'].append(theta.detach().clone())
+                optimization_history['c'].append(c.detach().clone())
+
             if DEBUG_MODE:
                 print(f"    📊 Input data ranges: iteration {iteration}")
                 print(f"      x: [{x.min():.4f}, {x.max():.4f}]")
@@ -963,7 +985,7 @@ class SimpleTileRenderer(VectorRenderer):
                 # Format loss components string
                 components_str = ", ".join([f"{name}={val:.6f}" for name, val in loss_components.items()])
                 print(f"Iteration {iteration}: Total={loss.item():.6f} ({components_str})")
-                
+                  
             # Save intermediate images
             if iteration in save_image_intervals and DEBUG_MODE_SAVE:
                 img_path = os.path.join(self.output_path, f"tile_iter_{iteration:04d}_{timestamp}.png")
@@ -974,6 +996,15 @@ class SimpleTileRenderer(VectorRenderer):
                 self.save_image_tensor(rendered_to_save, img_path)
         
         print(f"Tile-based optimization completed. Final loss: {loss.item():.6f}")
+        
+        # Export MP4 if recording was enabled
+        if record_mp4:
+            self._export_optimization_mp4(
+                optimization_history,
+                I_bg=self._get_background_for_render(opt_conf.get("bg_color", "white"), export=True),
+                timestamp=timestamp,
+                opt_conf=opt_conf
+            )
         
         used = vram_used_by_pid()
         mb = lambda b: b / (1024**2)
@@ -1267,7 +1298,7 @@ class SimpleTileRenderer(VectorRenderer):
         """
         from contextlib import nullcontext
         from torch.amp import autocast
-        from imbrush.util.utils import gaussian_blur
+        from pydiffbmp.util.utils import gaussian_blur
         
         num_primitives = x.shape[0]
         tile_h, tile_w = tile_X.shape[1], tile_X.shape[2]
@@ -1337,33 +1368,33 @@ class SimpleTileRenderer(VectorRenderer):
             return sampled.squeeze(1)  # (num_primitives, tile_h, tile_w)
 
 
-    def render_export_mp4(self,
-                          x: torch.Tensor,
-                          y: torch.Tensor,
-                          r: torch.Tensor,
-                          theta: torch.Tensor,
-                          v: torch.Tensor,
-                          c: torch.Tensor,
-                          video_path: str,
-                          fps: int = 60,
-                          bg_color: str = "white") -> None:
+    def _export_optimization_mp4(self, 
+                                 optimization_history: dict,
+                                 I_bg: torch.Tensor,
+                                 timestamp: str,
+                                 opt_conf: dict) -> None:
         """
-        Export MP4 video showing progressive primitive addition.
+        Export MP4 video showing the optimization process.
         
         Args:
-            x, y, r, theta, v, c: Primitive parameters
-            video_path: Output video file path
-            fps: Frames per second
-            bg_color: Background color (default: "white")
+            optimization_history: Dictionary containing lists of x, y, r, v, theta, c for each iteration
+            I_bg: Background image tensor
+            timestamp: Timestamp string for filename
+            opt_conf: Optimization configuration dictionary
+            post_conf: Postprocessing configuration dictionary
         """
         import cv2
-        import tempfile
-        import subprocess
         import os
-        import numpy as np
         
-        N = len(x)
-        print(f"Generating MP4 with {N} primitives at {self.W}x{self.H}...")
+        num_frames = len(optimization_history['x'])
+        fps = opt_conf.get("mp4_fps")
+        
+        print(f"\n{'='*80}")
+        print(f"🎬 Exporting optimization MP4: {num_frames} frames at {fps} FPS")
+        print(f"{'='*80}")
+        
+        # Create output path
+        video_path = os.path.join(self.output_path, f'output_{timestamp}.mp4')
         
         # Direct MP4 output with H.264 codec
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -1373,31 +1404,43 @@ class SimpleTileRenderer(VectorRenderer):
             raise RuntimeError(f"Could not open video writer for {video_path}")
         
         try:
-            # Create background frame with specified color (random -> white for export)
-            I_bg = self._get_background_for_render(bg_color, export=True)
-            
-            # Write initial background frame
-            self._write_frame(writer, I_bg)
-            
-            # Process primitives incrementally
-            for frame_idx in range(N):
-                if frame_idx % max(1, N // 20) == 0:
-                    print(f"Processing frame {frame_idx+1}/{N}...")
+            # Render each frame from recorded parameters
+            last_frame = None
+            for frame_idx in range(num_frames):
+                if frame_idx % max(1, num_frames // 20) == 0:
+                    print(f"Rendering frame {frame_idx+1}/{num_frames}...")
                 
-                # Render frame with primitives 0 to frame_idx
-                frame = self.render_from_params(
-                    x[:frame_idx+1], y[:frame_idx+1], r[:frame_idx+1],
-                    theta[:frame_idx+1], v[:frame_idx+1], c[:frame_idx+1],
-                    sigma=0.0, I_bg=I_bg
-                )
+                # Get parameters for this iteration
+                x = optimization_history['x'][frame_idx]
+                y = optimization_history['y'][frame_idx]
+                r = optimization_history['r'][frame_idx]
+                v = optimization_history['v'][frame_idx]
+                theta = optimization_history['theta'][frame_idx]
+                c = optimization_history['c'][frame_idx]
+                
+                # Render frame with current parameters
+                with torch.no_grad():
+                    frame = self.render_from_params(
+                        x, y, r, theta, v, c,
+                        sigma=0.0, I_bg=I_bg
+                    )
                 
                 self._write_frame(writer, frame)
+                last_frame = frame
                 
                 # Clear GPU memory periodically
                 if frame_idx % 50 == 0:
                     torch.cuda.empty_cache()
             
-            print(f"Video saved to {video_path}")
+            # Hold the last frame for 1 second
+            if last_frame is not None:
+                hold_frames = fps  # 1 second worth of frames
+                print(f"Adding {hold_frames} hold frames (1 second)...")
+                for _ in range(hold_frames):
+                    self._write_frame(writer, last_frame)
+            
+            print(f"✅ Optimization video saved to: {video_path}")
+            print(f"{'='*80}\n")
             
         finally:
             writer.release()

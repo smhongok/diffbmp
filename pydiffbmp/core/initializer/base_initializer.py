@@ -6,9 +6,9 @@ import time
 import traceback
 from datetime import timedelta
 from abc import ABC, abstractmethod
-from imbrush.core.renderer.vector_renderer import VectorRenderer
+from pydiffbmp.core.renderer.vector_renderer import VectorRenderer
 from typing import Dict, Any
-from imbrush.util.constants import OPACITY_INIT_VALUE
+from pydiffbmp.util.constants import OPACITY_INIT_VALUE
 
 class BaseInitializer(ABC):
     def __init__(self, init_opt:Dict[str, Any]):
