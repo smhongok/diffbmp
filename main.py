@@ -17,21 +17,21 @@ import json
 import argparse
 import cv2
 from datetime import datetime
-from imbrush.core.renderer.sequential_renderer import SequentialFrameRenderer
-from imbrush.core.renderer.simple_tile_renderer import SimpleTileRenderer
-from imbrush.util.svg_loader import SVGLoader
-from imbrush.util.spatial_constrain_visualizer import save_spatial_constraints
-from imbrush.util.primitive_loader import PrimitiveLoader
-from imbrush.util.svg_converter import FontParser, ImageToSVG
-from imbrush.core.initializer.svgsplat_initializater import StructureAwareInitializer
-from imbrush.core.initializer.random_initializater import RandomInitializer
-from imbrush.util.primitive_utils import expand_primitive_wildcards
-from imbrush.util.transition_exporter import export_transition_video_with_holds
+from pydiffbmp.core.renderer.sequential_renderer import SequentialFrameRenderer
+from pydiffbmp.core.renderer.simple_tile_renderer import SimpleTileRenderer
+from pydiffbmp.util.svg_loader import SVGLoader
+from pydiffbmp.util.spatial_constrain_visualizer import save_spatial_constraints
+from pydiffbmp.util.primitive_loader import PrimitiveLoader
+from pydiffbmp.util.svg_converter import FontParser, ImageToSVG
+from pydiffbmp.core.initializer.svgsplat_initializater import StructureAwareInitializer
+from pydiffbmp.core.initializer.random_initializater import RandomInitializer
+from pydiffbmp.util.primitive_utils import expand_primitive_wildcards
+from pydiffbmp.util.transition_exporter import export_transition_video_with_holds
 # Import our modules
-from imbrush.core.preprocessing import Preprocessor
-from imbrush.util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
-from imbrush.util.pdf_exporter import PDFExporter
-import imbrush.util.target_masks as target_masks
+from pydiffbmp.core.preprocessing import Preprocessor
+from pydiffbmp.util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
+from pydiffbmp.util.pdf_exporter import PDFExporter
+import pydiffbmp.util.target_masks as target_masks
 
 
 
@@ -49,7 +49,7 @@ with open(config_path, "r", encoding="utf-8") as f:
     config = json.load(f)
 
 # Apply constants as default values
-from imbrush.util.constants import apply_constants_to_config, PRIMITIVE_HOLLOW_DEFAULT
+from pydiffbmp.util.constants import apply_constants_to_config, PRIMITIVE_HOLLOW_DEFAULT
 config = apply_constants_to_config(config)
 # After import or after loading config
 set_global_seed(config["seed"])
@@ -287,6 +287,11 @@ for img_idx, img_path in enumerate(img_paths):
 
     bmp_image_tensor = svg_loader.load_alpha_bitmap()
     
+    # Set MP4 recording flag in opt_conf based on postprocessing config
+    if config['postprocessing'].get('export_mp4', False):
+        opt_conf['record_optimization'] = True
+        print("🎬 MP4 recording enabled - will record optimization process")
+    
     # Optimize parameters
     x, y, r, v, theta, c = renderer.optimize_parameters(
         x, y, r, v, theta, c,
@@ -335,7 +340,11 @@ for img_idx, img_path in enumerate(img_paths):
         )
     # Single image final rendering and export
     with torch.no_grad():
-        white_bg = torch.ones((renderer.H, renderer.W, 3), device=renderer.device)
+        # Use the same background color as optimization
+        bg_color = opt_conf.get("bg_color", "white")
+        
+        # Get background for export (random -> white)
+        final_bg = renderer._get_background_for_render(bg_color, export=True)
         
         # Check if PSD export is requested
         psd_export = config.get('postprocessing', {}).get('export_psd', False)
@@ -344,7 +353,7 @@ for img_idx, img_path in enumerate(img_paths):
         if renderer.use_fp16:
             from torch.amp import autocast
             with autocast('cuda'):
-                rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
+                rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=final_bg, sigma=0.0, is_final=True)
                 
                 # Save rendered image directly from rendered tensor 
                 rendered_np = rendered.detach().cpu().numpy()
@@ -355,7 +364,7 @@ for img_idx, img_path in enumerate(img_paths):
 
         else:
             # Still render final PNG for preview/compatibility
-            rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
+            rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=final_bg, sigma=0.0, is_final=True)
             if not exist_bg:
                 save_spatial_constraints(rendered, rendered_alpha, output_path)
             # Save rendered image directly from rendered tensor 
@@ -365,7 +374,7 @@ for img_idx, img_path in enumerate(img_paths):
 
         if psd_export:
             # Export PSD layers using util/psd_exporter.py with batched processing
-            from imbrush.util.psd_exporter import PSDExporter
+            from pydiffbmp.util.psd_exporter import PSDExporter
             
             psd_path = output_path.replace('.png', '.psd')
             psd_scale_factor = config['postprocessing']['psd_scale_factor']
@@ -384,15 +393,13 @@ for img_idx, img_path in enumerate(img_paths):
             exporter.add_layers_batch_optimized(
                 renderer.S, x, y, r, theta, v, c
             )
+
+            bg_color_tensor = final_bg[0, 0, :].detach().cpu().numpy()  # Get RGB from first pixel
+            exporter.add_background_layer(tuple(bg_color_tensor))
                 
             # Export PSD file
             exporter.export_psd(psd_path)
     
-
-        if config['postprocessing'].get('export_mp4', False):
-            video_path = os.path.join(output_dir, f'output_{timestamp}{output_suffix}.mp4')
-            # Warning: this takes a long time. TODO: fix this
-            renderer.render_export_mp4(x, y, r, theta, v, c, video_path=video_path)
 
     # Compute metrics if requested
     if config['postprocessing'].get('compute_psnr', False):
@@ -453,6 +460,8 @@ if config['postprocessing'].get('export_transition', False):
     
     # Get transition configuration
     transition_config = config['postprocessing'].get('transition_config', {})
+    # Get background color from optimization config
+    bg_color = opt_conf.get("bg_color", "white")
     # Export transition video with holds
     video_path = export_transition_video_with_holds(
         transition_x_list,
@@ -467,7 +476,8 @@ if config['postprocessing'].get('export_transition', False):
         transition_frames=transition_config.get('transition_frames', 60),
         hold_frames=transition_config.get('hold_frames', 30),
         interpolation_style=transition_config.get('interpolation_style', 'linear'),
-        device=device
+        device=device,
+        bg_color=bg_color
     )
     
     if video_path:

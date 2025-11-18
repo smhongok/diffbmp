@@ -1,0 +1,44 @@
+{
+    "preprocessing": {
+        "final_width": [1024],
+        "img_path": [
+            "images/baby/sohee_003.jpg"
+        ]
+    },
+    "primitive": {
+        "primitive_file": ["baby_footprint_left.png", "baby_footprint_right.png"],
+        "convert_to_svg": false,
+        "primitive_hollow": false,
+        "output_width": 128
+    },
+    "initialization": {
+        "initializer": "structure_aware",
+        "N": [2000],
+        "radii_min": 2,
+        "radii_max": 50,
+        "debug_mode": true,
+        "detail_first": false
+    },
+    "optimization": {
+        "use_fp16": true,
+        "num_iterations": 100,
+        "learning_rate": {
+            "default": 0.1
+        },
+        "do_decay": true,
+        "do_gaussian_blur": true,
+        "c_blend": 0.0,
+        "loss_config": {
+            "type": "combined",
+            "components": [
+                {"name": "mse", "weight": 1.0},
+                {"name": "perceptual", "weight": 0.0}
+            ]
+        }
+    },
+    "postprocessing": {
+        "output_folder": "outputs/",
+        "compute_psnr": true,
+        "export_psd": false
+    }
+} 
