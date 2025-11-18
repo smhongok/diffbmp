@@ -1,20 +1,20 @@
 {
+    "_comment" : {
+        "./imbrush/util/loss_functions.py" : "remove mask constraint from loss mse function of function.py. This is for matching default mode"
+    },
     "preprocessing": {
         "final_width": [
             512
         ],
         "img_path": [
-            "images/spatial_constraint/korean_swordmaster_color_mask.png"
+            "images/spatial_constraint/Imagen_dog.png"
         ],
         "exist_bg" : false,
-        "debug_save_intermediates" : true
+        "debug_save_intermediates" : true,
+        "resampling" : "NEAREST"
     },
     "primitive": {
-        "primitive_file": ["dancheong/dnacheong1_1.jpg",
-            "dancheong/dnacheong1_2.jpg",
-            "dancheong/dnacheong1_3.jpg",
-            "dancheong/dnacheong1_4.jpg"
-        ],
+        "primitive_file": "paw_complicated.png",
         "convert_to_svg": false,
         "svg_hollow": false,
         "output_width": 128
@@ -22,10 +22,10 @@
     "initialization": {
         "initializer": "structure_aware",
         "N": [
-            400
+            3000
         ],
         "radii_min": 2,
-        "radii_max": 10,
+        "radii_max": 64,
         "debug_mode": true
     },
     "optimization": {
@@ -36,14 +36,10 @@
             "gain_v":5.0
         },
         "loss_config": {
-            "type": "combined",
-            "components": [
-                {"name": "mse", "weight": 1.0},
-                {"name": "alpha", "weight": 0.3}
-            ]
+            "type": "mse"
         },
         "pruning":{
-            "do_pruning" : true,
+            "do_pruning" : false,
             "prune_iterations" : 50,
             "no_prune_last_iterations" : 0,
             "no_prune_warmup_iterations" : 199,
@@ -51,12 +47,13 @@
         },
         "do_decay": true,
         "do_gaussian_blur": true,
-        "c_blend": 0.9,
-        "alpha_upper_bound" : 0.7
+        "bg_color":"white",
+        "record_bg_path" : "images/utils/checkerboard_512x768.png",
+        "record_optimization" : true
     },
     "postprocessing": {
         "output_folder": "outputs/",
         "compute_psnr": true,
         "export_psd": false
-    }
+        }
 } 
