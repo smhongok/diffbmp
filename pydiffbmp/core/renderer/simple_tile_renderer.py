@@ -460,20 +460,6 @@ class SimpleTileRenderer(VectorRenderer):
                     print(f"    🔍 Debug - self.S.shape: {self.S.shape}")
                     print(f"    🔍 Debug - self.S.dtype: {self.S.dtype}")
                     print(f"    🔍 Debug - self.S.device: {self.S.device}")
-                
-                # Free existing cuda_rasterizer and create new one for final rendering
-                if self.cuda_rasterizer is not None:
-                    print(f"    🔧 Freeing existing CUDA rasterizer for final rendering...")
-                    del self.cuda_rasterizer
-                    self.cuda_rasterizer = None
-                    torch.cuda.empty_cache()  # Clear GPU memory
-                
-                print(f"    🔧 Creating new TileRasterizer for final rendering with {len(radii)} primitives...")
-                self.cuda_rasterizer = TileRasterizer(
-                    self.H, self.W, self.tile_size, sigma, 
-                    self.alpha_upper_bound, self.max_prims_per_pixel, len(radii),
-                    use_fp16=self.use_fp16
-                )
 
 
             if DEBUG_MODE:
