@@ -80,12 +80,7 @@
             "max_primitives_per_tile": 4,
             "min_criteria_count": 3,
             "front_primitives_percentile": 0.7,
-            "apply_epochs": [20, 45, 70],
-            "gradient_ranking": {
-                "enabled": false,
-                "process_all_pixels": true,
-                "pixels_per_tile": 64
-            }
+            "apply_epochs": [20, 45, 70]
         },
         "selective_parameter_optimization":{
             "enabled": true,
@@ -102,8 +97,6 @@
     },
     "postprocessing": {
         "output_folder": "./outputs/girl_blink/",
-        "hires_export": false,
-        "hires_scale_factor": 4.0,
         "compute_psnr": false,
         "export_psd": true
     },

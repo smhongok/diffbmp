@@ -88,10 +88,8 @@
         }
     },
     "postprocessing": {
-        "output_folder": "./outputs/sep_init_test/proro/7",
-        "hires_export": false,
-        "hires_scale_factor": 4.0,
-        "compute_psnr": true,
+        "output_folder": "./outputs/seq_test",
+        "compute_psnr": false,
         "export_psd": false
     },
     "seed": 42

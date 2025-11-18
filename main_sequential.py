@@ -18,14 +18,14 @@ import json
 import argparse
 import cv2
 from datetime import datetime
-from imbrush.core.renderer.sequential_renderer import SequentialFrameRenderer
-from imbrush.core.renderer.simple_tile_renderer import SimpleTileRenderer
-from imbrush.util.svg_loader import SVGLoader
-from imbrush.util.primitive_loader import PrimitiveLoader
-from imbrush.util.svg_converter import FontParser, ImageToSVG
-from imbrush.core.initializer.svgsplat_initializater import StructureAwareInitializer
-from imbrush.core.initializer.random_initializater import RandomInitializer
-from imbrush.util.spatial_constrain_visualizer import save_spatial_constraints
+from pydiffbmp.core.renderer.sequential_renderer import SequentialFrameRenderer
+from pydiffbmp.core.renderer.simple_tile_renderer import SimpleTileRenderer
+from pydiffbmp.util.svg_loader import SVGLoader
+from pydiffbmp.util.primitive_loader import PrimitiveLoader
+from pydiffbmp.util.svg_converter import FontParser, ImageToSVG
+from pydiffbmp.core.initializer.svgsplat_initializater import StructureAwareInitializer
+from pydiffbmp.core.initializer.random_initializater import RandomInitializer
+from pydiffbmp.util.spatial_constrain_visualizer import save_spatial_constraints
 
 # Route visualization flag - set to True to enable primitive movement visualization
 ENABLE_ROUTE_VISUALIZATION = False
@@ -275,6 +275,7 @@ renderer_kwargs = {
     "sigma": opt_conf["blur_sigma"] if opt_conf.get("do_gaussian_blur", False) else 0.0,
     "c_blend": config["optimization"].get("c_blend", 0.0),
     "primitive_colors": primitive_colors,  # Pass primitive colors for c_o initialization
+    "max_prims_per_pixel": config["initialization"].get("max_prims_per_pixel"),  # Pass max_prims_per_pixel from config
 }
 
 renderer = renderer_class(**renderer_kwargs)
@@ -306,6 +307,7 @@ sequential_renderer = SequentialFrameRenderer(
     sigma = opt_conf["blur_sigma"] if opt_conf.get("do_gaussian_blur", False) else 0.0,
     c_blend=config["optimization"].get("c_blend", 0.0),
     primitive_colors=primitive_colors,
+    max_prims_per_pixel=config["initialization"].get("max_prims_per_pixel"),
 )
 print(f"Using SequentialFrameRenderer with tile-based rendering (tile_size: {sequential_config['tile_size']})")
 
