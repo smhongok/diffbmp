@@ -1,23 +1,17 @@
 {
     "preprocessing": {
         "final_width": [
-            1024
+            512
         ],
         "img_path": [
-            "images/spatial_constraint/AKIRA_mc_bg_removed.png"
-        ],
-        "mask_path": [
-            "images/spatial_constraint/masks/AKIRA_mc_mask.png"
+            "images/spatial_constraint/Imagen_dog.png"
         ],
         "exist_bg" : false,
-        "debug_save_intermediates" : true
+        "debug_save_intermediates" : true,
+        "resampling" : "NEAREST"
     },
     "primitive": {
-        "primitive_file": ["flowers/rose_of_sharon_1.png",
-            "flowers/rose_of_sharon_2.png",
-            "flowers/rose_of_sharon_3.png",
-            "flowers/rose_of_sharon_4.png"
-        ],
+        "primitive_file": "paw_complicated.png",
         "convert_to_svg": false,
         "svg_hollow": false,
         "output_width": 128
@@ -25,10 +19,10 @@
     "initialization": {
         "initializer": "structure_aware",
         "N": [
-            1000
+            3000
         ],
         "radii_min": 2,
-        "radii_max": 10,
+        "radii_max": 64,
         "debug_mode": true
     },
     "optimization": {
@@ -54,12 +48,13 @@
         },
         "do_decay": true,
         "do_gaussian_blur": true,
-        "c_blend": 0.3,
-        "alpha_upper_bound" : 0.7
+        "bg_color":"black",
+        "record_bg_path" : "images/utils/checkerboard_512x768.png",
+        "record_optimization" : true
     },
     "postprocessing": {
         "output_folder": "outputs/",
         "compute_psnr": true,
-        "export_psd": true
+        "export_psd": false
         }
 } 

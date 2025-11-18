@@ -1,0 +1,60 @@
+{
+    "preprocessing": {
+        "final_width": [
+            512
+        ],
+        "img_path": [
+            "images/spatial_constraint/Imagen_dog.png"
+        ],
+        "exist_bg" : false,
+        "debug_save_intermediates" : true,
+        "resampling" : "NEAREST"
+    },
+    "primitive": {
+        "primitive_file": "paw_complicated.png",
+        "convert_to_svg": false,
+        "svg_hollow": false,
+        "output_width": 128
+    },
+    "initialization": {
+        "initializer": "structure_aware",
+        "N": [
+            3000
+        ],
+        "radii_min": 2,
+        "radii_max": 64,
+        "debug_mode": true
+    },
+    "optimization": {
+        "use_fp16": false,
+        "num_iterations": 300,
+        "learning_rate": {
+            "default": 0.1,
+            "gain_v":5.0
+        },
+        "loss_config": {
+            "type": "combined",
+            "components": [
+                {"name": "mse", "weight": 1.0},
+                {"name": "alpha", "weight": 0.3}
+            ]
+        },
+        "pruning":{
+            "do_pruning" : false,
+            "prune_iterations" : 50,
+            "no_prune_last_iterations" : 0,
+            "no_prune_warmup_iterations" : 199,
+            "prune_threshold" : 0.3
+        },
+        "do_decay": true,
+        "do_gaussian_blur": true,
+        "bg_color":"black",
+        "record_bg_path" : "images/utils/checkerboard_512x768.png",
+        "record_optimization" : true
+    },
+    "postprocessing": {
+        "output_folder": "outputs/",
+        "compute_psnr": true,
+        "export_psd": false
+        }
+} 
