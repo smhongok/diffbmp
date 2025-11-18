@@ -94,9 +94,9 @@ def extract_chars_from_file(
 ):
     chars = []
     char_counts = []
-    word_lengths_per_line = []  # <--- 추가: 각 line의 단어별 글자수 리스트
+    word_lengths_per_line = []  # <--- Added: list of word lengths per line
 
-    # 기본 제거 문자
+    # Default characters to remove
     if remove_punct and punct_to_remove is None:
         punct_to_remove = set(string.punctuation)
     elif punct_to_remove is not None:
@@ -115,14 +115,14 @@ def extract_chars_from_file(
         words = line.split()
         word_lengths = []
         for word in words:
-            # 공백·특수문자 제외한 글자 수를 word_chars로 셈
+            # Count characters excluding whitespace and special characters as word_chars
             word_chars = [
                 c for c in word
                 if not (remove_whitespace and c.isspace())
                 and not (remove_punct and c in punct_to_remove)
             ]
             word_lengths.append(len(word_chars))
-            # 전체 문자 목록에는 실제 사용되는 글자만 추가
+            # Add only actually used characters to the full character list
             line_chars.extend(word_chars)
         chars.extend(line_chars)
         char_counts.append(len(line_chars))
