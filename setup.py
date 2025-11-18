@@ -1,5 +1,5 @@
 """
-setup.py for image-as-brush
+setup.py for DiffBMP
 Make this package pip installable with: pip install -e .
 
 Note: This setup.py does NOT install dependencies.
@@ -14,18 +14,18 @@ with open('README.md', 'r', encoding='utf-8') as f:
     long_description = f.read()
 
 setup(
-    name='image-as-brush',  # pip install name (can use dash)
+    name='diffbmp',  # pip install name (can use dash)
     version='0.1.0',
-    description='Fast Differentiable Painting with Any Image Primitives',
+    description='DiffBMP: Fast Differentiable Painting with Any Image Primitives',
     long_description=long_description,
     long_description_content_type='text/markdown',
     author='anonymous',
     author_email='',
-    url='https://github.com/your-repo/image-as-brush',
+    url='https://github.com/your-repo/diffbmp',
     
-    # Package discovery: Python import name is 'imbrush'
-    packages=['imbrush', 'imbrush.core', 'imbrush.core.renderer', 
-              'imbrush.core.initializer', 'imbrush.util'],
+    # Package discovery: Python import name is 'pydiffbmp'
+    packages=['pydiffbmp', 'pydiffbmp.core', 'pydiffbmp.core.renderer', 
+              'pydiffbmp.core.initializer', 'pydiffbmp.util'],
     
     # No dependencies - assumes environment is already set up
     # Users should manually install requirements if needed
@@ -54,7 +54,7 @@ setup(
     # Entry points (optional - can add CLI tools later)
     entry_points={
         'console_scripts': [
-            # 'image-as-brush=image_as_brush.cli:main',  # Future CLI tool
+            # 'diffbmp=pydiffbmp.cli:main',  # Future CLI tool
         ],
     },
     

@@ -17,27 +17,27 @@ import json
 import argparse
 import cv2
 from datetime import datetime
-from imbrush.core.renderer.sequential_renderer import SequentialFrameRenderer
-from imbrush.core.renderer.simple_tile_renderer import SimpleTileRenderer
-from imbrush.util.svg_loader import SVGLoader
-from imbrush.util.primitive_loader import PrimitiveLoader
-from imbrush.util.svg_converter import FontParser, ImageToSVG
-from imbrush.core.initializer.svgsplat_initializater import StructureAwareInitializer
-from imbrush.core.initializer.random_initializater import RandomInitializer
+from pydiffbmp.core.renderer.sequential_renderer import SequentialFrameRenderer
+from pydiffbmp.core.renderer.simple_tile_renderer import SimpleTileRenderer
+from pydiffbmp.util.svg_loader import SVGLoader
+from pydiffbmp.util.primitive_loader import PrimitiveLoader
+from pydiffbmp.util.svg_converter import FontParser, ImageToSVG
+from pydiffbmp.core.initializer.svgsplat_initializater import StructureAwareInitializer
+from pydiffbmp.core.initializer.random_initializater import RandomInitializer
 
 # Route visualization flag - set to True to enable primitive movement visualization
 ENABLE_ROUTE_VISUALIZATION = False
 
 # Import our modules
-from imbrush.core.preprocessing import Preprocessor
-from imbrush.util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
-from imbrush.util.pdf_exporter import PDFExporter
-import imbrush.util.target_masks as target_masks
-from imbrush.util.temporal_consistency_metrics import compute_all_temporal_metrics
+from pydiffbmp.core.preprocessing import Preprocessor
+from pydiffbmp.util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
+from pydiffbmp.util.pdf_exporter import PDFExporter
+import pydiffbmp.util.target_masks as target_masks
+from pydiffbmp.util.temporal_consistency_metrics import compute_all_temporal_metrics
 
 # Conditional import for route visualization
 if ENABLE_ROUTE_VISUALIZATION:
-    from imbrush.util.route_visualizer import create_route_visualization
+    from pydiffbmp.util.route_visualizer import create_route_visualization
 
 
 
@@ -55,7 +55,7 @@ with open(config_path, "r", encoding="utf-8") as f:
     config = json.load(f)
 
 # Apply constants as default values
-from imbrush.util.constants import apply_constants_to_config
+from pydiffbmp.util.constants import apply_constants_to_config
 config = apply_constants_to_config(config)
 # After import or after loading config
 set_global_seed(config["seed"])
@@ -422,7 +422,7 @@ for frame_idx, frame_result in enumerate(frame_results):
     
     if psd_export:
         # Export PSD layers using util/psd_exporter.py with batched processing
-        from imbrush.util.psd_exporter import PSDExporter
+        from pydiffbmp.util.psd_exporter import PSDExporter
         
         psd_path = frame_path.replace('.png', '.psd')
         psd_scale_factor = config['postprocessing']['psd_scale_factor']

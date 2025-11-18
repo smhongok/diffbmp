@@ -1,16 +1,16 @@
 {
     "preprocessing": {
         "final_width": [
-            512
+            312
         ],
         "img_path": [
-            "images/spatial_constraint/Imagen_dog.png"
+            "images/BSDS500/101087.jpg"
         ],
         "exist_bg" : false,
         "debug_save_intermediates" : true
     },
     "primitive": {
-        "primitive_file": "paw_complicated.png",
+        "primitive_file": "Lisc_lipy.jpg",
         "convert_to_svg": false,
         "svg_hollow": false,
         "output_width": 128
@@ -18,35 +18,32 @@
     "initialization": {
         "initializer": "structure_aware",
         "N": [
-            2000
+            1000
         ],
         "radii_min": 2,
-        "radii_max": 64,
+        "radii_max": 50,
         "debug_mode": true
     },
     "optimization": {
-        "use_fp16": true,
-        "num_iterations": 300,
+        "use_fp16": false,
+        "num_iterations": 100,
         "learning_rate": {
-            "default": 0.1,
-            "gain_v":5.0
+            "default": 0.1
         },
         "loss_config": {
-            "type": "combined",
-            "components": [
-                {"name": "mse", "weight": 1.0},
-                {"name": "alpha", "weight": 0.3}
-            ]
+            "type": "mse"
         },
+        "bg_color":"white",
         "pruning":{
-            "do_pruning" : true,
+            "do_pruning" : false,
             "prune_iterations" : 50,
             "no_prune_last_iterations" : 0,
             "no_prune_warmup_iterations" : 199,
             "prune_threshold" : 0.3
         },
         "do_decay": true,
-        "do_gaussian_blur": true
+        "do_gaussian_blur": true,
+        "record_optimization" : true
     },
     "postprocessing": {
         "output_folder": "outputs/",
