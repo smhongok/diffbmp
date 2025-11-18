@@ -289,7 +289,8 @@ for frame_idx, I_target_frame in enumerate(I_targets):
         x, y, r, v, theta, c = renderer.optimize_parameters(
             x, y, r, v, theta, c,
             I_target_frame, 
-            opt_conf=opt_conf
+            opt_conf=opt_conf,
+            initializer=initializer
         )
         end_time_frame = time.time()
         
@@ -324,7 +325,8 @@ for frame_idx, I_target_frame in enumerate(I_targets):
             x, y, r, v, theta, c = renderer.optimize_parameters(
             x, y, r, v, theta, c,
             I_target_frame, 
-            opt_conf=opt_conf
+            opt_conf=opt_conf,
+            initializer=initializer
             )
 
             end_time_frame = time.time()
