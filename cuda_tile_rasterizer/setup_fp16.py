@@ -23,12 +23,11 @@ setup(
                 'cuda_kernels',
             ],
             extra_compile_args={
-                'cxx': ['-O3'], #['-O2'],  # Debug flags for C++
+                'cxx': ['-O3'],  # Debug flags for C++
                 'nvcc': [
-                    '-O3', #'-O2',  # Debug flags for CUDA
+                    '-O3',  # Debug flags for CUDA
                     '--use_fast_math',
                     '-Xptxas=-v',
-                    # 아키텍처 타겟 (3090=8.6, L40S=8.9)
                     '-gencode=arch=compute_86,code=sm_86',  # RTX 3090, A100
                     '-gencode=arch=compute_89,code=sm_89',  # L40S, RTX 4090
                 ]
