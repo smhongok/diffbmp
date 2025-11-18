@@ -19,7 +19,10 @@ from PIL import Image
 import tempfile
 import subprocess
 import glob
-import wandb
+try:
+    import wandb
+except ImportError:
+    wandb = None
 
 DEBUG_MODE = False
 DEBUG_MODE_DETAIL = False
@@ -101,18 +104,19 @@ class VectorRenderer:
         self.saved_frames = []
         
         # Initialize wandb conditionally
-        wandb_mode = os.environ.get('WANDB_MODE', 'online')
-        if wandb_mode.lower() != 'disabled':
-            try:
-                wandb.login(key="08d57452958261449694f652099a45203ab23a2e")
-                wandb.init(entity="svgsplat",project="svgsplat", name=f"experiment_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
-                self.wandb_enabled = True
-            except Exception as e:
-                print(f"Warning: wandb initialization failed: {e}")
+        if wandb is not None:
+            wandb_mode = os.environ.get('WANDB_MODE', 'online')
+            if wandb_mode.lower() != 'disabled':
+                try:
+                    wandb.login(key= os.environ.get('WANDB_KEY', 'online'))
+                    wandb.init(entity="diffbmp",project="diffbmp", name=f"experiment_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
+                    self.wandb_enabled = True
+                except Exception as e:
+                    print(f"Warning: wandb initialization failed: {e}")
+                    self.wandb_enabled = False
+            else:
+                print("wandb disabled via WANDB_MODE environment variable")
                 self.wandb_enabled = False
-        else:
-            print("wandb disabled via WANDB_MODE environment variable")
-            self.wandb_enabled = False
         
         # Initialize loss composer (will be set later with config)
         self.loss_composer = None
