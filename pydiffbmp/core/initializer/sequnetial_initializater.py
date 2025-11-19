@@ -62,17 +62,17 @@ class SequentialInitializer(BaseInitializer):
         device: torch.device
     ):
         """
-        균일한 크기·각도, 순차적 위치 배치 초기화.
-        - N개를 grid_cols x grid_rows 격자로 나누고,
-          (col + 0.5)*dx, (row + 0.5)*dy 위치에 splat 배치
+        Uniform size/angle, sequential position initialization.
+        - Divide N primitives into grid_cols x grid_rows grid,
+          place splats at (col + 0.5)*dx, (row + 0.5)*dy positions
         """
-        # 1) 격자 크기 계산 (정사각형에 가깝게)
+        # 1) Calculate grid size (close to square)
         grid_cols = int(np.ceil(np.sqrt(N)))
         grid_rows = int(np.ceil(N / grid_cols))
         dx = W / grid_cols
         dy = H / grid_rows
 
-        # 2) x, y 좌표 생성
+        # 2) Generate x, y coordinates
         idxs = np.arange(N)
         x_vals = x_init + ( (idxs % grid_cols) + 0.5 ) * dx
         y_vals = y_init + ( (idxs // grid_cols) + 0.5 ) * dy
@@ -80,11 +80,11 @@ class SequentialInitializer(BaseInitializer):
         x = torch.tensor(x_vals, device=device, dtype=torch.float32)
         y = torch.tensor(y_vals, device=device, dtype=torch.float32)
 
-        # 3) 반지름(r), 회전(theta) 고정
+        # 3) Fixed radius(r) and rotation(theta)
         r     = torch.full((N,), self.radii_min,      device=device, dtype=torch.float32)
         theta = torch.zeros((N,),          device=device, dtype=torch.float32)
 
-        # 4) 가시성(v)과 색상(c)은 random
+        # 4) Random visibility(v) and color(c)
         v = self._rand_leaf((N,),
                             self.v_init_bias - 0.5,
                             self.v_init_bias + 0.5,

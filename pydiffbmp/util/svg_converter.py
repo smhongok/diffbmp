@@ -73,8 +73,8 @@ class FontParser:
         }}
         """
         dwg.defs.add(dwg.style(css))
-    def get_output_path(self, text: str) -> Path:
 
+    def get_output_path(self, text: str) -> Path:
         safe = urllib.parse.quote(text, safe='A-Za-z0-9가-힣_-')
         if not safe:
             safe = 'text'
@@ -141,7 +141,7 @@ class FontParser:
             # glyph.draw(pen)
             # d = pen.getCommands()
             # ───────────────────────────────────────────────
-            # 루프마다 새로운 pen 생성 → 이전 경로 누적 방지
+            # Create new pen for each loop → prevent accumulation of previous paths
             pen = SVGPathPen(self.glyph_set)
             glyph.draw(pen)
             d = pen.getCommands()

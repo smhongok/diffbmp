@@ -59,7 +59,7 @@ def vram_used_by_pid(pid=None):
 
     vis = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
     if not vis:
-        # env가 없으면 물리 GPU 0으로 가정
+        # If env not set, assume physical GPU 0
         target = "0"
     else:
         target = vis.split(",")[0].strip()
@@ -68,11 +68,11 @@ def vram_used_by_pid(pid=None):
     try:
         h = nvml.nvmlDeviceGetHandleByIndex(int(target))
         used = 0
-        # NVML은 compute/graphics 프로세스를 따로 노출할 수 있음 → 둘 다 합산
+        # NVML exposes compute/graphics processes separately → sum both
         for procs in (_get_running_procs(h, "Compute"), _get_running_procs(h, "Graphics")):
             for p in procs or []:
                 if int(p.pid) == int(pid):
-                    # usedGpuMemory는 bytes (언더플로/UNKNOWN 시 -1일 수 있음)
+                    # usedGpuMemory is in bytes (can be -1 for underflow/UNKNOWN)
                     if getattr(p, "usedGpuMemory", 0) and p.usedGpuMemory > 0:
                         used += p.usedGpuMemory
         return used
@@ -120,7 +120,7 @@ class SimpleTileRenderer(VectorRenderer):
         self.pytorch_backward_count = 0
 
     def _clamp_params_inplace(self, x, y, r):
-        # VectorRenderer와 동일 정책: r ∈ [2, min(H,W)//4]
+        # Same policy as VectorRenderer: r ∈ [2, min(H,W)//4]
         r_max = int(min(self.H, self.W) // 4)
         with torch.no_grad():
             x.clamp_(0.0, float(self.W - 1))
@@ -493,6 +493,7 @@ class SimpleTileRenderer(VectorRenderer):
                     lr_conf.get('gain_c', 1.0)
                 ], dtype=torch.float16 if self.use_fp16 else torch.float32, device=means2D.device)
             
+
             if self.cuda_rasterizer is None:
                 torch.cuda.empty_cache()  # Clear GPU memory
                 self.cuda_rasterizer = TileRasterizer(
