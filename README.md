@@ -75,21 +75,64 @@ To execute specific evaluations on generated results:
 python run_evaluation.py
 ```
 
-### Visualization Methods
-
-To visualize the initialization process:
-
-```
-python util/initialization_exporter.py
-```
-
+### Dynamic DiffBMP Visualization Methods
 
 To visualize frame-by-frame primitive (x,y) movement:
 
+paste the code below in configs/sequential.json
 ```
-go to main.py and set ENABLE_ROUTE_VISUALIZATION = True
-then run 
-python main.py --config configs/default_sequential.json
+sequential_debug = {
+    "route_visualization": {
+        "enabled": True,
+        "export_path": "./outputs/seq_test"
+    }
+}
+```
+
+To visualize per-pixel gradient of opacity-reduced primitives (by our heuristic):
+
+paste the code below in configs/sequential.json
+```
+sequential_debug = {
+    "gradient_visualization": {
+        "enabled": True,
+        "enable_non_problematic_primitive": False,
+        "gradient_threshold": 1e-15,
+        "save_dir": "./outputs/vis_class/debug_gradients_sequential"
+    }
+}
+```
+
+To visualize difference mask between frames (which becomes critical input for our heuristic):
+
+paste the code below in configs/sequential.json
+```
+sequential_debug = {
+    "diff_mask": {
+        "enabled": True,
+        "export_path": "./outputs/vis_class/diff_mask_sequential"
+    }
+}
+```
+
+Complete debugging config:
+```
+sequential_debug = {
+    "gradient_visualization": {
+        "enabled": True,
+        "enable_non_problematic_primitive": False,
+        "gradient_threshold": 1e-15,
+        "save_dir": "./outputs/vis_class/debug_gradients_sequential"
+    },
+    "diff_mask": {
+        "enabled": True,
+        "export_path": "./outputs/vis_class/diff_mask_sequential"
+    },
+    "route_visualization": {
+        "enabled": True,
+        "export_path": "./outputs/seq_test"
+    }
+}
 ```
 
 
