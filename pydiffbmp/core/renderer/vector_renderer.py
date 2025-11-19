@@ -19,7 +19,10 @@ from PIL import Image
 import tempfile
 import subprocess
 import glob
-import wandb
+try:
+    import wandb
+except ImportError:
+    wandb = None
 
 DEBUG_MODE = False
 DEBUG_MODE_DETAIL = False
@@ -101,18 +104,19 @@ class VectorRenderer:
         self.saved_frames = []
         
         # Initialize wandb conditionally
-        wandb_mode = os.environ.get('WANDB_MODE', 'online')
-        if wandb_mode.lower() != 'disabled':
-            try:
-                wandb.login(key="08d57452958261449694f652099a45203ab23a2e")
-                wandb.init(entity="svgsplat",project="svgsplat", name=f"experiment_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
-                self.wandb_enabled = True
-            except Exception as e:
-                print(f"Warning: wandb initialization failed: {e}")
+        if wandb is not None:
+            wandb_mode = os.environ.get('WANDB_MODE', 'online')
+            if wandb_mode.lower() != 'disabled':
+                try:
+                    wandb.login(key= os.environ.get('WANDB_KEY', 'online'))
+                    wandb.init(entity="diffbmp",project="diffbmp", name=f"experiment_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
+                    self.wandb_enabled = True
+                except Exception as e:
+                    print(f"Warning: wandb initialization failed: {e}")
+                    self.wandb_enabled = False
+            else:
+                print("wandb disabled via WANDB_MODE environment variable")
                 self.wandb_enabled = False
-        else:
-            print("wandb disabled via WANDB_MODE environment variable")
-            self.wandb_enabled = False
         
         # Initialize loss composer (will be set later with config)
         self.loss_composer = None
@@ -853,15 +857,15 @@ class VectorRenderer:
         fps: int = 60
     ):
         """
-        Sequential-over compositing 으로 primitive를 한 장씩 쌓아가며
-        중간 이미지를 MP4로 바로 기록.
+        Sequential-over compositing: stack primitives one by one
+        and directly record intermediate images to MP4.
 
         Args:
         cached_masks: (N, H, W)   – soft masks
         v           : (N,)        – visibility logits
         c           : (N, 3)      – RGB logits
-        video_path  : 저장될 MP4 경로
-        fps         : 프레임레이트
+        video_path  : MP4 save path
+        fps         : Frame rate
         """
         context = autocast('cuda') if self.use_fp16 else nullcontext()
 
@@ -880,42 +884,42 @@ class VectorRenderer:
             
             m_all   = a_all.unsqueeze(-1) * c_eff                                  # (N,H,W,3)
 
-        # --- 2. 비디오 초기화를 위한 첫 프레임 계산 ---
+        # --- 2. Calculate first frame for video initialization ---
         N, H, W = a_all.shape
         
-        # 임시 파일 생성 (OpenCV 중간 결과용)
+        # Create temporary file (for OpenCV intermediate results)
         temp_video = None
         try:
             with tempfile.NamedTemporaryFile(suffix='.avi', delete=False) as tmp:
                 temp_video = tmp.name
 
-            # sequential over: comp_m, comp_a 초기값 (맨 아래층 = 첫 프리미티브)
+            # sequential over: comp_m, comp_a initial values (bottom layer = first primitive)
             comp_m = m_all[0]   # (H,W,3)
             comp_a = a_all[0]   # (H,W)
-            # 흰 배경과 합성
+            # Composite with white background
             first = comp_m + (1.0 - comp_a).unsqueeze(-1)
             first_np = (first.clamp(0,1).cpu().numpy() * 255).astype(np.uint8)
-            # OpenCV는 BGR 순서
+            # OpenCV uses BGR order
             first_bgr = first_np[..., ::-1]
 
-            # 임시 비디오 작성 (무손실 코덱 사용)
-            fourcc = cv2.VideoWriter_fourcc(*'XVID')  # 무손실 중간 포맷
+            # Write temporary video (using lossless codec)
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Lossless intermediate format
             writer = cv2.VideoWriter(temp_video, fourcc, fps, (W, H))
 
             if not writer.isOpened():
                 raise RuntimeError("Failed to open video writer")
 
-            # 첫 프레임 기록
+            # Record first frame
             writer.write(first_bgr)
 
-            # --- 3. 나머지 프리미티브 순차 합성 & 기록 ---
+            # --- 3. Sequential composite & record remaining primitives ---
             for i in range(1, N):
                 with context:
                     # comp = comp + (1 - comp_a) * next
                     comp_m = comp_m + (1.0 - comp_a).unsqueeze(-1) * m_all[i]
                     comp_a = comp_a + (1.0 - comp_a) * a_all[i]
 
-                # 흰 배경과 합성
+                # Composite with white background
                 frame = comp_m + (1.0 - comp_a).unsqueeze(-1)
                 frame_np = (frame.clamp(0,1).cpu().numpy() * 255).astype(np.uint8)
                 frame_bgr = frame_np[..., ::-1]
@@ -923,35 +927,35 @@ class VectorRenderer:
 
             writer.release()
 
-            # --- 4. FFmpeg으로 웹 호환 H.264 MP4 변환 ---
+            # --- 4. Convert to web-compatible H.264 MP4 with FFmpeg ---
             ffmpeg_cmd = [
-                'ffmpeg', '-y',  # 덮어쓰기 허용
+                'ffmpeg', '-y',  # Allow overwrite
                 '-i', temp_video,
                 
-                # 비디오 코덱 설정 (웹 호환)
+                # Video codec settings (web compatible)
                 '-c:v', 'libx264',
-                '-profile:v', 'baseline',  # 최대 브라우저 호환성
+                '-profile:v', 'baseline',  # Maximum browser compatibility
                 '-level', '3.1',
-                '-crf', '23',              # 품질 (18-28, 낮을수록 고품질)
+                '-crf', '23',              # Quality (18-28, lower is better)
                 
-                # 픽셀 포맷 (필수)
+                # Pixel format (required)
                 '-pix_fmt', 'yuv420p',
                 
-                # 웹 스트리밍 최적화
+                # Web streaming optimization
                 '-movflags', '+faststart',
                 
-                # 오디오 없음 (비디오만)
+                # No audio (video only)
                 '-an',
                 
                 video_path
             ]
             
-            # FFmpeg 실행
+            # Execute FFmpeg
             result = subprocess.run(
                 ffmpeg_cmd, 
                 capture_output=True, 
                 text=True,
-                timeout=300  # 5분 타임아웃
+                timeout=300  # 5 minute timeout
             )
             
             if result.returncode != 0:
@@ -961,7 +965,7 @@ class VectorRenderer:
             print(f"Saved web-compatible H.264 MP4 to {video_path}")
             
         finally:
-            # 임시 파일 정리
+            # Clean up temporary files
             if temp_video and os.path.exists(temp_video):
                 try:
                     os.unlink(temp_video)

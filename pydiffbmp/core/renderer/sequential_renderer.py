@@ -820,7 +820,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         # Render current state
         rendered = self.render_from_params(x, y, r, v, theta, c)
     
-        # Pixel-wise loss (reduction 없음)
+        # Pixel-wise loss (no reduction)
         pixel_losses = (rendered - target).pow(2).mean(dim=2)  # [H, W]
         H, W = pixel_losses.shape
     

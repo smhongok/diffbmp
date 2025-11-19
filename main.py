@@ -118,7 +118,7 @@ else:
         else:
             svg_path = os.path.join("assets/primitives", primitive_file_config)
     elif primitive_ext in (".otf", ".ttf"):
-        # 텍스트 소스 결정
+        # Determine text source
         texts = None
         if "text" in config["primitive"]:
             texts = config["primitive"]["text"]
@@ -126,11 +126,11 @@ else:
             text_ext = os.path.splitext(config["primitive"].get("text_file"))[1].lower()
             text_path = os.path.join("assets/texts", config["primitive"].get("text_file")) 
             
-            # 전용 파서 클래스 (여기서는 간단 예시)
+            # Dedicated parser class (simple example here)
             if text_ext == ".txt" or text_ext == ".lrc":
                 texts, char_counts, word_lengths_per_line = extract_chars_from_file(text_path, text_ext, remove_punct=config["primitive"]["remove_punctuation"], punct_to_remove=".,;:()\{\}[]\"\'")
                 html_extra_path_special = "output_webpage/src_lyrics/index.html"
-                config["initialization"]["N"] = sum(char_counts)  # N은 텍스트의 개수로 설정
+                config["initialization"]["N"] = sum(char_counts)  # Set N to the number of text characters
             else:
                 raise ValueError(f"Unsupported text_file type: {text_ext}")
 

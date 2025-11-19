@@ -153,14 +153,14 @@ def process_combination(args):
     # Export PDF
     output_dir = config["postprocessing"].get("output_folder", "./outputs/")
     
-    # task_id 추출 (파일명에서 task_id_input.ext 형태에서 task_id만 추출)
+    # Extract task_id (extract only task_id from filename in format task_id_input.ext)
     img_filename = os.path.basename(config["preprocessing"].get("img_path", "unknown"))
     if "_input" in img_filename:
         task_id = img_filename.split("_input")[0]
     else:
         task_id = os.path.splitext(img_filename)[0]
     
-    # 파일명은 task_id만 사용
+    # Use only task_id for filename
     base_path = os.path.join(output_dir, task_id)
 
     # Generate final render (not included in timing)
@@ -367,7 +367,7 @@ def main():
     print(f"img_path: {args.img_path}")
     config["postprocessing"]["output_folder"] = args.output_path
     
-    # timestamp를 config에 추가
+    # Add timestamp to config
     if args.timestamp:
         config["postprocessing"]["timestamp"] = args.timestamp
     

@@ -152,7 +152,7 @@ class PDFExporter:
         output_svg_path = output_path.replace(".pdf", ".svg")
         output_html_path = output_path.replace(".pdf", ".html")
 
-        # 1. 텐서 → numpy
+        # 1. Tensor → numpy
         x_np = x.detach().cpu().numpy()
         y_np = y.detach().cpu().numpy()
         r_np = r.detach().cpu().numpy()
@@ -164,8 +164,8 @@ class PDFExporter:
         N = len(x_np)
         p = len(self.svg_paths)
 
-        # --- SVG 파일용 (transform 없음) ---
-        # 2. SVG 루트 생성
+        # --- For SVG file (no transform) ---
+        # 2. Create SVG root
         root_svg = ET.Element(f'{{{SVG_NS}}}svg', {
             'id': 'svgsplat1',
             'style': 'overflow: visible;',
@@ -175,7 +175,7 @@ class PDFExporter:
         })
         wrapper_g_svg = ET.Element('g', {'id': 'wrapper'})
 
-        # 원소들 생성
+        # Create elements
         for i in reversed(range(N)):
             idx = (N-i-1) % p
             tree = ET.parse(self.svg_paths[idx])
@@ -217,11 +217,11 @@ class PDFExporter:
 
         root_svg.append(wrapper_g_svg)
 
-        # 3. SVG 파일로 저장
+        # 3. Save as SVG file
         tree_svg = ET.ElementTree(root_svg)
         tree_svg.write(output_svg_path, encoding='utf-8', xml_declaration=True)
 
-        # --- HTML 임베드용 (transform 있음) ---
+        # --- For HTML embed (with transform) ---
         root_html = ET.Element(f'{{{SVG_NS}}}svg', {
             'id': 'svgsplat1',
             'style': 'overflow: visible;',
@@ -230,12 +230,12 @@ class PDFExporter:
             'viewBox': f"{-self.canvas_w/2} {-self.canvas_h/2} {self.canvas_w} {self.canvas_h}"
         })
         wrapper_g_html = ET.Element('g', {'id': 'wrapper', 'transform': 'translate(0,0)'})
-        # 기존 g 복사해서 추가
+        # Copy and add existing g
         for g in list(wrapper_g_svg):
             wrapper_g_html.append(deepcopy(g))
         root_html.append(wrapper_g_html)
 
-        # 임시 SVG 파일로 저장 (HTML용)
+        # Save as temporary SVG file (for HTML)
         tmp_html_svg = output_svg_path.replace(".svg", ".html_temp.svg")
         tree_html = ET.ElementTree(root_html)
         tree_html.write(tmp_html_svg, encoding='utf-8', xml_declaration=True)
@@ -243,7 +243,7 @@ class PDFExporter:
             svg_content = f.read()
         os.remove(tmp_html_svg)
 
-        # 6. HTML 헤더/푸터 정의
+        # 6. Define HTML header/footer
         meta_tags = []
         for k, v in html_extra_meta.items():
             meta_tags.append(f'<meta name="{k}" content="{v}">')
@@ -266,16 +266,16 @@ class PDFExporter:
                     </html>
                     """
 
-        # 7. HTML로 저장
+        # 7. Save as HTML
         with open(output_html_path, 'w', encoding='utf-8') as f:
             f.write(html_head)
             f.write(svg_content)
             f.write(html_tail)
 
-        # 8. 원하는 위치로 복사 (덮어쓰기)
+        # 8. Copy to desired location (overwrite)
         shutil.copyfile(output_html_path, html_extra_path)
 
-        # 9. PDF도 내보낼 경우
+        # 9. If exporting PDF as well
         if export_pdf:
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.svg')
             tree_svg.write(tmp.name)
@@ -452,8 +452,8 @@ class PDFExporter:
                                 border_color: str = 'red',
                                 border_width: float = 6.0):
         """
-        - primitive를 하나씩 누적해가는 단일 루프
-        - 루프 안에서 바로 PNG 프레임으로 변환 → VideoWriter에 기록
+        - Single loop accumulating primitives one by one
+        - Convert to PNG frame directly in the loop → record to VideoWriter
         """
         import io
         import numpy as np
@@ -461,7 +461,7 @@ class PDFExporter:
         import xml.etree.ElementTree as ET
         from cairosvg import svg2png
 
-        # 1) 텐서 → NumPy
+        # 1) Tensor → NumPy
         x_np     = x.detach().cpu().numpy()
         y_np     = y.detach().cpu().numpy()
         r_np     = r.detach().cpu().numpy()
@@ -474,15 +474,15 @@ class PDFExporter:
         p = len(self.svg_paths)
         rev_indices = list(reversed(range(N)))
 
-        # 2) 빈 SVG 루트 하나만 만든 뒤, 프리미티브와 강조 테두리를 여기에 누적
+        # 2) Create one empty SVG root, then accumulate primitives and highlight borders
         root = ET.Element(f'{{{SVG_NS}}}svg', {
             'width': str(int(self.canvas_w)),
             'height': str(int(self.canvas_h)),
             'viewBox': f"{int(-self.canvas_w/2)} {int(-self.canvas_h/2)} {int(self.canvas_w)} {int(self.canvas_h)}"
         })
 
-        # 3) 비디오 크기 알아내기 — 첫 프레임 생성
-        # (여기서는 첫 primitive 하나만 추가한 임시 root 생성)
+        # 3) Determine video size — generate first frame
+        # (Here, create temporary root with only first primitive added)
         first_idx = rev_indices[0]
         self._append_primitive_to_root(root, first_idx,
                                     x_np, y_np, r_np, theta_np, c_np, alpha_vals,
@@ -495,12 +495,12 @@ class PDFExporter:
         first = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
         h, w = first.shape[:2]
 
-        # 4) VideoWriter 초기화
+        # 4) Initialize VideoWriter
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = cv2.VideoWriter(video_path, fourcc, fps, (w, h))
         import time
-        # 5) 단일 루프: primitive 하나씩 누적 → 매 사이클마다 한 프레임 기록
-        #    첫 번째는 이미 root에 추가되어 있으므로 enumerate 시작점 0
+        # 5) Single loop: accumulate primitives one by one → record one frame per cycle
+        #    First primitive already added to root, so enumerate starts at 0
         for frame_idx, idx in enumerate(rev_indices):
             t_start = time.time()
 
@@ -512,9 +512,9 @@ class PDFExporter:
                     svg_hollow, border_color, border_width
                 )
                 t_primitive_end = time.time()
-                print(f"[{frame_idx}] Primitive 추가 시간: {t_primitive_end - t_primitive_start:.4f}초")
+                print(f"[{frame_idx}] Primitive add time: {t_primitive_end - t_primitive_start:.4f}s")
             else:
-                print(f"[{frame_idx}] 첫 프레임: Primitive 추가 생략")
+                print(f"[{frame_idx}] First frame: Primitive add skipped")
 
             t_svg_start = time.time()
             svg_bytes = ET.tostring(root, encoding='utf-8', xml_declaration=True)
@@ -537,11 +537,11 @@ class PDFExporter:
             writer.write(frame)
             t_write_end = time.time()
 
-            print(f"[{frame_idx}] SVG to string: {t_svg_end - t_svg_start:.4f}초")
-            print(f"[{frame_idx}] SVG to PNG:   {t_png_end - t_png_start:.4f}초")
-            print(f"[{frame_idx}] PNG decode:   {t_decode_end - t_decode_start:.4f}초")
-            print(f"[{frame_idx}] Frame write:  {t_write_end - t_write_start:.4f}초")
-            print(f"[{frame_idx}] 전체 루프 시간: {t_write_end - t_start:.4f}초\n")
+            print(f"[{frame_idx}] SVG to string: {t_svg_end - t_svg_start:.4f}s")
+            print(f"[{frame_idx}] SVG to PNG:   {t_png_end - t_png_start:.4f}s")
+            print(f"[{frame_idx}] PNG decode:   {t_decode_end - t_decode_start:.4f}s")
+            print(f"[{frame_idx}] Frame write:  {t_write_end - t_write_start:.4f}s")
+            print(f"[{frame_idx}] Total loop time: {t_write_end - t_start:.4f}s\n")
             print("asdf")
 
         writer.release()
@@ -552,9 +552,9 @@ class PDFExporter:
                                 x_np, y_np, r_np, theta_np, c_np, alpha_vals,
                                 svg_hollow, border_color, border_width):
         """
-        root(<svg> Element)에
-        - j번째 프리미티브와
-        - 강조용 테두리(이 프리미티브 전용)를 append 해 주는 헬퍼
+        Helper to append to root(<svg> Element):
+        - j-th primitive and
+        - highlight border (for this primitive only)
         """
         tree     = ET.parse(self.svg_paths[j % len(self.svg_paths)])
         tpl_root = tree.getroot()
@@ -570,7 +570,7 @@ class PDFExporter:
             f"translate({-self.view_w/2},{-self.view_h/2})"
         )
 
-        # 1) 메인 도형
+        # 1) Main shape
         g = ET.Element(f'{{{SVG_NS}}}g', {'transform': transform})
         if not svg_hollow:
             g.attrib.update({
@@ -589,7 +589,7 @@ class PDFExporter:
             g.append(deepcopy(ch))
         root.append(g)
 
-        # 2) 강조 테두리
+        # 2) Highlight border
         border_g = ET.Element(f'{{{SVG_NS}}}g', {'transform': transform})
         border_g.attrib.update({
             'fill': 'none',
