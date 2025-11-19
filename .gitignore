@@ -39,6 +39,8 @@ output_webpage/src_sequential_lyrics/index.html
 !assets/primitives/praying_hands.png
 !assets/primitives/soccerball2.png
 
+!assets/primitives/cane*
+!assets/primitives/hat*
 
 assets/font/*
 !assets/font/arial.ttf

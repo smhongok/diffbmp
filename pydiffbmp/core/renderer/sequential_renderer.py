@@ -5,27 +5,7 @@ from tqdm import tqdm
 from torch.amp import autocast, GradScaler
 from .simple_tile_renderer import SimpleTileRenderer
 
-# =============================================================================
-# DEBUG CONFIGURATION FOR GRADIENT VISUALIZATION
-# =============================================================================
-# Set to True to enable gradient visualization during adaptive control
-ENABLE_GRADIENT_DEBUG_VISUALIZATION = True
-
-# Set to True to enable non-problematic primitive gradient visualization for comparison
-ENABLE_NON_PROBLEMATIC_PRIMITIVE_GRADIENT_VISUALIZATION = True
-
-# Directory to save gradient visualization images
-GRADIENT_DEBUG_SAVE_DIR = "./outputs/vis_class/debug_gradients_sequential"
-
-# =============================================================================
-
-DIFF_MASK_EXPORT_PATH = "./outputs/vis_class/diff_mask_sequential"  # Directory to save diff mask images
-
-
-
-# =============================================================================
-
- # Import necessary functions for statistics
+# Import necessary functions for statistics
 from .simple_tile_renderer import vram_used_by_pid
 try:
     from cuda_tile_rasterizer import print_cuda_timing_stats, print_cuda_timing_stats_fp16
@@ -41,12 +21,17 @@ class SequentialFrameRenderer(SimpleTileRenderer):
     Inherits from SimpleTileRenderer and uses warmup scheduling for loss.
     """
     
-    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None, tile_size=32, sigma = 1.0, c_blend=0.0, primitive_colors: torch.Tensor = None, max_prims_per_pixel: int = 1):
+    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None, tile_size=32, sigma = 1.0, c_blend=0.0, primitive_colors: torch.Tensor = None, max_prims_per_pixel: int = 1, debug_config: dict = None):
         # Pass parameters to SimpleTileRenderer using keyword arguments
         super().__init__(canvas_size, S, tile_size=tile_size, 
                         alpha_upper_bound=alpha_upper_bound, device=device, 
                         use_fp16=use_fp16, gamma=gamma, output_path=output_path,
                         sigma = sigma, c_blend=c_blend, primitive_colors=primitive_colors, max_prims_per_pixel=max_prims_per_pixel)
+        
+        # Store debug configuration (defaults are applied by constants.py)
+        if debug_config is None:
+            raise ValueError("Debug config is required for SequentialFrameRenderer")
+        self.debug_config = debug_config
     
     def compute_loss_with_warmup(self, 
                                rendered: torch.Tensor, 
@@ -200,17 +185,26 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 
                 # DIFF MASK DEBUG VISUALIZATION
                 # Save diff mask for visualization
-                if DIFF_MASK_EXPORT_PATH is not None:
+                if self.debug_config.get("diff_mask", {}).get("enabled", False):
                     import os
                     from torchvision.utils import save_image
-                    os.makedirs(DIFF_MASK_EXPORT_PATH, exist_ok=True)
+                    
+                    # Create timestamped subfolder if not already created
+                    if not hasattr(self, '_diff_mask_timestamp'):
+                        from datetime import datetime
+                        self._diff_mask_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    
+                    diff_mask_base_path = self.debug_config.get("diff_mask", {}).get("export_path", "./outputs/vis_class/diff_mask_sequential")
+                    diff_mask_export_path = os.path.join(diff_mask_base_path, f"diff_masks_{self._diff_mask_timestamp}")
+                    os.makedirs(diff_mask_export_path, exist_ok=True)
+                    
                     # Use frame index from self if available, otherwise use a counter
                     frame_idx = getattr(self, 'current_frame_idx', 0)
-                    diff_mask_path = os.path.join(DIFF_MASK_EXPORT_PATH, f"diff_mask_frame_{frame_idx:04d}.png")
+                    diff_mask_path = os.path.join(diff_mask_export_path, f"diff_mask_frame_{frame_idx:04d}.png")
                     # Convert boolean mask to float and add batch/channel dimensions for save_image
                     diff_mask_float = diff_mask_for_freeze.float().unsqueeze(0)  # [1, H, W]
                     save_image(diff_mask_float, diff_mask_path)
-                    #print(f"[Selective Freeze] Saved diff mask to: {diff_mask_path}")
+                    print(f"[Selective Freeze] Saved diff mask to: {diff_mask_path}")
         
         pbar = tqdm(range(num_iter), desc="Optimizing with warmup scheduling")
         
@@ -227,14 +221,15 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             if (adaptive_config.get('enabled', False) and i in apply_epochs):
                 
                 # Choose between debug visualization or normal adaptive control
-                if ENABLE_GRADIENT_DEBUG_VISUALIZATION:
+                if self.debug_config.get("gradient_visualization", {}).get("enabled", False):
                     # Use debug version with gradient visualization
                     import os
                     from datetime import datetime
                     
                     # Create timestamped subdirectory for this iteration
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    iteration_save_dir = os.path.join(GRADIENT_DEBUG_SAVE_DIR, f"iter_{i:04d}_{timestamp}")
+                    gradient_debug_save_dir = self.debug_config.get("gradient_visualization", {}).get("save_dir", "./outputs/vis_class/debug_gradients_sequential")
+                    iteration_save_dir = os.path.join(gradient_debug_save_dir, f"iter_{i:04d}_{timestamp}")
                     
                     print(f"\n[Debug Mode] Applying adaptive control with gradient visualization at iteration {i}")
                     print(f"[Debug Mode] Saving visualizations to: {iteration_save_dir}")
@@ -831,13 +826,15 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         
         # Create visualizer for problematic primitives (warm colors, red dots)
         vis_path_problematic_base = os.path.join(save_dir, f"gradient_problematic_{timestamp}")
+        gradient_threshold = self.debug_config.get("gradient_visualization", {}).get("gradient_threshold", 1e-15)
         visualizer_problematic = GradientVisualizer(
             target_image=target_image,
             save_path=vis_path_problematic_base,
             color_spectrum="warm",  # Use warm colors for problematic primitives
             background_color=(1.0, 1.0, 1.0),  # White background
             primitive_radius_multiplier=1.5,
-            enable_logging=True
+            enable_logging=True,
+            gradient_threshold=gradient_threshold,
         )
         
         # Create visualizer for non-problematic primitives (cool colors, blue dots)
@@ -848,7 +845,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             color_spectrum="cool",  # Use cool colors for non-problematic primitives
             background_color=(1.0, 1.0, 1.0),  # White background
             primitive_radius_multiplier=1.5,
-            enable_logging=True
+            enable_logging=True,
+            gradient_threshold=gradient_threshold,
         )
         
         # Track selected primitives for each tile
@@ -952,7 +950,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 color_spectrum="full",  # Use full spectrum for overall view
                 background_color=(1.0, 1.0, 1.0),  # White background
                 primitive_radius_multiplier=1.5,
-                enable_logging=True
+                enable_logging=True,
+                gradient_threshold=gradient_threshold,
             )
             
             # Visualize all problematic primitives

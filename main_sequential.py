@@ -27,19 +27,12 @@ from pydiffbmp.core.initializer.svgsplat_initializater import StructureAwareInit
 from pydiffbmp.core.initializer.random_initializater import RandomInitializer
 from pydiffbmp.util.spatial_constrain_visualizer import save_spatial_constraints
 
-# Route visualization flag - set to True to enable primitive movement visualization
-ENABLE_ROUTE_VISUALIZATION = False
-
 # Import our modules
 from pydiffbmp.core.preprocessing import Preprocessor
 from pydiffbmp.util.utils import set_global_seed, gaussian_blur, compute_psnr, extract_chars_from_file
 from pydiffbmp.util.pdf_exporter import PDFExporter
 import pydiffbmp.util.target_masks as target_masks
 from pydiffbmp.util.temporal_consistency_metrics import compute_all_temporal_metrics
-
-# Conditional import for route visualization
-if ENABLE_ROUTE_VISUALIZATION:
-    from pydiffbmp.util.route_visualizer import create_route_visualization
 
 
 
@@ -308,6 +301,7 @@ sequential_renderer = SequentialFrameRenderer(
     c_blend=config["optimization"].get("c_blend", 0.0),
     primitive_colors=primitive_colors,
     max_prims_per_pixel=config["initialization"].get("max_prims_per_pixel"),
+    debug_config=config.get("sequential_debug", {}),
 )
 print(f"Using SequentialFrameRenderer with tile-based rendering (tile_size: {sequential_config['tile_size']})")
 
@@ -529,10 +523,15 @@ for frame_idx, frame_result in enumerate(frame_results):
     
 
 # Generate route visualization if enabled (after all frames are processed)
-if ENABLE_ROUTE_VISUALIZATION and len(frame_results) >= 2:
+route_viz_config = config.get("sequential_debug", {}).get("route_visualization", {})
+enable_route_visualization = route_viz_config.get("enabled", False)
+if enable_route_visualization and len(frame_results) >= 2:
     print("\nGenerating primitive movement route visualization...")
-    route_viz_path = os.path.join(output_dir, f'primitive_routes_{timestamp}.png')
+    route_viz_export_path = route_viz_config.get("export_path", output_dir)
+    os.makedirs(route_viz_export_path, exist_ok=True)
+    route_viz_path = os.path.join(route_viz_export_path, f'primitive_routes_{timestamp}.png')
     try:
+        from pydiffbmp.util.route_visualizer import create_route_visualization
         create_route_visualization(
             frame_results=frame_results,
             output_path=route_viz_path,
