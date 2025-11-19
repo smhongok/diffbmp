@@ -16,12 +16,16 @@ import cv2
 import matplotlib.pyplot as plt
 from PIL import Image
 from datetime import datetime
+import json
+import argparse
 
 # Import GradientVisualizer
 from gradient_visualizer import GradientVisualizer
 
-# Add the parent directory to the path to import modules
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add the project root to the path to import pydiffbmp modules
+# Script is at: circle_art/pydiffbmp/util/initialization_exporter.py
+# Project root is: circle_art/
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from pydiffbmp.core.preprocessing import Preprocessor
 from pydiffbmp.core.initializer.svgsplat_initializater import StructureAwareInitializer
@@ -29,134 +33,58 @@ from pydiffbmp.core.initializer.random_initializater import RandomInitializer
 from pydiffbmp.core.renderer.simple_tile_renderer import SimpleTileRenderer
 from pydiffbmp.util.svg_loader import SVGLoader
 from pydiffbmp.util.primitive_loader import PrimitiveLoader
-from pydiffbmp.util.utils import set_global_seed
+from pydiffbmp.util.primitive_utils import expand_primitive_wildcards
+from pydiffbmp.util.utils import set_global_seed, extract_chars_from_file
+from pydiffbmp.util.constants import apply_constants_to_config
 
-# ============================================================================
-# CONFIGURATION CONSTANTS
-# ============================================================================
-
-# Preprocessing configuration
-PREPROCESSING_CONFIG = {
-    "img_path": "./images/personal_trial/box.png",  # Change this to your target image
-    "final_width": 256,
-    "trim": False,
-    "FM_halftone": False,
-    "transform": "none",
-    "exist_bg": True,
-    # Required parameters for preprocessing functions
-    "do_equalize": False,
-    "do_local_contrast": False,
-    "do_tone_curve": False,
-    "bg_threshold": 250,
-    "local_contrast": {
-        "radius": 2.0,
-        "amount": 3.0
-    },
-    "tone_params": {
-        "in_low": 50,
-        "in_high": 200,
-        "out_low": 30,
-        "out_high": 230
-    },
-    "vertical_paddings": [0, 0]  # [top, bottom] padding
-}
-
-# SVG/Primitive configuration
-SVG_CONFIG = {
-    "primitive_file": "arial.ttf",  # Change this to your primitive file
-    "convert_to_svg": True,
-    "output_width": 128,
-    "bg_threshold": 250,
-    "svg_hollow": False,
-    # For font files (TTF/OTF)
-    "text": ["A", "B", "C"],  # Text to render if using font files
-    "text_file": None,  # Path to text file if using external text
-    "remove_punctuation": False
-}
-
-# Initialization configuration
-INITIALIZATION_CONFIG = {
-    "N": 1000,  # Number of primitives
-    "structure_aware": {
-        "initializer": "structure_aware",
-        "N": 1000,
-        # Base initializer parameters
-        "alpha": 0.3,
-        "min_distance": 20,
-        "peak_threshold": 0.5,
-        "radii_min": 2,
-        "radii_max": 8,
-        "v_init_bias": -5.0,
-        "v_init_slope": 10.0,
-        "keypoint_extracting": False,
-        "debug_mode": False,
-        "distance_factor": 0.0,
-    },
-    "random": {
-        "initializer": "random",
-        "N": 1000,
-        # Base initializer parameters
-        "alpha": 0.3,
-        "min_distance": 20,
-        "peak_threshold": 0.5,
-        "radii_min": 2,
-        "radii_max": 8,
-        "v_init_bias": -5.0,
-        "v_init_slope": 10.0,
-        "keypoint_extracting": False,
-        "debug_mode": False,
-        "distance_factor": 0.0,
-    }
-}
-
-# Optimization configuration (minimal, just for renderer setup)
-OPTIMIZATION_CONFIG = {
-    "alpha_upper_bound": 0.5,
-    "use_fp16": False,
-    "tile_size": 32,
-    "blur_sigma": 0.0,
-    "do_gaussian_blur": False
-}
-
-# Output configuration
-OUTPUT_CONFIG = {
-    "output_folder": "./outputs/box/initialization_test001/",
-    "save_format": "png"
-}
-
-# Random seed for reproducibility
-RANDOM_SEED = 42
+NUMBER_OF_VISUALIZATION_PRIMITIVES = 10
 
 # ============================================================================
 # MAIN FUNCTIONS
 # ============================================================================
 
 def setup_environment():
-    """Setup device and random seed"""
+    """Setup device"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    set_global_seed(RANDOM_SEED)
     print(f"Using device: {device}")
     return device
 
-def load_and_preprocess_image(device):
+def load_and_preprocess_image(config, device):
     """Load and preprocess the target image"""
     print("Loading and preprocessing target image...")
     
+    pp_conf = config["preprocessing"]
+    
+    # Handle multiple images - use first one for initialization export
+    img_path = pp_conf["img_path"]
+    if isinstance(img_path, list):
+        img_path = img_path[0]
+        pp_conf["img_path"] = img_path
+        print(f"Multiple images detected, using first image: {img_path}")
+    
+    # Handle list parameters - extract first element (same as main.py)
+    final_width = pp_conf.get("final_width", 128)
+    if isinstance(final_width, list):
+        final_width = final_width[0]
+        print(f"Using first final_width value: {final_width}")
+    
     # Initialize preprocessor
     preprocessor = Preprocessor(
-        final_width=PREPROCESSING_CONFIG.get("final_width", 128),
-        trim=PREPROCESSING_CONFIG.get("trim", False),
-        FM_halftone=PREPROCESSING_CONFIG.get("FM_halftone", False),
-        transform_mode=PREPROCESSING_CONFIG.get("transform", "none"),
+        final_width=final_width,
+        trim=pp_conf.get("trim", False),
+        FM_halftone=pp_conf.get("FM_halftone", False),
+        transform_mode=pp_conf.get("transform", "none"),
     )
     
     # Load target image
-    if PREPROCESSING_CONFIG.get("exist_bg", True):
+    target_binary_mask_np = None
+    exist_bg = pp_conf.get("exist_bg", True)
+    if exist_bg:
         print("Target image has background")
-        I_target = preprocessor.load_image_8bit_color(PREPROCESSING_CONFIG).astype(np.float32) / 255.0
+        I_target = preprocessor.load_image_8bit_color(pp_conf).astype(np.float32) / 255.0
     else:
         print("Target image has no background, using color and opacity")
-        I_target, target_binary_mask_np = preprocessor.load_image_8bit_color_opacity(PREPROCESSING_CONFIG)
+        I_target, target_binary_mask_np = preprocessor.load_image_8bit_color_opacity(pp_conf)
         I_target = I_target.astype(np.float32) / 255.0
     
     I_target = torch.tensor(I_target, device=device)  # (H, W, 3) or (H, W, 4) if no background
@@ -166,67 +94,92 @@ def load_and_preprocess_image(device):
     print(f"Target image shape: {I_target.shape}")
     print(f"Canvas size: {H} x {W}")
     
-    return I_target, H, W, preprocessor
+    return I_target, H, W, preprocessor, target_binary_mask_np
 
-def load_primitive_templates(device):
+def load_primitive_templates(config, device):
     """Load primitive templates (SVG, PNG, JPG, TTF, etc.) using the same logic as main.py"""
     print("Loading primitive templates...")
     
-    # Handle SVG file loading (same logic as main.py lines 134-197)
-    primitive_file = SVG_CONFIG.get("primitive_file")
-    svg_ext = os.path.splitext(primitive_file)[1].lower()
+    primitive_conf = config["primitive"]
     
-    if svg_ext == ".svg":
-        svg_path = os.path.join("./assets/svg", primitive_file)
-    elif svg_ext in (".png", ".jpg", ".jpeg"):
-        if SVG_CONFIG.get("convert_to_svg", True):
-            from pydiffbmp.util.svg_converter import ImageToSVG
-            img_converter = ImageToSVG()
-            svg_path = img_converter.extract_filled_outlines(primitive_file, threshold=100, min_area_ratio=0.000001)
-            del img_converter
-        else:
-            svg_path = os.path.join("./assets/primitives", primitive_file)
-    elif svg_ext in (".otf", ".ttf"):
-        # Handle font files - text rendering
-        texts = None
-        if "text" in SVG_CONFIG and SVG_CONFIG["text"] is not None:
-            texts = SVG_CONFIG["text"]
-        elif "text_file" in SVG_CONFIG and SVG_CONFIG["text_file"] is not None:
-            # File-based text extraction
-            text_ext = os.path.splitext(SVG_CONFIG.get("text_file"))[1].lower()
-            text_path = os.path.join("./assets/texts", SVG_CONFIG.get("text_file"))
-            
-            if text_ext == ".txt" or text_ext == ".lrc":
-                texts, char_counts, word_lengths_per_line = extract_chars_from_file(
-                    text_path, text_ext, 
-                    remove_punct=SVG_CONFIG.get("remove_punctuation", False), 
-                    punct_to_remove=".,;:(){}[]\"'"
-                )
+    # Handle primitive file loading (same logic as main.py)
+    primitive_file_config = primitive_conf.get("primitive_file")
+    primitive_file_config = expand_primitive_wildcards(primitive_file_config)
+    
+    # Handle list of files (multiple primitives)
+    if isinstance(primitive_file_config, list):
+        # Multiple primitives - process each one
+        svg_path = []
+        for file_item in primitive_file_config:
+            file_ext = os.path.splitext(file_item)[1].lower()
+            if file_ext == ".svg":
+                svg_path.append(os.path.join("assets/svg", file_item))
+            elif file_ext in (".png", ".jpg", ".jpeg"):
+                if primitive_conf.get("convert_to_svg"):
+                    from pydiffbmp.util.svg_converter import ImageToSVG
+                    img_converter = ImageToSVG()
+                    converted_path = img_converter.extract_filled_outlines(file_item, threshold=100, min_area_ratio=0.000001)
+                    svg_path.append(converted_path)
+                    del img_converter
+                else:
+                    svg_path.append(os.path.join("assets/primitives", file_item))
             else:
-                raise ValueError(f"Unsupported text_file type: {text_ext}")
-        
-        if texts is not None:
-            from pydiffbmp.util.svg_converter import FontParser
-            font_parser = FontParser(primitive_file)
-            if isinstance(texts, list):
-                svg_paths = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
-            else:
-                svg_paths = str(font_parser.text_to_svg(texts, mode="opt-path"))
-            svg_path = svg_paths
-            del font_parser
-        else:
-            raise ValueError("No text source ('text' or 'text_file') provided in svg config.")
+                raise ValueError(f"Unsupported file extension in list: {file_ext}")
     else:
-        svg_path = SVG_CONFIG.get("primitive_file", "assets/svg/circle.svg")
+        # Single primitive - original logic
+        primitive_ext = os.path.splitext(primitive_file_config)[1].lower()
+        if primitive_ext == ".svg":
+            svg_path = os.path.join("assets/svg", primitive_file_config)
+        elif primitive_ext in (".png", ".jpg", ".jpeg"):
+            if primitive_conf.get("convert_to_svg", True):
+                from pydiffbmp.util.svg_converter import ImageToSVG
+                img_converter = ImageToSVG()
+                svg_path = img_converter.extract_filled_outlines(primitive_file_config, threshold=100, min_area_ratio=0.000001)
+                del img_converter
+            else:
+                svg_path = os.path.join("assets/primitives", primitive_file_config)
+        elif primitive_ext in (".otf", ".ttf"):
+            # Handle font files - text rendering
+            texts = None
+            if "text" in primitive_conf and primitive_conf["text"] is not None:
+                texts = primitive_conf["text"]
+            elif "text_file" in primitive_conf and primitive_conf["text_file"] is not None:
+                # File-based text extraction
+                text_ext = os.path.splitext(primitive_conf.get("text_file"))[1].lower()
+                text_path = os.path.join("./assets/texts", primitive_conf.get("text_file"))
+                
+                if text_ext == ".txt" or text_ext == ".lrc":
+                    texts, char_counts, word_lengths_per_line = extract_chars_from_file(
+                        text_path, text_ext, 
+                        remove_punct=primitive_conf.get("remove_punctuation", False), 
+                        punct_to_remove=".,;:(){}[]\"'"
+                    )
+                else:
+                    raise ValueError(f"Unsupported text_file type: {text_ext}")
+            
+            if texts is not None:
+                from pydiffbmp.util.svg_converter import FontParser
+                font_parser = FontParser(primitive_file_config)
+                if isinstance(texts, list):
+                    svg_paths = [str(font_parser.text_to_svg(t, mode="opt-path")) for t in texts]
+                else:
+                    svg_paths = str(font_parser.text_to_svg(texts, mode="opt-path"))
+                svg_path = svg_paths
+                del font_parser
+            else:
+                raise ValueError("No text source ('text' or 'text_file') provided in svg config.")
+        else:
+            svg_path = primitive_file_config if primitive_file_config else "assets/svg/circle.svg"
     
     # Load primitives using PrimitiveLoader with fallback to SVGLoader (same as main.py)
     try:
         primitive_loader = PrimitiveLoader(
             primitive_paths=svg_path,
-            output_width=SVG_CONFIG.get("output_width", 128),
+            output_width=primitive_conf.get("output_width", 128),
             device=device,
-            bg_threshold=SVG_CONFIG.get("bg_threshold", 250),
-            resampling=SVG_CONFIG.get("resampling", "LANCZOS")
+            bg_threshold=primitive_conf.get("bg_threshold", 250),
+            radial_transparency=primitive_conf.get("radial_transparency", False),
+            resampling=primitive_conf.get("resampling", "LANCZOS")
         )
         # Keep reference for backward compatibility
         svg_loader = primitive_loader
@@ -237,7 +190,7 @@ def load_primitive_templates(device):
         print(f"PrimitiveLoader failed, falling back to SVGLoader: {e}")
         svg_loader = SVGLoader(
             svg_path=svg_path,
-            output_width=SVG_CONFIG.get("output_width", 128),
+            output_width=primitive_conf.get("output_width", 128),
             device=device
         )
         primitive_loader = None
@@ -257,21 +210,25 @@ def load_primitive_templates(device):
     
     return bmp_tensor, primitive_colors
 
-def create_renderer(H, W, bmp_tensor, primitive_colors, device):
+def create_renderer(config, H, W, bmp_tensor, primitive_colors, device):
     """Create the renderer for visualization"""
     print("Creating renderer...")
+    
+    opt_conf = config["optimization"]
+    output_conf = config["postprocessing"]
     
     renderer_kwargs = {
         "canvas_size": (H, W),
         "S": bmp_tensor,
-        "alpha_upper_bound": OPTIMIZATION_CONFIG.get("alpha_upper_bound", 0.5),
+        "alpha_upper_bound": opt_conf.get("alpha_upper_bound", 0.5),
         "device": device,
-        "use_fp16": OPTIMIZATION_CONFIG.get("use_fp16", False),
-        "output_path": OUTPUT_CONFIG.get("output_folder", "./outputs/"),
-        "tile_size": OPTIMIZATION_CONFIG.get("tile_size", 32),
-        "sigma": OPTIMIZATION_CONFIG.get("blur_sigma", 0.0) if OPTIMIZATION_CONFIG.get("do_gaussian_blur", False) else 0.0,
-        "c_blend": OPTIMIZATION_CONFIG.get("c_blend", 0.0),
+        "use_fp16": opt_conf.get("use_fp16", False),
+        "output_path": output_conf.get("output_folder", "./outputs/"),
+        "tile_size": opt_conf.get("tile_size", 32),
+        "sigma": opt_conf.get("blur_sigma", 0.0) if opt_conf.get("do_gaussian_blur", False) else 0.0,
+        "c_blend": opt_conf.get("c_blend", 0.0),
         "primitive_colors": primitive_colors,  # Pass primitive colors for c_o initialization
+        "max_prims_per_pixel": config["initialization"].get("max_prims_per_pixel"),  # Pass max_prims_per_pixel from config
     }
     
     renderer = SimpleTileRenderer(**renderer_kwargs)
@@ -279,19 +236,22 @@ def create_renderer(H, W, bmp_tensor, primitive_colors, device):
     
     return renderer
 
-def initialize_with_method(initializer_name, initializer_config, renderer, I_target):
-    """Initialize primitives using the specified method"""
+def initialize_with_method(config, renderer, I_target, target_binary_mask=None):
+    """Initialize primitives using the specified method from config"""
+    init_conf = config["initialization"]
+    initializer_name = init_conf.get("initializer", "structure_aware")
+    
     print(f"Initializing primitives with {initializer_name} method...")
     
     if initializer_name == "structure_aware":
-        initializer = StructureAwareInitializer(initializer_config)
+        initializer = StructureAwareInitializer(init_conf)
     elif initializer_name == "random":
-        initializer = RandomInitializer(initializer_config)
+        initializer = RandomInitializer(init_conf)
     else:
         raise ValueError(f"Unknown initializer: {initializer_name}")
     
-    # Initialize parameters
-    x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target)
+    # Initialize parameters with optional target_binary_mask
+    x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target, target_binary_mask)
     
     print(f"Initialized {len(x)} primitives")
     print(f"Position range: x=[{x.min():.3f}, {x.max():.3f}], y=[{y.min():.3f}, {y.max():.3f}]")
@@ -456,7 +416,7 @@ def analyze_edge_proximity(x, y, I_target, output_dir, timestamp, method_name, t
     # Return closest indices as torch tensor for compatibility with GradientVisualizer
     return torch.tensor(closest_indices, dtype=torch.long)
 
-def main():
+def main(config):
     """Main function to run initialization export"""
     print("=" * 60)
     print("INITIALIZATION EXPORTER")
@@ -467,76 +427,92 @@ def main():
     # Setup
     device = setup_environment()
     
+    # Handle list parameters - extract first element (same as main.py)
+    if isinstance(config["preprocessing"].get("final_width"), list):
+        config["preprocessing"]["final_width"] = config["preprocessing"]["final_width"][0]
+        print("Using only one final_width value for initialization export")
+    if isinstance(config["initialization"].get("N"), list):
+        config["initialization"]["N"] = config["initialization"]["N"][0]
+        print("Using only one N value for initialization export")
+    if isinstance(config["primitive"].get("primitive_file"), list) and len(config["primitive"]["primitive_file"]) > 1:
+        # Note: expand_primitive_wildcards already handles this, but log it
+        print(f"Using {len(config['primitive']['primitive_file'])} primitive files")
+    
     # Create output directory
-    output_dir = OUTPUT_CONFIG.get("output_folder", "./outputs/initialization_test/")
+    output_conf = config["postprocessing"]
+    output_dir = output_conf.get("output_folder", "./outputs/initialization_test/")
     os.makedirs(output_dir, exist_ok=True)
     
     # Load and preprocess image
-    I_target, H, W, preprocessor = load_and_preprocess_image(device)
+    I_target, H, W, preprocessor, target_binary_mask_np = load_and_preprocess_image(config, device)
+    
+    # Convert target_binary_mask_np to tensor if it exists
+    target_binary_mask = None
+    if target_binary_mask_np is not None:
+        target_binary_mask = torch.from_numpy(target_binary_mask_np[:, :] > 0).to(device)
+        print(f"Target binary mask created: {target_binary_mask.shape}")
     
     # Load primitive templates
-    bmp_tensor, primitive_colors = load_primitive_templates(device)
+    bmp_tensor, primitive_colors = load_primitive_templates(config, device)
     
     # Create renderer
-    renderer = create_renderer(H, W, bmp_tensor, primitive_colors, device)
+    renderer = create_renderer(config, H, W, bmp_tensor, primitive_colors, device)
     
     # Generate timestamp for unique filenames
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # Save target image for comparison
-    # target_path = os.path.join(output_dir, f"target_{timestamp}.png")
-    # save_target_image(I_target, target_path)
+    target_path = os.path.join(output_dir, f"target_{timestamp}.png")
+    save_target_image(I_target, target_path)
     
-    # Test different initializers
-    initializers_to_test = [
-        ("structure_aware", INITIALIZATION_CONFIG["structure_aware"]),
-        ("random", INITIALIZATION_CONFIG["random"])
-    ]
+    # Test the configured initializer
+    init_conf = config["initialization"]
+    method_name = init_conf.get("initializer", "structure_aware")
     
-    for method_name, method_config in initializers_to_test:
-        print(f"\n{'-' * 40}")
-        print(f"Testing {method_name.upper()} initializer")
-        print(f"{'-' * 40}")
+    print(f"\n{'-' * 40}")
+    print(f"Testing {method_name.upper()} initializer")
+    print(f"{'-' * 40}")
+    
+    try:
+        # Initialize primitives
+        x, y, r, v, theta, c = initialize_with_method(
+            config, renderer, I_target, target_binary_mask
+        )
         
-        try:
-            # Initialize primitives
-            x, y, r, v, theta, c = initialize_with_method(
-                method_name, method_config, renderer, I_target
-            )
-            
-            # Render and save
-            output_path = os.path.join(output_dir, f"init_{method_name}_{timestamp}.png")
-            render_and_save(renderer, x, y, r, v, theta, c, output_path, method_name)
-            
-            # Analyze edge proximity of initialized primitives
-            closest_indices = analyze_edge_proximity(
-                x, y, I_target, output_dir, timestamp, method_name, top_k=10
-            )
-            
-            # Create GradientVisualizer and visualize gradients for closest primitives
-            gradient_save_path = os.path.join(output_dir, f"gradient_{method_name}_{timestamp}")
-            gradient_visualizer = GradientVisualizer(
-                target_image=I_target,
-                save_path=gradient_save_path,
-                color_spectrum="full",
-                background_color=(1.0, 1.0, 1.0),  # White background
-                enable_logging=True,
-                center_dot_radius=1,
-            )
-            
-            # Visualize per-pixel gradients for closest-to-edge primitives
-            print(f"\nVisualizing gradients for {len(closest_indices)} closest-to-edge primitives...")
-            vis_tensor, saved_path = gradient_visualizer.visualize_gradients(
-                renderer, x, y, r, v, theta, c, closest_indices,
-                suffix="closest_to_edges",
-                title_prefix=f"Gradient Visualization - {method_name.upper()} Closest to Edges",
-                center_dot_color=(0.0, 0.0, 0.0)  # Black dots
-            )
-            print(f"Gradient visualization saved to: {saved_path}")
-            
-        except Exception as e:
-            print(f"Error with {method_name} initializer: {e}")
-            continue
+        # Render and save
+        output_path = os.path.join(output_dir, f"init_{method_name}_{timestamp}.png")
+        render_and_save(renderer, x, y, r, v, theta, c, output_path, method_name)
+        
+        # Analyze edge proximity of initialized primitives
+        closest_indices = analyze_edge_proximity(
+            x, y, I_target, output_dir, timestamp, method_name, top_k=NUMBER_OF_VISUALIZATION_PRIMITIVES
+        )
+        
+        # Create GradientVisualizer and visualize gradients for closest primitives
+        gradient_save_path = os.path.join(output_dir, f"gradient_{method_name}_{timestamp}")
+        gradient_visualizer = GradientVisualizer(
+            target_image=I_target,
+            save_path=gradient_save_path,
+            color_spectrum="full",
+            background_color=(1.0, 1.0, 1.0),  # White background
+            enable_logging=True,
+            center_dot_radius=1,
+        )
+        
+        # Visualize per-pixel gradients for closest-to-edge primitives
+        print(f"\nVisualizing gradients for {len(closest_indices)} closest-to-edge primitives...")
+        vis_tensor, saved_path = gradient_visualizer.visualize_gradients(
+            renderer, x, y, r, v, theta, c, closest_indices,
+            suffix="closest_to_edges",
+            title_prefix=f"Gradient Visualization - {method_name.upper()} Closest to Edges",
+            center_dot_color=(0.0, 0.0, 0.0)  # Black dots
+        )
+        print(f"Gradient visualization saved to: {saved_path}")
+        
+    except Exception as e:
+        print(f"Error with {method_name} initializer: {e}")
+        import traceback
+        traceback.print_exc()
     
     # Summary
     end_time = time.time()
@@ -549,8 +525,26 @@ def main():
     print(f"Output directory: {output_dir}")
     print(f"Files generated:")
     print(f"  - target_{timestamp}.png (original target image)")
-    for method_name, _ in initializers_to_test:
-        print(f"  - init_{method_name}_{timestamp}.png (initialized with {method_name})")
+    print(f"  - init_{method_name}_{timestamp}.png (initialized with {method_name})")
+    print(f"  - edge_proximity_viz_{method_name}_{timestamp}.png (edge proximity analysis)")
+    print(f"  - gradient_{method_name}_{timestamp}_closest_to_edges.png (gradient visualization)")
 
 if __name__ == "__main__":
-    main()
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Test and visualize different initializer methods")
+    parser.add_argument('--config', type=str, required=True, help='Path to the config file')
+    args = parser.parse_args()
+    
+    # Load configuration from JSON file
+    print(f"Loading config from: {args.config}")
+    with open(args.config, "r", encoding="utf-8") as f:
+        config = json.load(f)
+    
+    # Apply constants as default values (same as main.py)
+    config = apply_constants_to_config(config)
+    
+    # Set random seed from config
+    set_global_seed(config.get("seed", 42))
+    
+    # Run main with loaded config
+    main(config)

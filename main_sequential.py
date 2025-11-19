@@ -668,12 +668,6 @@ if config['postprocessing'].get('compute_psnr', False):
                 metrics_fh.write(f"  min_criteria_count: {ac_conf.get('min_criteria_count', '')}\n")
                 metrics_fh.write(f"  front_primitives_percentile: {ac_conf.get('front_primitives_percentile', '')}\n")
                 metrics_fh.write(f"  apply_epochs: {ac_conf.get('apply_epochs', '')}\n")
-                gr_conf = ac_conf.get('gradient_ranking', {})
-                if isinstance(gr_conf, dict):
-                    metrics_fh.write("  gradient_ranking:\n")
-                    metrics_fh.write(f"    enabled: {gr_conf.get('enabled', False)}\n")
-                    metrics_fh.write(f"    process_all_pixels: {gr_conf.get('process_all_pixels', False)}\n")
-                    metrics_fh.write(f"    pixels_per_tile: {gr_conf.get('pixels_per_tile', '')}\n")
             except Exception as e:
                 print(f"Warning: Failed to write adaptive_control config to metrics file: {e}")
             

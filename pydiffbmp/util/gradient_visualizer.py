@@ -30,7 +30,7 @@ class GradientVisualizer:
                  color_spectrum: str = "full",
                  background_color: Tuple[float, float, float] = (1.0, 1.0, 1.0),
                  primitive_radius_multiplier: float = 1.5,
-                 gradient_threshold: float = 1e-12,
+                 gradient_threshold: float = 1e-14,
                  center_dot_radius: int = 3,
                  enable_logging: bool = True):
         """
