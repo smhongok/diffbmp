@@ -492,7 +492,15 @@ class SimpleTileRenderer(VectorRenderer):
                     lr_conf['gain_theta'],
                     lr_conf.get('gain_c', 1.0)
                 ], dtype=torch.float16 if self.use_fp16 else torch.float32, device=means2D.device)
-                
+            
+            if self.cuda_rasterizer is None:
+                torch.cuda.empty_cache()  # Clear GPU memory
+                self.cuda_rasterizer = TileRasterizer(
+                    self.H, self.W, self.tile_size, sigma, 
+                    self.alpha_upper_bound, self.max_prims_per_pixel, len(radii),
+                    use_fp16=self.use_fp16
+                )
+
             # Call CUDA rasterizer for all tiles at once
             # Use FP16 version if available and use_fp16 is True
             # Use TileRasterizer class-based version (already created above)
