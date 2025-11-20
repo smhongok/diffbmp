@@ -2,33 +2,18 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
+from torch.amp import autocast, GradScaler
 from .simple_tile_renderer import SimpleTileRenderer
 
-# =============================================================================
-# DEBUG CONFIGURATION FOR GRADIENT VISUALIZATION
-# =============================================================================
-# Set to True to enable gradient visualization during adaptive control
-ENABLE_GRADIENT_DEBUG_VISUALIZATION = False
-
-# Set to True to enable non-problematic primitive gradient visualization for comparison
-ENABLE_NON_PROBLEMATIC_PRIMITIVE_GRADIENT_VISUALIZATION = False
-
-# Directory to save gradient visualization images
-GRADIENT_DEBUG_SAVE_DIR = "./outputs/vis_class/debug_gradients_sequential"
-
-# =============================================================================
-# CUDA CONFIGURATION FOR GRADIENT COMPUTATION
-# =============================================================================
-# Set to True to use CUDA implementation for gradient computation, False to use Python implementation
-USE_CUDA_GRADIENT_COMPUTATION = False
-
-# =============================================================================
-
-DIFF_MASK_EXPORT_PATH = "./outputs/vis_class/diff_mask_sequential"  # Directory to save diff mask images
+# Import necessary functions for statistics
+from .simple_tile_renderer import vram_used_by_pid
+try:
+    from cuda_tile_rasterizer import print_cuda_timing_stats, print_cuda_timing_stats_fp16
+    CUDA_AVAILABLE = True
+except ImportError:
+    CUDA_AVAILABLE = False
 
 
-
-# =============================================================================
 
 class SequentialFrameRenderer(SimpleTileRenderer):
     """
@@ -36,12 +21,17 @@ class SequentialFrameRenderer(SimpleTileRenderer):
     Inherits from SimpleTileRenderer and uses warmup scheduling for loss.
     """
     
-    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None, tile_size=32, sigma = 1.0, c_blend=0.0, primitive_colors: torch.Tensor = None):
+    def __init__(self, canvas_size, S, alpha_upper_bound=0.5, device='cuda', use_fp16=True, gamma=1.0, output_path=None, tile_size=32, sigma = 1.0, c_blend=0.0, primitive_colors: torch.Tensor = None, max_prims_per_pixel: int = 1, debug_config: dict = None):
         # Pass parameters to SimpleTileRenderer using keyword arguments
         super().__init__(canvas_size, S, tile_size=tile_size, 
                         alpha_upper_bound=alpha_upper_bound, device=device, 
                         use_fp16=use_fp16, gamma=gamma, output_path=output_path,
-                        sigma = sigma, c_blend=c_blend, primitive_colors=primitive_colors)
+                        sigma = sigma, c_blend=c_blend, primitive_colors=primitive_colors, max_prims_per_pixel=max_prims_per_pixel)
+        
+        # Store debug configuration (defaults are applied by constants.py)
+        if debug_config is None:
+            raise ValueError("Debug config is required for SequentialFrameRenderer")
+        self.debug_config = debug_config
     
     def compute_loss_with_warmup(self, 
                                rendered: torch.Tensor, 
@@ -168,6 +158,9 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         # Use exponential decay scheduler
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=lr_config['decay_rate'])
         
+        # Mixed-precision scaler (only used if use_fp16 is True)
+        scaler = GradScaler('cuda') if self.use_fp16 else None
+        
         num_iter = opt_conf.get("num_iterations", opt_conf.get("num_iter", 50))
         adaptive_config = opt_conf.get('adaptive_control', {})
         # Read explicit epochs at which to apply adaptive control
@@ -187,18 +180,27 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 
                 # Create binary mask of changed regions (threshold at 0.1 for robustness)
                 diff_magnitude_threshold = selective_parameter_optimization_config.get('diff_magnitude_threshold', 0.1)
-                print(f"Diff magnitude threshold: {diff_magnitude_threshold}")
+                #print(f"Diff magnitude threshold: {diff_magnitude_threshold}")
                 diff_mask_for_freeze = diff_magnitude > diff_magnitude_threshold  # [H, W]
                 
                 # DIFF MASK DEBUG VISUALIZATION
                 # Save diff mask for visualization
-                if DIFF_MASK_EXPORT_PATH is not None:
+                if self.debug_config.get("diff_mask", {}).get("enabled", False):
                     import os
                     from torchvision.utils import save_image
-                    os.makedirs(DIFF_MASK_EXPORT_PATH, exist_ok=True)
+                    
+                    # Create timestamped subfolder if not already created
+                    if not hasattr(self, '_diff_mask_timestamp'):
+                        from datetime import datetime
+                        self._diff_mask_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    
+                    diff_mask_base_path = self.debug_config.get("diff_mask", {}).get("export_path", "./outputs/vis_class/diff_mask_sequential")
+                    diff_mask_export_path = os.path.join(diff_mask_base_path, f"diff_masks_{self._diff_mask_timestamp}")
+                    os.makedirs(diff_mask_export_path, exist_ok=True)
+                    
                     # Use frame index from self if available, otherwise use a counter
                     frame_idx = getattr(self, 'current_frame_idx', 0)
-                    diff_mask_path = os.path.join(DIFF_MASK_EXPORT_PATH, f"diff_mask_frame_{frame_idx:04d}.png")
+                    diff_mask_path = os.path.join(diff_mask_export_path, f"diff_mask_frame_{frame_idx:04d}.png")
                     # Convert boolean mask to float and add batch/channel dimensions for save_image
                     diff_mask_float = diff_mask_for_freeze.float().unsqueeze(0)  # [1, H, W]
                     save_image(diff_mask_float, diff_mask_path)
@@ -219,21 +221,22 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             if (adaptive_config.get('enabled', False) and i in apply_epochs):
                 
                 # Choose between debug visualization or normal adaptive control
-                if ENABLE_GRADIENT_DEBUG_VISUALIZATION:
+                if self.debug_config.get("gradient_visualization", {}).get("enabled", False):
                     # Use debug version with gradient visualization
                     import os
                     from datetime import datetime
                     
                     # Create timestamped subdirectory for this iteration
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    iteration_save_dir = os.path.join(GRADIENT_DEBUG_SAVE_DIR, f"iter_{i:04d}_{timestamp}")
+                    gradient_debug_save_dir = self.debug_config.get("gradient_visualization", {}).get("save_dir", "./outputs/vis_class/debug_gradients_sequential")
+                    iteration_save_dir = os.path.join(gradient_debug_save_dir, f"iter_{i:04d}_{timestamp}")
                     
                     print(f"\n[Debug Mode] Applying adaptive control with gradient visualization at iteration {i}")
                     print(f"[Debug Mode] Saving visualizations to: {iteration_save_dir}")
                     
                     # Apply debug adaptive control with visualization
                     (x, y, r, v, theta, c), tile_info = self.debug_adaptive_control_with_visualization(
-                        x, y, r, v, theta, c, target, adaptive_config, iteration_save_dir
+                        x, y, r, v, theta, c, target, adaptive_config, freeze_mask, iteration_save_dir
                     )
                     
                     # Log debug information
@@ -255,33 +258,68 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             
             optimizer.zero_grad()
             
-            # Generate rendered image using tile-based rendering
+            # Generate rendered image using tile-based rendering with FP16 support
             I_bg = torch.ones((self.H, self.W, 3), device=self.device)
-            rendered = self.render_from_params(x, y, r, theta, v, c, I_bg=I_bg, sigma=0.0)
             
-            # Compute loss with warmup scheduling
-            loss_config = {
-                'reconstruction_weight': 1.0,
-                'warmup_steps': opt_conf.get('warmup_steps', 0)
-            }
-            loss = self.compute_loss_with_warmup(
-                rendered, target, x, y, theta, r, v, c, 
-                loss_config, i, num_iter
-            )
-            
-            loss.backward()
-
-            if selective_parameter_optimization_config.get("enabled", False):
+            if self.use_fp16:
+                # FP16 path with autocast and GradScaler
+                with autocast('cuda'):
+                    rendered = self.render_from_params(x, y, r, theta, v, c, I_bg=I_bg, sigma=0.0)
+                    
+                    # Compute loss with warmup scheduling
+                    loss_config = {
+                        'reconstruction_weight': 1.0,
+                        'warmup_steps': opt_conf.get('warmup_steps', 0)
+                    }
+                    loss = self.compute_loss_with_warmup(
+                        rendered, target, x, y, theta, r, v, c, 
+                        loss_config, i, num_iter
+                    )
                 
-                with torch.no_grad():
-                    x.grad[freeze_mask] = 0
-                    y.grad[freeze_mask] = 0
-                    r.grad[freeze_mask] = 0
-                    v.grad[freeze_mask] = 0
-                    theta.grad[freeze_mask] = 0
-                    c.grad[freeze_mask] = 0
+                # Scale the loss and call backward
+                scaler.scale(loss).backward()
+                
+                # Zero out gradients for frozen primitives if needed
+                if selective_parameter_optimization_config.get("enabled", False):
+                    with torch.no_grad():
+                        x.grad[freeze_mask] = 0
+                        y.grad[freeze_mask] = 0
+                        r.grad[freeze_mask] = 0
+                        v.grad[freeze_mask] = 0
+                        theta.grad[freeze_mask] = 0
+                        c.grad[freeze_mask] = 0
+                
+                # Update optimizer with gradient scaling
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                # FP32 path (original code)
+                rendered = self.render_from_params(x, y, r, theta, v, c, I_bg=I_bg, sigma=0.0)
+                
+                # Compute loss with warmup scheduling
+                loss_config = {
+                    'reconstruction_weight': 1.0,
+                    'warmup_steps': opt_conf.get('warmup_steps', 0)
+                }
+                loss = self.compute_loss_with_warmup(
+                    rendered, target, x, y, theta, r, v, c, 
+                    loss_config, i, num_iter
+                )
+                
+                loss.backward()
+                
+                # Zero out gradients for frozen primitives if needed
+                if selective_parameter_optimization_config.get("enabled", False):
+                    with torch.no_grad():
+                        x.grad[freeze_mask] = 0
+                        y.grad[freeze_mask] = 0
+                        r.grad[freeze_mask] = 0
+                        v.grad[freeze_mask] = 0
+                        theta.grad[freeze_mask] = 0
+                        c.grad[freeze_mask] = 0
+                
+                optimizer.step()
             
-            optimizer.step()
             scheduler.step()
             
             # Update progress bar
@@ -289,6 +327,51 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             if (adaptive_config.get('enabled', False) and i in apply_epochs):
                 postfix['adaptive'] = 'applied'
             pbar.set_postfix(postfix)
+        
+        print(f"Tile-based optimization completed. Final loss: {loss.item():.6f}")
+        
+        used = vram_used_by_pid()
+        mb = lambda b: b / (1024**2)
+        gb = lambda b: b / (1024**3)
+        
+        # Print CUDA timing statistics
+        if CUDA_AVAILABLE:
+            print("\n" + "="*60)
+            print("CUDA Performance Statistics:")
+            print("="*60)
+            if self.use_fp16:
+                print_cuda_timing_stats_fp16()
+            else:
+                print_cuda_timing_stats()
+            print("-"*60)
+            print(f"VRAM used: {mb(used):.0f} MiB, {gb(used):.3f} GB")
+            print("="*60)
+        else:
+            # Print PyTorch timing statistics
+            print("\n" + "="*60)
+            print("PyTorch Performance Statistics:")
+            print("="*60)
+            print("Forward Pass:")
+            print(f"  Total time: {self.pytorch_forward_time:.2f} ms")
+            print(f"  Iterations: {self.pytorch_forward_count}")
+            if self.pytorch_forward_count > 0:
+                print(f"  Average time per iteration: {self.pytorch_forward_time / self.pytorch_forward_count:.2f} ms")
+            
+            print("Backward Pass:")
+            print(f"  Total time: {self.pytorch_backward_time:.2f} ms")
+            print(f"  Iterations: {self.pytorch_backward_count}")
+            if self.pytorch_backward_count > 0:
+                print(f"  Average time per iteration: {self.pytorch_backward_time / self.pytorch_backward_count:.2f} ms")
+            
+            print("Combined:")
+            print(f"  Total time: {self.pytorch_forward_time + self.pytorch_backward_time:.2f} ms")
+            print(f"  Total iterations: {self.pytorch_forward_count + self.pytorch_backward_count}")
+            if (self.pytorch_forward_count + self.pytorch_backward_count) > 0:
+                avg_time = (self.pytorch_forward_time + self.pytorch_backward_time) / (self.pytorch_forward_count + self.pytorch_backward_count)
+                print(f"  Average time per iteration: {avg_time:.2f} ms")
+            print("-"*60)
+            print(f"VRAM used: {mb(used):.0f} MiB, {gb(used):.3f} GB")
+            print("="*60)
         
         return x, y, r, v, theta, c
     
@@ -336,7 +419,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             
             if tight_freezemask:
                 # NEW: Bounding box-based overlap detection (more accurate)
-                print("[Selective Freeze] Using tight bounding box overlap detection")
+                #print("[Selective Freeze] Using tight bounding box overlap detection")
                 
                 # Use shared helper to compute world-space bounding boxes
                 bbox_x_min, bbox_x_max, bbox_y_min, bbox_y_max = self._compute_primitive_world_bboxes(x, y, r, theta)
@@ -379,14 +462,14 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 # Log statistics
                 num_frozen = torch.sum(freeze_mask).item()
                 num_optimized = N - num_frozen
-                print(f"[Selective Freeze] Freeze threshold: {freeze_distance_threshold:.4f} (margin: {margin:.1f}px)")
-                print(f"[Selective Freeze] Changed pixels: {changed_coords.shape[0]}")
-                print(f"[Selective Freeze] Frozen primitives: {num_frozen}/{N} ({100*num_frozen/N:.1f}%)")
-                print(f"[Selective Freeze] Optimized primitives: {num_optimized}/{N} ({100*num_optimized/N:.1f}%)")
+                # print(f"[Selective Freeze] Freeze threshold: {freeze_distance_threshold:.4f} (margin: {margin:.1f}px)")
+                # print(f"[Selective Freeze] Changed pixels: {changed_coords.shape[0]}")
+                # print(f"[Selective Freeze] Frozen primitives: {num_frozen}/{N} ({100*num_frozen/N:.1f}%)")
+                # print(f"[Selective Freeze] Optimized primitives: {num_optimized}/{N} ({100*num_optimized/N:.1f}%)")
                 
             else:
                 # LEGACY: Center-based distance check (original implementation)
-                print("[Selective Freeze] Using legacy center-based distance check")
+                #print("[Selective Freeze] Using legacy center-based distance check")
                 
                 # Convert primitive positions to pixel coordinates (already in pixel space)
                 prim_x_pixel = x  # Already in pixel coordinates
@@ -409,10 +492,10 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 # Log statistics
                 num_frozen = torch.sum(freeze_mask).item()
                 num_optimized = N - num_frozen
-                print(f"[Selective Freeze] Freeze threshold: {freeze_distance_threshold:.1f}px")
-                print(f"[Selective Freeze] Changed pixels: {changed_coords.shape[0]}")
-                print(f"[Selective Freeze] Frozen primitives: {num_frozen}/{N} ({100*num_frozen/N:.1f}%)")
-                print(f"[Selective Freeze] Optimized primitives: {num_optimized}/{N} ({100*num_optimized/N:.1f}%)")
+                # print(f"[Selective Freeze] Freeze threshold: {freeze_distance_threshold:.1f}px")
+                # print(f"[Selective Freeze] Changed pixels: {changed_coords.shape[0]}")
+                # print(f"[Selective Freeze] Frozen primitives: {num_frozen}/{N} ({100*num_frozen/N:.1f}%)")
+                # print(f"[Selective Freeze] Optimized primitives: {num_optimized}/{N} ({100*num_optimized/N:.1f}%)")
             
             # Optional: gradual freeze based on distance
             if use_gradual_freeze:
@@ -440,7 +523,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             Tuple of adapted parameters (x, y, r, v, theta, c)
         """
 
-        print("DEBUG: apply_adaptive_control")
+        #print("DEBUG: apply_adaptive_control")
 
 
         if adaptive_config is None or not adaptive_config.get('enabled', False):
@@ -456,14 +539,6 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         min_criteria_count = adaptive_config.get('min_criteria_count', 2)
         front_primitives_percentile = adaptive_config.get('front_primitives_percentile', 0.7)
         
-        
-
-        
-        # Extract gradient_ranking configuration
-        gradient_ranking_config = adaptive_config.get('gradient_ranking', {})
-        gradient_ranking_enabled = gradient_ranking_config.get('enabled', True)
-        print(f"[Adaptive Control] Gradient ranking enabled: {gradient_ranking_enabled}")
-        
         # Create new leaf tensors - single detach operation
         x_adapted = x.detach().requires_grad_(True)
         y_adapted = y.detach().requires_grad_(True)
@@ -478,14 +553,6 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         # Calculate tile dimensions
         tile_height = canvas_height // tile_rows
         tile_width = canvas_width // tile_cols
-        
-        # Compute gradient magnitudes once for ranking (always computed now)
-        if gradient_ranking_enabled:
-            gradient_magnitudes = self._compute_per_pixel_gradient_magnitude(
-                x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted, target_image, adaptive_config
-            )
-        else:
-            gradient_magnitudes = None
         
         # Process each tile
         for row in range(tile_rows):
@@ -509,8 +576,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 # Find problematic primitives (already limited by max_primitives_per_tile)
                 problematic_indices = self._find_problematic_primitives(
                     tile_indices, x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
-                    scale_threshold, opacity_threshold, gradient_magnitudes, max_primitives_per_tile,
-                    gradient_ranking_enabled, freeze_mask, min_criteria_count, front_primitives_percentile
+                    scale_threshold, opacity_threshold, max_primitives_per_tile,
+                    freeze_mask, min_criteria_count, front_primitives_percentile
                 )
                 
                 # Apply opacity reduction using in-place operation to maintain leaf tensor status
@@ -525,27 +592,26 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                            x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                            v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
                            scale_threshold: float, opacity_threshold: float,
-                           gradient_magnitudes: torch.Tensor = None,
                            max_primitives_per_tile: int = 16,
-                           gradient_ranking_enabled: bool = True,
                            freeze_mask: torch.Tensor = None,
                            min_criteria_count: int = 2,
                            front_primitives_percentile: float = 0.7) -> torch.Tensor:
         """
         Find problematic primitives within a tile based on three criteria,
-        then select top-k by gradient magnitude or scale*opacity based on configuration.
+        then select top-k by scale*opacity.
         
         Args:
             tile_indices: Indices of primitives in this tile
             x, y, r, v, theta, c: Primitive parameters
             scale_threshold: Threshold for large scale primitives
             opacity_threshold: Threshold for high opacity primitives
-            gradient_magnitudes: Per-primitive gradient magnitudes for ranking
             max_primitives_per_tile: Maximum number of primitives to select
-            gradient_ranking_enabled: Whether to use gradient-based ranking (True) or scale*opacity fallback (False)
-            
+            freeze_mask: Optional mask indicating which primitives should be excluded from adaptive control
+            min_criteria_count: Minimum number of criteria a primitive must meet to be considered problematic
+            front_primitives_percentile: Percentile threshold for front primitives (z-order)
+        
         Returns:
-            Indices of problematic primitives (top-k by gradient magnitude or scale*opacity)
+            Indices of problematic primitives (top-k by scale*opacity)
         """
         if len(tile_indices) == 0:
             return torch.tensor([], dtype=torch.long, device=tile_indices.device)
@@ -577,11 +643,11 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         # Calculate actual percentage for display
         front_percentage = int((1.0 - front_primitives_percentile) * 100)
 
-        # Debug: Print criteria counts
-        print(f"[Adaptive Control Debug] Tile criteria counts:")
-        print(f"  - Large scale (>={scale_threshold}): {large_scale_mask.sum().item()}/{len(tile_indices)}")
-        print(f"  - High opacity (>={opacity_threshold:.2f}): {high_opacity_mask.sum().item()}/{len(tile_indices)}")
-        print(f"  - Front primitives (top {front_percentage}%): {front_mask.sum().item()}/{len(tile_indices)}")
+        # # Debug: Print criteria counts
+        # print(f"[Adaptive Control Debug] Tile criteria counts:")
+        # print(f"  - Large scale (>={scale_threshold}): {large_scale_mask.sum().item()}/{len(tile_indices)}")
+        # print(f"  - High opacity (>={opacity_threshold:.2f}): {high_opacity_mask.sum().item()}/{len(tile_indices)}")
+        # print(f"  - Front primitives (top {front_percentage}%): {front_mask.sum().item()}/{len(tile_indices)}")
         
         # Combine criteria: primitives meeting minimum criteria count
         criteria_count = (large_scale_mask.float() + high_opacity_mask.float() + front_mask.float())
@@ -593,41 +659,21 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             tile_freeze_mask = freeze_mask[tile_indices]
             # Keep only primitives that are problematic AND not frozen
             problematic_mask = problematic_mask & (~tile_freeze_mask)
-            print(f"  - Problematic by criteria (>={min_criteria_count}/3): {(criteria_count >= float(min_criteria_count)).sum().item()}/{len(tile_indices)}")
-            print(f"  - After excluding frozen: {problematic_mask.sum().item()}/{len(tile_indices)}")
-        else:
-            print(f"  - Problematic by criteria (>={min_criteria_count}/3): {problematic_mask.sum().item()}/{len(tile_indices)}")
+            # print(f"  - Problematic by criteria (>={min_criteria_count}/3): {(criteria_count >= float(min_criteria_count)).sum().item()}/{len(tile_indices)}")
         
         # Get indices of problematic primitives within the tile
         problematic_tile_indices = torch.where(problematic_mask)[0]
         problematic_global_indices = tile_indices[problematic_tile_indices]
         
-        # Select top-k primitives based on configuration
-        if gradient_ranking_enabled and gradient_magnitudes is not None and len(problematic_global_indices) > 0:
-            # Use gradient-based ranking
-            problematic_gradients = gradient_magnitudes[problematic_global_indices]
-            
-            # Select top-k by gradient magnitude
-            num_to_select = min(max_primitives_per_tile, len(problematic_global_indices))
-            if num_to_select < len(problematic_global_indices):
-                _, top_gradient_indices = torch.topk(problematic_gradients, num_to_select)
-                selected_indices = problematic_global_indices[top_gradient_indices]
-                print(f"  - Selected top-{num_to_select} by gradient: {num_to_select}/{len(problematic_global_indices)}")
-            else:
-                selected_indices = problematic_global_indices
-                print(f"  - Selected all problematic: {len(problematic_global_indices)}/{len(problematic_global_indices)}")
+        # Select top-k primitives based on scale*opacity ranking
+        num_to_select = min(max_primitives_per_tile, len(problematic_global_indices))
+        if num_to_select < len(problematic_global_indices):
+            # Rank by scale*opacity score
+            scores = r[problematic_global_indices] * torch.sigmoid(v[problematic_global_indices])
+            _, top_indices = torch.topk(scores, num_to_select)
+            selected_indices = problematic_global_indices[top_indices]
         else:
-            # Use scale*opacity ranking (either disabled by config or gradient magnitudes unavailable)
-            num_to_select = min(max_primitives_per_tile, len(problematic_global_indices))
-            if num_to_select < len(problematic_global_indices):
-                scores = r[problematic_global_indices] * torch.sigmoid(v[problematic_global_indices])
-                _, top_indices = torch.topk(scores, num_to_select)
-                selected_indices = problematic_global_indices[top_indices]
-                ranking_method = "gradient (unavailable)" if gradient_ranking_enabled else "scale*opacity (config)"
-                print(f"  - Selected top-{num_to_select} by {ranking_method}: {num_to_select}/{len(problematic_global_indices)}")
-            else:
-                selected_indices = problematic_global_indices
-                print(f"  - Selected all problematic: {len(problematic_global_indices)}/{len(problematic_global_indices)}")
+            selected_indices = problematic_global_indices
         
         return selected_indices
     
@@ -712,215 +758,12 @@ class SequentialFrameRenderer(SimpleTileRenderer):
 
 
     
-    def _compute_per_pixel_gradient_magnitude(self, 
-                                                 x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
-                                                 v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
-                                                 target: torch.Tensor,
-                                                 adaptive_config: dict = None) -> torch.Tensor:
-        """
-        Compute per-pixel gradient magnitude based on absolute x,y gradients.
-        Inspired by AbsGS research - measures how much each primitive's position affects the total loss.
-        Uses CUDA kernel for parallel processing of all pixels.
-        
-        Args:
-            x, y, r, v, theta, c: Primitive parameters with gradients
-            target: Target image tensor [H, W, 3]
-            adaptive_config: Configuration dict containing tile and sampling parameters
-            
-        Returns:
-            Tensor of gradient magnitudes per primitive [N]
-        """
-        # Ensure x, y parameters require gradients
-        if not x.requires_grad:
-            x.requires_grad_(True)
-        if not y.requires_grad:
-            y.requires_grad_(True)
-    
-        # Get configuration parameters
-        if adaptive_config is None:
-            adaptive_config = {}
-        tile_rows = adaptive_config.get('tile_rows', 4)
-        tile_cols = adaptive_config.get('tile_cols', 4)
-    
-        # Get gradient sampling configuration
-        gradient_config = adaptive_config.get('gradient_ranking', {})
-        pixels_per_tile = gradient_config.get('pixels_per_tile', 16)
-    
-        H, W = target.shape[:2]
-    
-        # Check if CUDA gradient computation is enabled
-        if not USE_CUDA_GRADIENT_COMPUTATION:
-            print("[Gradient Computation] CUDA disabled, using Python implementation")
-            return self._compute_per_pixel_gradient_magnitude_python(x, y, r, v, theta, c, target, adaptive_config)
-    
-        print(f"[CUDA Gradient Computation] Processing {tile_rows}x{tile_cols} tiles with {pixels_per_tile} pixels per tile")
-    
-        try:
-            # Import CUDA tile rasterizer
-            import cuda_tile_rasterizer
-        
-            # Prepare parameters for CUDA kernel
-            means2D = torch.stack([x, y], dim=1).contiguous()  # [N, 2]
-        
-            # Get primitive templates and selection indices
-            primitive_templates = self.primitive_templates if hasattr(self, 'primitive_templates') else torch.zeros((1, 32, 32), device=x.device)
-            global_bmp_sel = self.global_bmp_sel if hasattr(self, 'global_bmp_sel') else torch.zeros(x.shape[0], dtype=torch.int32, device=x.device)
-        
-            # Ensure target is in correct format [H, W, 3]
-            if target.dim() == 3 and target.shape[2] == 3:
-                target_cuda = target.contiguous()
-            else:
-                target_cuda = target.unsqueeze(-1).repeat(1, 1, 3).contiguous()
-        
-            # Call CUDA kernel for parallel gradient computation
-            gradient_magnitudes = cuda_tile_rasterizer.compute_per_pixel_gradients(
-                means2D,                    # [N, 2] - primitive positions
-                r,                          # [N] - primitive radii  
-                theta,                      # [N] - primitive rotations
-                v,                          # [N] - primitive opacities (logits)
-                c,                          # [N, 3] - primitive colors
-                primitive_templates,        # [T, Ht, Wt] - template masks
-                global_bmp_sel,            # [N] - template selection indices
-                target_cuda,               # [H, W, 3] - target image
-                pixels_per_tile            # Number of pixels to sample per tile
-            )
-        
-            print(f"[CUDA Gradient Computation] Successfully computed gradients for {gradient_magnitudes.shape[0]} primitives")
-            print(f"[CUDA Gradient Computation] Gradient statistics: min={gradient_magnitudes.min().item():.6f}, max={gradient_magnitudes.max().item():.6f}, mean={gradient_magnitudes.mean().item():.6f}")
-        
-            return gradient_magnitudes
-        
-        except ImportError:
-            print("[Gradient Computation] CUDA tile rasterizer not available, falling back to Python implementation")
-            # Fallback to original Python implementation
-            return self._compute_per_pixel_gradient_magnitude_python(x, y, r, v, theta, c, target, adaptive_config)
-    
-        except Exception as e:
-            print(f"[Gradient Computation] CUDA implementation failed: {e}, falling back to Python implementation")
-            # Fallback to original Python implementation  
-            return self._compute_per_pixel_gradient_magnitude_python(x, y, r, v, theta, c, target, adaptive_config)
-
-    def _compute_per_pixel_gradient_magnitude_python(self,
-                                                x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
-                                                v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
-                                                target: torch.Tensor,
-                                                adaptive_config: dict = None) -> torch.Tensor:
-        """
-        Original Python implementation as fallback.
-        Compute per-pixel gradient magnitude based on absolute x,y gradients.
-        Uses fixed-count pixel sampling per tile for performance optimization.
-        When gradient_ranking.process_all_pixels is True, processes all pixels.
-        """
-        # Ensure x, y parameters require gradients
-        if not x.requires_grad:
-            x.requires_grad_(True)
-        if not y.requires_grad:
-            y.requires_grad_(True)
-    
-        # Render current state
-        rendered = self.render_from_params(x, y, r, v, theta, c)
-    
-        # Pixel-wise loss (no reduction)
-        pixel_losses = (rendered - target).pow(2).mean(dim=2)  # [H, W]
-        H, W = pixel_losses.shape
-    
-        # Get tile configuration (same as apply_adaptive_control)
-        if adaptive_config is None:
-            adaptive_config = {}
-        tile_rows = adaptive_config.get('tile_rows', 4)
-        tile_cols = adaptive_config.get('tile_cols', 4)
-    
-        # Get gradient sampling configuration
-        gradient_config = adaptive_config.get('gradient_ranking', {})
-        # Support both new and legacy config keys
-        process_all_pixels = gradient_config.get('process_all_pixels', False)
-        pixels_per_tile = gradient_config.get('pixels_per_tile', 16)
-    
-        # Calculate tile dimensions (same as apply_adaptive_control)
-        tile_height = H // tile_rows
-        tile_width = W // tile_cols
-    
-        # Initialize gradient magnitude accumulator
-        gradient_magnitudes = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
-    
-        total_pixels_processed = 0
-        total_pixels_available = H * W
-    
-        mode_msg = "all pixels" if process_all_pixels else f"{pixels_per_tile} pixels per tile"
-        print(f"[Python Gradient Computation] Processing {tile_rows}x{tile_cols} tiles with {mode_msg}")
-    
-        # Process each tile
-        for row in range(tile_rows):
-            for col in range(tile_cols):
-                # Define tile boundaries (same as apply_adaptive_control)
-                y_min = row * tile_height
-                y_max = (row + 1) * tile_height
-                x_min = col * tile_width
-                x_max = (col + 1) * tile_width
-    
-                # Get all pixel coordinates in this tile
-                tile_pixels = []
-                for i in range(y_min, min(y_max, H)):
-                    for j in range(x_min, min(x_max, W)):
-                        tile_pixels.append((i, j))
-    
-                num_tile_pixels = len(tile_pixels)
-                if num_tile_pixels == 0:
-                    continue
-    
-                # Decide which pixels to process
-                if process_all_pixels:
-                    sampled_pixels = tile_pixels
-                else:
-                    num_sample_pixels = min(pixels_per_tile, num_tile_pixels)  # Don't exceed available pixels
-                    if num_sample_pixels > 0:
-                        if num_sample_pixels < num_tile_pixels:
-                            sample_indices = torch.randperm(num_tile_pixels)[:num_sample_pixels]
-                            sampled_pixels = [tile_pixels[idx] for idx in sample_indices]
-                        else:
-                            # Use all pixels if requested count >= available pixels
-                            sampled_pixels = tile_pixels
-                    else:
-                        sampled_pixels = []
-    
-                # Process selected pixels in this tile
-                for i, j in sampled_pixels:
-                    pixel_loss = pixel_losses[i, j]
-    
-                    # Compute gradients w.r.t. x, y for this pixel
-                    if pixel_loss.requires_grad:
-                        grads = torch.autograd.grad(
-                            outputs=pixel_loss,
-                            inputs=[x, y],
-                            retain_graph=True,
-                            create_graph=False,
-                            allow_unused=True
-                        )
-    
-                        # Sum absolute gradients for x and y per primitive (AbsGS style)
-                        if grads[0] is not None:  # x gradients [N]
-                            gradient_magnitudes += torch.abs(grads[0])
-                        if grads[1] is not None:  # y gradients [N]
-                            gradient_magnitudes += torch.abs(grads[1])
-    
-                total_pixels_processed += len(sampled_pixels)
-    
-        # Scale by actual sampling ratio to approximate full image gradient
-        actual_sample_ratio = total_pixels_processed / total_pixels_available if total_pixels_available > 0 else 1.0
-        # Avoid divide-by-zero; if processing all pixels, ratio will be 1.0
-        if actual_sample_ratio > 0:
-            gradient_magnitudes = gradient_magnitudes / actual_sample_ratio
-    
-        print(f"[Python Gradient Computation] Processed {total_pixels_processed}/{total_pixels_available} pixels ({actual_sample_ratio:.2%})")
-    
-        return gradient_magnitudes
-
-
     def debug_adaptive_control_with_visualization(self,
                                                    x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                                                    v: torch.Tensor, theta: torch.Tensor, c: torch.Tensor,
                                                    target_image: torch.Tensor,
                                                    adaptive_config: dict = None,
+                                                   freeze_mask: torch.Tensor = None,
                                                    save_dir: str = "./debug_gradients") -> tuple:
         """
         Apply adaptive control with gradient visualization for debugging gradient collisions.
@@ -934,6 +777,7 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             x, y, r, v, theta, c: Current primitive parameters
             target_image: Target image tensor [H, W, 3]
             adaptive_config: Configuration dict for adaptive control
+            freeze_mask: Optional tensor indicating which primitives should be excluded from adaptive control
             save_dir: Directory to save visualization images
             
         Returns:
@@ -958,14 +802,9 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         min_criteria_count = adaptive_config.get('min_criteria_count', 2)
         front_primitives_percentile = adaptive_config.get('front_primitives_percentile', 0.7)
         back_primitives_percentile = adaptive_config.get('back_primitives_percentile', 0.3)
-
-        
-        # Extract gradient_ranking configuration
-        gradient_ranking_config = adaptive_config.get('gradient_ranking', {})
-        gradient_ranking_enabled = gradient_ranking_config.get('enabled', True)
         
         print(f"[Debug Adaptive Control] Starting debug with gradient visualization using GradientVisualizer")
-        print(f"[Debug Adaptive Control] Tile grid: {tile_rows}x{tile_cols}, Gradient ranking enabled: {gradient_ranking_enabled}")
+        print(f"[Debug Adaptive Control] Tile grid: {tile_rows}x{tile_cols}")
         
         # Create new leaf tensors
         x_adapted = x.detach().requires_grad_(True)
@@ -982,23 +821,20 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         tile_height = canvas_height // tile_rows
         tile_width = canvas_width // tile_cols
         
-        # Compute gradient magnitudes for ranking
-        gradient_magnitudes = self._compute_per_pixel_gradient_magnitude(
-            x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted, target_image, adaptive_config
-        )
-        
         # Create GradientVisualizer instances once for reuse across tiles
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Create visualizer for problematic primitives (warm colors, red dots)
         vis_path_problematic_base = os.path.join(save_dir, f"gradient_problematic_{timestamp}")
+        gradient_threshold = self.debug_config.get("gradient_visualization", {}).get("gradient_threshold", 1e-15)
         visualizer_problematic = GradientVisualizer(
             target_image=target_image,
             save_path=vis_path_problematic_base,
             color_spectrum="warm",  # Use warm colors for problematic primitives
             background_color=(1.0, 1.0, 1.0),  # White background
             primitive_radius_multiplier=1.5,
-            enable_logging=True
+            enable_logging=True,
+            gradient_threshold=gradient_threshold,
         )
         
         # Create visualizer for non-problematic primitives (cool colors, blue dots)
@@ -1009,7 +845,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             color_spectrum="cool",  # Use cool colors for non-problematic primitives
             background_color=(1.0, 1.0, 1.0),  # White background
             primitive_radius_multiplier=1.5,
-            enable_logging=True
+            enable_logging=True,
+            gradient_threshold=gradient_threshold,
         )
         
         # Track selected primitives for each tile
@@ -1039,8 +876,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 # Find problematic primitives
                 problematic_indices = self._find_problematic_primitives(
                     tile_indices, x_adapted, y_adapted, r_adapted, v_adapted, theta_adapted, c_adapted,
-                    scale_threshold, opacity_threshold, gradient_magnitudes, max_primitives_per_tile,
-                    gradient_ranking_enabled, None, min_criteria_count, front_primitives_percentile
+                    scale_threshold, opacity_threshold, max_primitives_per_tile,
+                    freeze_mask, min_criteria_count, front_primitives_percentile
                 )
                 
                 # Find non-problematic primitives for comparison
@@ -1113,7 +950,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
                 color_spectrum="full",  # Use full spectrum for overall view
                 background_color=(1.0, 1.0, 1.0),  # White background
                 primitive_radius_multiplier=1.5,
-                enable_logging=True
+                enable_logging=True,
+                gradient_threshold=gradient_threshold,
             )
             
             # Visualize all problematic primitives

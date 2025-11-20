@@ -470,9 +470,17 @@ class Preprocessor:
         # Sort files naturally
         image_files.sort()
         
+        # Check if background exists
+        exist_bg = config.get("exist_bg", True)
+        
         for img_file in image_files:
             img_path = os.path.join(sequence_dir, img_file)
-            frame = Image.open(img_path).convert('RGB')
+            
+            # Load as RGBA if no background, otherwise RGB
+            if not exist_bg:
+                frame = Image.open(img_path).convert('RGBA')
+            else:
+                frame = Image.open(img_path).convert('RGB')
             
             # Apply the same preprocessing pipeline as load_image_8bit_color
             frame_array = self._preprocess_single_frame(frame, config)
@@ -487,6 +495,24 @@ class Preprocessor:
         """
         img = frame_pil
         w, h = img.size
+        
+        # Check if this is an RGBA image (no background mode)
+        is_rgba = (img.mode == 'RGBA')
+        exist_bg = config.get("exist_bg", True)
+        
+        # Convert transparent background to white if RGBA and exist_bg=False
+        if is_rgba and not exist_bg:
+            img_array = np.array(img)
+            # Extract alpha channel as binary mask
+            binary_image = (1 - (img_array[:, :, 3] > 0).astype(np.uint8)) * 255
+            
+            # Convert transparent background (alpha=0) to white
+            img_array[binary_image != 0, :3] = 255  # Set RGB to white
+            img_array[binary_image != 0, 3] = 0  # Set alpha to 0
+            img = Image.fromarray(img_array, mode='RGBA')
+            
+            # Convert to RGB after making background white
+            img = img.convert('RGB')
         
         # Store original dimensions for first frame to ensure consistency
         if not hasattr(self, 'width') or not hasattr(self, 'height'):

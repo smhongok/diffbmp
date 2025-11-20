@@ -1,31 +1,35 @@
 {
     "preprocessing": {
         "final_width": [
-            256
+            512
         ],
         "img_path": [
-            "images/gif/pororo_monkey_crop_first2.gif"
-        ]
+            "images/spatial_constraint/sequential"
+        ],
+        "exist_bg" : false,
+        "resampling": "NEAREST"
     },
     "primitive": {
-        "primitive_file": "arial.ttf",
-        "text": "B",
-        "primitive_hollow": false,
+        "primitive_file": ["flowers/Lady_Jane.png", "flowers/rose_of_sharon_1.png"],
+        "convert_to_svg": false,
+        "svg_hollow": false,
         "output_width": 128
     },
     "initialization": {
         "initializer": "structure_aware",
         "N": [
-            2000
+            1000
         ],
         "radii_min": 2,
+        "radii_max": 20,
         "debug_mode": true
     },
     "optimization": {
         "use_fp16": false,
-        "num_iterations": 100,
+        "num_iterations": 300,
         "learning_rate": {
-            "default": 0.1
+            "default": 0.1,
+            "gain_v":5.0
         },
         "do_decay": true,
         "do_gaussian_blur": true,
@@ -33,14 +37,23 @@
             "type": "combined",
             "components": [
                 {"name": "mse", "weight": 1.0},
-                {"name": "perceptual", "weight": 0.2}
+                {"name": "alpha", "weight": 0.3}
             ]
-        }
+        },
+        "pruning":{
+            "do_pruning" : true,
+            "prune_iterations" : 50,
+            "no_prune_last_iterations" : 0,
+            "no_prune_warmup_iterations" : 199,
+            "prune_threshold" : 0.3
+        },
+        "c_blend": 0.3,
+        "alpha_upper_bound" : 0.7
     },
     "sequential": {
         "enabled": true,
-        "input_type": "gif",
-        "max_frames": null,
+        "input_type": "sequence",
+        "max_frames": 2,
         "seperate_init": false,
         "optimization": {
             "num_iterations": 100,
@@ -71,9 +84,9 @@
         },
         "selective_parameter_optimization":{
             "enabled": true,
-            "freeze_distance_threshold": 0.1,
-            "diff_magnitude_threshold": 0.1,
-            "tight_freezemask": false
+            "freeze_distance_threshold": 0.0,
+            "diff_magnitude_threshold": 0.05,
+            "tight_freezemask": true
         },
         "export": {
             "export_frames": true,
@@ -83,9 +96,9 @@
         }
     },
     "postprocessing": {
-        "output_folder": "./outputs/seq_test",
+        "output_folder": "./outputs/girl_blink/",
         "compute_psnr": false,
-        "export_psd": false
+        "export_psd": true
     },
     "seed": 42
 }

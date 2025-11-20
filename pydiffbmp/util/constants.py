@@ -18,7 +18,7 @@ VARIANCE_BASE_PROB = 0.1  # Base probability for low-variance areas
 # V_INIT_BIAS = -5.0
 # V_INIT_SLOPE = 3.0
 
-MAX_PRIMS_PER_PIXEL = 100
+MAX_PRIMS_PER_PIXEL = 400
 
 # ==================== Optimization Constants ====================
 LR_DEFAULT = 0.1
@@ -126,6 +126,25 @@ DEFAULT_LOSS_CONFIG_NO_BG = {
     ]
 }
 
+# ==================== Sequential Debug/Visualization Constants ====================
+# Sequential debug visualization defaults (all disabled by default)
+SEQUENTIAL_DEBUG_CONFIG_DEFAULT = {
+    "gradient_visualization": {
+        "enabled": False,
+        "enable_non_problematic_primitive": False,
+        "gradient_threshold": 1e-15,
+        "save_dir": "./outputs/vis_class/debug_gradients_sequential"
+    },
+    "diff_mask": {
+        "enabled": False,
+        "export_path": "./outputs/vis_class/diff_mask_sequential"
+    },
+    "route_visualization": {
+        "enabled": False,
+        "export_path": "./outputs/seq_test"
+    }
+}
+
 
 def apply_constants_to_config(config: dict) -> dict:
     """
@@ -220,5 +239,42 @@ def apply_constants_to_config(config: dict) -> dict:
     
     # Apply seed default
     config.setdefault("seed", DEFAULT_SEED)
+    
+    # Apply sequential debug configuration defaults
+    if "sequential_debug" not in config:
+        config["sequential_debug"] = {}
+    
+    # Apply gradient visualization defaults
+    if "gradient_visualization" not in config["sequential_debug"]:
+        config["sequential_debug"]["gradient_visualization"] = {}
+    config["sequential_debug"]["gradient_visualization"].setdefault(
+        "enabled", SEQUENTIAL_DEBUG_CONFIG_DEFAULT["gradient_visualization"]["enabled"]
+    )
+    config["sequential_debug"]["gradient_visualization"].setdefault(
+        "enable_non_problematic_primitive", 
+        SEQUENTIAL_DEBUG_CONFIG_DEFAULT["gradient_visualization"]["enable_non_problematic_primitive"]
+    )
+    config["sequential_debug"]["gradient_visualization"].setdefault(
+        "gradient_threshold", SEQUENTIAL_DEBUG_CONFIG_DEFAULT["gradient_visualization"]["gradient_threshold"]
+    )
+    config["sequential_debug"]["gradient_visualization"].setdefault(
+        "save_dir", SEQUENTIAL_DEBUG_CONFIG_DEFAULT["gradient_visualization"]["save_dir"]
+    )
+    
+    # Apply diff mask defaults
+    if "diff_mask" not in config["sequential_debug"]:
+        config["sequential_debug"]["diff_mask"] = {}
+    config["sequential_debug"]["diff_mask"].setdefault("enabled", SEQUENTIAL_DEBUG_CONFIG_DEFAULT["diff_mask"]["enabled"])
+    config["sequential_debug"]["diff_mask"].setdefault("export_path", SEQUENTIAL_DEBUG_CONFIG_DEFAULT["diff_mask"]["export_path"])
+    
+    # Apply route visualization defaults
+    if "route_visualization" not in config["sequential_debug"]:
+        config["sequential_debug"]["route_visualization"] = {}
+    config["sequential_debug"]["route_visualization"].setdefault(
+        "enabled", SEQUENTIAL_DEBUG_CONFIG_DEFAULT["route_visualization"]["enabled"]
+    )
+    config["sequential_debug"]["route_visualization"].setdefault(
+        "export_path", SEQUENTIAL_DEBUG_CONFIG_DEFAULT["route_visualization"]["export_path"]
+    )
     
     return config

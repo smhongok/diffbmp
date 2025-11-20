@@ -8,6 +8,7 @@ import warnings
 import torch
 import torch.nn.functional as F
 import numpy as np
+from torch.amp import autocast
 import matplotlib as mpl
 mpl.use("Agg")  
 import matplotlib.pyplot as plt
@@ -24,9 +25,7 @@ from pydiffbmp.util.primitive_loader import PrimitiveLoader
 from pydiffbmp.util.svg_converter import FontParser, ImageToSVG
 from pydiffbmp.core.initializer.svgsplat_initializater import StructureAwareInitializer
 from pydiffbmp.core.initializer.random_initializater import RandomInitializer
-
-# Route visualization flag - set to True to enable primitive movement visualization
-ENABLE_ROUTE_VISUALIZATION = False
+from pydiffbmp.util.spatial_constrain_visualizer import save_spatial_constraints
 
 # Import our modules
 from pydiffbmp.core.preprocessing import Preprocessor
@@ -34,10 +33,6 @@ from pydiffbmp.util.utils import set_global_seed, gaussian_blur, compute_psnr, e
 from pydiffbmp.util.pdf_exporter import PDFExporter
 import pydiffbmp.util.target_masks as target_masks
 from pydiffbmp.util.temporal_consistency_metrics import compute_all_temporal_metrics
-
-# Conditional import for route visualization
-if ENABLE_ROUTE_VISUALIZATION:
-    from pydiffbmp.util.route_visualizer import create_route_visualization
 
 
 
@@ -83,6 +78,9 @@ preprocessor = Preprocessor(
     transform_mode=pp_conf.get("transform", "none"),
 )
 
+# Check if background exists
+exist_bg = config["preprocessing"].get("exist_bg", True)
+
 # Sequential rendering mode - load frames
 sequential_config = config["sequential"]
 input_path = config["preprocessing"]["img_path"]
@@ -91,6 +89,33 @@ max_frames = sequential_config.get("max_frames", None)
 sequential_config = apply_constants_to_config(sequential_config)
 
 print(f"Loading {input_type} frames from: {input_path}")
+
+# For first frame with no background, we need special handling
+target_binary_mask_np = None
+if not exist_bg and input_type in ["sequence"]:
+    # Load first frame with opacity to get binary mask
+    print("First frame has no background, loading with opacity")
+    
+    # Get the first image file from the sequence directory
+    extensions = ('.png', '.jpg', '.jpeg')
+    image_files = []
+    for ext in extensions:
+        image_files.extend([f for f in os.listdir(input_path) if f.lower().endswith(ext)])
+    image_files.sort()  # Sort naturally to get the first frame
+    
+    if len(image_files) == 0:
+        raise ValueError(f"No image files found in sequence directory: {input_path}")
+    
+    # Construct path to first image
+    first_image_path = os.path.join(input_path, image_files[0])
+    print(f"Loading first frame from: {first_image_path}")
+    
+    # Temporarily modify config to point to the first image
+    preprocessing_config_copy = config["preprocessing"].copy()
+    preprocessing_config_copy["img_path"] = first_image_path
+    
+    first_frame_with_alpha, target_binary_mask_np = preprocessor.load_image_8bit_color_opacity(preprocessing_config_copy)
+    first_frame_rgb = first_frame_with_alpha.astype(np.float32) / 255.0
 
 if input_type == "gif":
     frames = preprocessor.load_gif_frames(input_path, config["preprocessing"])
@@ -105,10 +130,15 @@ print(f"Loaded {len(frames)} frames")
 
 # Convert frames to tensors
 I_targets = []
-for frame in frames:
-    frame_tensor = torch.tensor(frame.astype(np.float32) / 255.0, device=device)  # (H, W, 3)
+for idx, frame in enumerate(frames):
+    if idx == 0 and not exist_bg and target_binary_mask_np is not None:
+        # Use the first frame with alpha channel that we loaded earlier
+        frame_tensor = torch.tensor(first_frame_rgb, device=device)  # (H, W, 3) or (H, W, 4)
+    else:
+        frame_tensor = torch.tensor(frame.astype(np.float32) / 255.0, device=device)  # (H, W, 3)
     I_targets.append(frame_tensor)
-    print("There are {} frames in the input".format(len(I_targets)))
+
+print("There are {} frames in the input".format(len(I_targets)))
 
 # Use first frame dimensions
 H = preprocessor.final_height
@@ -238,6 +268,7 @@ renderer_kwargs = {
     "sigma": opt_conf["blur_sigma"] if opt_conf.get("do_gaussian_blur", False) else 0.0,
     "c_blend": config["optimization"].get("c_blend", 0.0),
     "primitive_colors": primitive_colors,  # Pass primitive colors for c_o initialization
+    "max_prims_per_pixel": config["initialization"].get("max_prims_per_pixel"),  # Pass max_prims_per_pixel from config
 }
 
 renderer = renderer_class(**renderer_kwargs)
@@ -269,6 +300,8 @@ sequential_renderer = SequentialFrameRenderer(
     sigma = opt_conf["blur_sigma"] if opt_conf.get("do_gaussian_blur", False) else 0.0,
     c_blend=config["optimization"].get("c_blend", 0.0),
     primitive_colors=primitive_colors,
+    max_prims_per_pixel=config["initialization"].get("max_prims_per_pixel"),
+    debug_config=config.get("sequential_debug", {}),
 )
 print(f"Using SequentialFrameRenderer with tile-based rendering (tile_size: {sequential_config['tile_size']})")
 
@@ -282,7 +315,15 @@ for frame_idx, I_target_frame in enumerate(I_targets):
     if frame_idx == 0:
         # First frame: initialize from scratch using standard renderer
         print("First frame: initializing from scratch with SimpleTileRenderer")
-        x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target_frame)
+        
+        # Generate target binary mask if no background exists
+        target_binary_mask = None  # 1 at background, 0 at foreground
+        if not exist_bg and target_binary_mask_np is not None:
+            target_binary_mask = torch.from_numpy(target_binary_mask_np[:, :] > 0).to(device)
+            print("Using foreground boundary mask for first frame initialization")
+            x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target_frame, target_binary_mask)
+        else:
+            x, y, r, v, theta, c = renderer.initialize_parameters(initializer, I_target_frame)
         
         # Optimize with standard renderer using optimization config
         start_time_frame = time.time()
@@ -290,9 +331,27 @@ for frame_idx, I_target_frame in enumerate(I_targets):
             x, y, r, v, theta, c,
             I_target_frame, 
             opt_conf=opt_conf,
+            target_binary_mask=target_binary_mask,
             initializer=initializer
         )
         end_time_frame = time.time()
+        
+        # Remove alpha channel if exists after optimization
+        if not exist_bg and I_target_frame.shape[-1] == 4:
+            I_target_frame = I_target_frame[..., :3]
+            
+            # Manually set background to white using the binary mask
+            # target_binary_mask_np: 1 at background, 0 at foreground
+            if target_binary_mask_np is not None:
+                # Convert numpy mask to torch tensor if needed
+                bg_mask = torch.from_numpy(target_binary_mask_np > 0).to(device)  # True at background
+                # Set background pixels to white (1.0) in all RGB channels
+                I_target_frame[bg_mask] = 1.0
+                print(f"Set background to white using binary mask. Background pixels: {bg_mask.sum().item()}/{bg_mask.numel()}")
+            
+            # Update the I_targets list so subsequent frames use the 3-channel version
+            I_targets[frame_idx] = I_target_frame
+            print(f"Stripped alpha channel from first frame. Shape: {I_target_frame.shape}")
         
         # No need for neighbor computation with simple anchoring loss
         
@@ -350,7 +409,12 @@ for frame_idx, I_target_frame in enumerate(I_targets):
     # Render final frame for export
     with torch.no_grad():
         white_bg = torch.ones((sequential_renderer.H, sequential_renderer.W, 3), device=sequential_renderer.device)
-        frame_rendered = sequential_renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0, is_final=True)
+        # Use autocast for FP16 rendering to prevent NaN
+        if use_fp16:
+            with autocast('cuda'):
+                frame_rendered = sequential_renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0, is_final=True)
+        else:
+            frame_rendered = sequential_renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0, is_final=True)
     
     # Store results for this frame
     current_params = {
@@ -407,15 +471,25 @@ for frame_idx, frame_result in enumerate(frame_results):
     # Still render final PNG for preview/compatibility using tile-based rendering
     with torch.no_grad():
         white_bg = torch.ones((sequential_renderer.H, sequential_renderer.W, 3), device=sequential_renderer.device)
-        frame_rendered = sequential_renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, I_bg=white_bg, sigma=0.0, is_final=True)
-    # Save rendered frame directly
-    frame_rendered_np = frame_rendered.detach().cpu().numpy()
+        # Use autocast for FP16 rendering to prevent NaN
+        if use_fp16:
+            with autocast('cuda'):
+                frame_rendered, frame_rendered_alpha = renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
+        else:
+            frame_rendered, frame_rendered_alpha = renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
+    # Save rendered frame directly (convert to FP32 for safe numpy conversion)
+    frame_rendered_np = frame_rendered.detach().float().cpu().numpy()
     frame_rendered_np = (frame_rendered_np * 255).astype(np.uint8)
     frame_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}.png')
     Image.fromarray(frame_rendered_np).save(frame_path)
+
+    if not exist_bg:
+        # Save spatial constraints
+        frame_spatial_path = os.path.join(frames_dir, f'frame_{frame_idx:04d}_spatial.png')
+        save_spatial_constraints(frame_rendered, frame_rendered_alpha, frame_spatial_path)
     
-    # Store rendered frame for GIF/MP4 export
-    frame_np = rendered_frame.cpu().numpy()
+    # Store rendered frame for GIF/MP4 export (convert to FP32 for safe numpy conversion)
+    frame_np = rendered_frame.float().cpu().numpy()
     frame_np = (frame_np * 255).astype(np.uint8)
     exported_frames.append(frame_np)
     
@@ -432,8 +506,8 @@ for frame_idx, frame_result in enumerate(frame_results):
         # Pass c_blend and primitive_colors to PSDExporter
         c_blend = config["optimization"].get("c_blend", 0.0)
         exporter = PSDExporter(
-            renderer.W, renderer.H, 
-            alpha_upper_bound=renderer.alpha_upper_bound, 
+            sequential_renderer.W, sequential_renderer.H, 
+            alpha_upper_bound=sequential_renderer.alpha_upper_bound, 
             scale_factor=psd_scale_factor,
             c_blend=c_blend,
             primitive_colors=primitive_colors
@@ -441,7 +515,7 @@ for frame_idx, frame_result in enumerate(frame_results):
         
         # Use batched processing - all data preparation handled internally
         exporter.add_layers_batch_optimized(
-            renderer.S, x, y, r, theta, v, c
+            sequential_renderer.S, x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame
         )
             
         # Export PSD file
@@ -449,10 +523,15 @@ for frame_idx, frame_result in enumerate(frame_results):
     
 
 # Generate route visualization if enabled (after all frames are processed)
-if ENABLE_ROUTE_VISUALIZATION and len(frame_results) >= 2:
+route_viz_config = config.get("sequential_debug", {}).get("route_visualization", {})
+enable_route_visualization = route_viz_config.get("enabled", False)
+if enable_route_visualization and len(frame_results) >= 2:
     print("\nGenerating primitive movement route visualization...")
-    route_viz_path = os.path.join(output_dir, f'primitive_routes_{timestamp}.png')
+    route_viz_export_path = route_viz_config.get("export_path", output_dir)
+    os.makedirs(route_viz_export_path, exist_ok=True)
+    route_viz_path = os.path.join(route_viz_export_path, f'primitive_routes_{timestamp}.png')
     try:
+        from pydiffbmp.util.route_visualizer import create_route_visualization
         create_route_visualization(
             frame_results=frame_results,
             output_path=route_viz_path,
@@ -588,12 +667,6 @@ if config['postprocessing'].get('compute_psnr', False):
                 metrics_fh.write(f"  min_criteria_count: {ac_conf.get('min_criteria_count', '')}\n")
                 metrics_fh.write(f"  front_primitives_percentile: {ac_conf.get('front_primitives_percentile', '')}\n")
                 metrics_fh.write(f"  apply_epochs: {ac_conf.get('apply_epochs', '')}\n")
-                gr_conf = ac_conf.get('gradient_ranking', {})
-                if isinstance(gr_conf, dict):
-                    metrics_fh.write("  gradient_ranking:\n")
-                    metrics_fh.write(f"    enabled: {gr_conf.get('enabled', False)}\n")
-                    metrics_fh.write(f"    process_all_pixels: {gr_conf.get('process_all_pixels', False)}\n")
-                    metrics_fh.write(f"    pixels_per_tile: {gr_conf.get('pixels_per_tile', '')}\n")
             except Exception as e:
                 print(f"Warning: Failed to write adaptive_control config to metrics file: {e}")
             
