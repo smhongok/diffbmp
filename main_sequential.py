@@ -693,11 +693,20 @@ if config['postprocessing'].get('compute_psnr', False):
         for frame_idx, (frame_result, I_target_frame) in enumerate(zip(frame_results, I_targets)):
             # Render frame for metrics using tile-based rendering
             with torch.no_grad():
+
                 white_bg = torch.ones((renderer.H, renderer.W, 3), device=renderer.device)
-                rendered_frame = renderer.render_from_params(
-                    frame_result['x'], frame_result['y'], frame_result['r'], frame_result['theta'],
-                    frame_result['v'], frame_result['c'], I_bg=white_bg, sigma=0.0, is_final=True
-                )
+
+                if use_fp16:
+                    with autocast('cuda'):
+                        rendered_frame = renderer.render_from_params(
+                            frame_result['x'], frame_result['y'], frame_result['r'], frame_result['theta'],
+                            frame_result['v'], frame_result['c'], I_bg=white_bg, sigma=0.0, is_final=True
+                        )
+                else:
+                    rendered_frame = renderer.render_from_params(
+                        frame_result['x'], frame_result['y'], frame_result['r'], frame_result['theta'],
+                        frame_result['v'], frame_result['c'], I_bg=white_bg, sigma=0.0, is_final=True
+                    )
             
             # Convert to tensor format for metrics
             rendered_t = rendered_frame.permute(2, 0, 1).unsqueeze(0)
@@ -705,6 +714,10 @@ if config['postprocessing'].get('compute_psnr', False):
             
             rendered_t_f32 = rendered_t.float()
             target_t_f32 = target_t.float()
+
+            # Clip values to [0, 1] range to avoid PSNR calculation errors
+            rendered_t_f32 = torch.clamp(rendered_t_f32, 0.0, 1.0)
+            target_t_f32 = torch.clamp(target_t_f32, 0.0, 1.0)
 
             # Compute metrics for this frame
             psnr_val = piq.psnr(rendered_t_f32, target_t_f32, data_range=1.0)
