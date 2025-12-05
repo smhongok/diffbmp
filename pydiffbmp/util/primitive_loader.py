@@ -230,7 +230,7 @@ class PrimitiveLoader:
         )
         # Apply alpha mask: keep grayscale values where alpha > 0, set to 0 where alpha = 0
         result = (1. - padded_gray.astype(float) / 255.) * (alpha > 0).astype(float)
-        return torch.tensor(result, device=self.device)
+        return torch.tensor(result, device=self.device, dtype=torch.float32)
 
     def get_html_embedding_data(self, index: int) -> dict:
         """

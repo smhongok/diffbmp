@@ -33,6 +33,20 @@ Example:
 __version__ = '0.1.0'
 __author__ = 'Anonymous'
 
+# ============================================================================
+# Functional API (PyTorch-style) - Recommended for most users
+# ============================================================================
+from pydiffbmp.functional import (
+    load_primitive,
+    initialize_params,
+    render,
+    preprocess_image,
+)
+
+# ============================================================================
+# Class-based API - For advanced users who need more control
+# ============================================================================
+
 # Core renderer exports
 from pydiffbmp.core.renderer.simple_tile_renderer import SimpleTileRenderer
 from pydiffbmp.core.renderer.vector_renderer import VectorRenderer
@@ -57,6 +71,12 @@ __all__ = [
     # Version
     '__version__',
     '__author__',
+    
+    # Functional API (Recommended)
+    'load_primitive',
+    'initialize_params',
+    'render',
+    'preprocess_image',
     
     # Renderers
     'SimpleTileRenderer',
