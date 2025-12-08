@@ -10,9 +10,22 @@ Key Features:
 - Support for SVG, text, and raster primitives
 - PSD/PDF export for designer workflows
 - Structure-aware initialization
+- High-level rendering API for diffusion model integration
 
-Example:
-    >>> import pydiffbmp
+Example (High-level API):
+    >>> from pydiffbmp import DiffBMPRenderer
+    >>> 
+    >>> # Simple overlay rendering
+    >>> renderer = DiffBMPRenderer(
+    ...     overlay_path="logo.png",
+    ...     canvas_size=(256, 256),
+    ...     device='cuda'
+    ... )
+    >>> 
+    >>> # Apply to image tensor (works in diffusion loops!)
+    >>> output = renderer.apply(image_tensor, alpha=0.3)
+
+Example (Low-level API):
     >>> from pydiffbmp import SimpleTileRenderer, PrimitiveLoader
     >>> 
     >>> # Load primitive
@@ -53,10 +66,16 @@ from pydiffbmp.util.loss_functions import LossComposer
 # Preprocessing
 from pydiffbmp.core.preprocessing import Preprocessor
 
+# High-level API
+from pydiffbmp.diffbmp_renderer import DiffBMPRenderer
+
 __all__ = [
     # Version
     '__version__',
     '__author__',
+    
+    # High-level API
+    'DiffBMPRenderer',
     
     # Renderers
     'SimpleTileRenderer',

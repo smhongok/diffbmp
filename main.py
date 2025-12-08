@@ -351,7 +351,10 @@ for img_idx, img_path in enumerate(img_paths):
 
         # Convert parameters to FP16 for final rendering if using FP16 renderer
         if renderer.use_fp16:
-            from torch.amp import autocast
+            try:
+                from torch.amp import autocast
+            except ImportError:
+                from torch.cuda.amp import autocast
             with autocast('cuda'):
                 rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=final_bg, sigma=0.0, is_final=True)
                 

@@ -1,7 +1,10 @@
 from contextlib import nullcontext
 import torch
 import torch.nn.functional as F
-from torch.amp import GradScaler, autocast
+try:
+    from torch.amp import GradScaler, autocast
+except ImportError:
+    from torch.cuda.amp import GradScaler, autocast
 from torch import nn
 import torch.utils.checkpoint as cp
 import cv2
@@ -546,7 +549,10 @@ class VectorRenderer:
             Tile masks (num_selected, tile_h, tile_w)
         """
         from contextlib import nullcontext
-        from torch.amp import autocast
+        try:
+            from torch.amp import autocast
+        except ImportError:
+            from torch.cuda.amp import autocast
         from pydiffbmp.util.utils import gaussian_blur
         
         num_primitives = x.shape[0]
@@ -1152,7 +1158,10 @@ class VectorRenderer:
         Override optimization to use tile-based rendering instead of cached_masks.
         This is the core difference from VectorRenderer - we render directly from parameters.
         """
-        from torch.amp import GradScaler, autocast
+        try:
+            from torch.amp import GradScaler, autocast
+        except ImportError:
+            from torch.cuda.amp import GradScaler, autocast
         from tqdm import tqdm
         import datetime
         import os
