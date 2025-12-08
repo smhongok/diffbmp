@@ -1,0 +1,33 @@
+[build-system]
+requires = [
+    "setuptools>=42",
+    "wheel",
+    "torch>=1.13.0",  # Required for CUDA extension compilation
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pydiffbmp"
+version = "0.1.0"
+description = "DiffBMP: Fast Differentiable Painting with Any Image Primitives"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "DiffBMP Team"},
+]
+keywords = ["differentiable-rendering", "2d-splatting", "image-synthesis", "pytorch", "cuda"]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+[tool.setuptools]
+packages = ["pydiffbmp"]
