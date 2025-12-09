@@ -317,33 +317,6 @@ class DiffBMPRenderer:
         
         return result
     
-    def render(
-        self,
-        image: torch.Tensor,
-        alpha: Optional[float] = None,
-        position: Optional[Union[str, Tuple[float, float]]] = None,
-        return_mask: bool = False,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Render overlay on image tensor(s). Alias for apply().
-        
-        This method provides a more intuitive name for DiffBMP rendering.
-        
-        Args:
-            image: Image tensor in one of these formats:
-                   - (B, C, H, W) - batch of images, range [-1, 1] or [0, 1]
-                   - (C, H, W) - single image
-                   - (H, W, C) - single image in HWC format
-            alpha: Override opacity (0.0-1.0). If None, uses alpha_range mean
-            position: Override position for this call
-            return_mask: If True, also return the overlay mask
-        
-        Returns:
-            Rendered image tensor in same format as input
-            If return_mask=True, returns (rendered_image, mask)
-        """
-        return self.apply(image, alpha=alpha, position=position, return_mask=return_mask)
-    
     def apply_with_optimization(
         self,
         image: torch.Tensor,
@@ -530,43 +503,6 @@ class DiffBMPRenderer:
         result = self._from_batch_format(result, original_format, original_shape, original_dtype)
         
         return result
-    
-    def render_with_optimization(
-        self,
-        image: torch.Tensor,
-        target_image: Optional[torch.Tensor] = None,
-        num_iterations: int = DEFAULT_NUM_ITERATIONS,
-        learning_rate: float = DEFAULT_LEARNING_RATE,
-        alpha: Optional[float] = None,
-        position: Optional[Union[str, Tuple[float, float]]] = None,
-        verbose: bool = True,
-    ) -> torch.Tensor:
-        """
-        Render overlay with gradient-based optimization. Alias for apply_with_optimization().
-        
-        This method provides a more intuitive name for DiffBMP rendering.
-        
-        Args:
-            image: Background image tensor
-            target_image: Target image to optimize towards (default: rendered version)
-            num_iterations: Number of optimization iterations
-            learning_rate: Learning rate for optimizer
-            alpha: Override opacity
-            position: Override position
-            verbose: Print optimization progress
-            
-        Returns:
-            Optimized rendered image
-        """
-        return self.apply_with_optimization(
-            image, 
-            target_image=target_image,
-            num_iterations=num_iterations,
-            learning_rate=learning_rate,
-            alpha=alpha,
-            position=position,
-            verbose=verbose
-        )
     
     def _parse_input(self, image: torch.Tensor):
         """Determine input format and properties."""
