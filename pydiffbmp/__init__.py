@@ -12,7 +12,7 @@ Key Features:
 - Structure-aware initialization
 - High-level rendering API for diffusion model integration
 
-Example (High-level API):
+Example (High-level API - Overlay/Watermark):
     >>> from pydiffbmp import DiffBMPRenderer
     >>> 
     >>> # Simple overlay rendering
@@ -24,6 +24,21 @@ Example (High-level API):
     >>> 
     >>> # Apply to image tensor (works in diffusion loops!)
     >>> output = renderer.apply(image_tensor, alpha=0.3)
+
+Example (DiffBMPWrapper API - Generative Art):
+    >>> from pydiffbmp import DiffBMPWrapper
+    >>> 
+    >>> # Create wrapper with parameters as member variables
+    >>> wrapper = DiffBMPWrapper(device='cuda')
+    >>> wrapper.load_primitive("heart.svg", size=128)
+    >>> wrapper.initialize_params(n_primitives=100, canvas_size=(512, 512))
+    >>> 
+    >>> # Render with member variables
+    >>> rendered = wrapper.render()
+    >>> 
+    >>> # Optimize parameters with gradients
+    >>> loss = torch.nn.functional.mse_loss(rendered, target)
+    >>> loss.backward()  # Gradients flow to wrapper.x, wrapper.y, etc.
 
 Example (Low-level API):
     >>> from pydiffbmp import SimpleTileRenderer, PrimitiveLoader
@@ -68,6 +83,7 @@ from pydiffbmp.core.preprocessing import Preprocessor
 
 # High-level API
 from pydiffbmp.diffbmp_renderer import DiffBMPRenderer
+from pydiffbmp.diffbmp_wrapper import DiffBMPWrapper
 
 __all__ = [
     # Version
@@ -76,6 +92,7 @@ __all__ = [
     
     # High-level API
     'DiffBMPRenderer',
+    'DiffBMPWrapper',
     
     # Renderers
     'SimpleTileRenderer',
