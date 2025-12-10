@@ -749,7 +749,10 @@ class SimpleTileRenderer(VectorRenderer):
         Override optimization to use tile-based rendering instead of cached_masks.
         This is the core difference from VectorRenderer - we render directly from parameters.
         """
-        from torch.amp import GradScaler, autocast
+        try:
+            from torch.amp import GradScaler, autocast
+        except ImportError:
+            from torch.cuda.amp import GradScaler, autocast
         from tqdm import tqdm
         import datetime
         import os
@@ -1292,7 +1295,10 @@ class SimpleTileRenderer(VectorRenderer):
             Tile masks (num_selected, tile_h, tile_w)
         """
         from contextlib import nullcontext
-        from torch.amp import autocast
+        try:
+            from torch.amp import autocast
+        except ImportError:
+            from torch.cuda.amp import autocast
         from pydiffbmp.util.utils import gaussian_blur
         
         num_primitives = x.shape[0]

@@ -8,7 +8,10 @@ import warnings
 import torch
 import torch.nn.functional as F
 import numpy as np
-from torch.amp import autocast
+try:
+    from torch.amp import autocast
+except ImportError:
+    from torch.cuda.amp import autocast
 import matplotlib as mpl
 mpl.use("Agg")  
 import matplotlib.pyplot as plt

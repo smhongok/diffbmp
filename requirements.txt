@@ -1,8 +1,9 @@
 # Core Deep Learning & Computation
-torch>=2.0.0
+# Note: torch>=1.13.0 is supported, but torch<2.0.0 recommended for DeepFloyd IF compatibility
+torch>=1.13.0
 torchvision
-numpy
-triton  # Required for PyTorch with CUDA
+numpy<2.0  # PyTorch 2.1.0 requires numpy 1.x
+# triton  # Required for PyTorch 2.x with CUDA, not needed for 1.x
 
 # Note: nvidia-cuda-* packages are automatically installed as torch dependencies
 # They are required for CUDA extension builds (setup.py, setup_fp16.py)

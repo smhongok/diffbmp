@@ -4,10 +4,24 @@ import os
 import sys
 try:
     from torch.amp import custom_bwd, custom_fwd
+    # For newer PyTorch versions, we need to specify device_type
+    TORCH_AMP_NEW_API = True
 except ImportError:
     # Fallback for older PyTorch versions
     from torch.cuda.amp import custom_bwd, custom_fwd
+    TORCH_AMP_NEW_API = False
 import ctypes
+
+# Create version-aware decorator wrappers
+def custom_fwd_wrapper(**kwargs):
+    if TORCH_AMP_NEW_API:
+        return custom_fwd(device_type='cuda', **kwargs)
+    return custom_fwd(**kwargs)
+    
+def custom_bwd_wrapper():
+    if TORCH_AMP_NEW_API:
+        return custom_bwd(device_type='cuda')
+    return custom_bwd
                     
 #sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -80,7 +94,21 @@ class TileRasterizer:
 class TileRasterizerFunction(Function):
     @staticmethod
     def forward(ctx, means2D, radii, rotations, opacities, colors, colors_orig, 
-                primitive_templates, global_bmp_sel, c_blend, lr_conf, tile_primitive_mapping, image_height, image_width, tile_size, sigma, use_class=False):
+                primitive_templates, global_bmp_sel, c_blend, lr_conf, tile_primitive_mapping, image_height, image_width, tile_size, sigma, use_class=False):        
+        # Ensure all inputs are float32 for CUDA kernel compatibility
+        means2D = means2D.float()
+        radii = radii.float()
+        rotations = rotations.float()
+        opacities = opacities.float()
+        colors = colors.float()
+        colors_orig = colors_orig.float()
+        primitive_templates = primitive_templates.float()
+        lr_conf = lr_conf.float()
+        # c_blend is a scalar, ensure it's float32
+        if isinstance(c_blend, torch.Tensor):
+            c_blend = c_blend.float()
+        else:
+            c_blend = float(c_blend)
         
         # Call CUDA forward
         if use_class and CUDA_AVAILABLE:
@@ -118,7 +146,7 @@ class TileRasterizerFunction(Function):
         return out_color, out_alpha
     
     @staticmethod
-    def backward(ctx, grad_out_color, grad_out_alpha):
+    def backward(ctx, grad_out_color, grad_out_alpha):        
         means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, lr_conf = ctx.saved_tensors
         
         # Debug: Check if alpha gradient is None
@@ -153,7 +181,7 @@ class TileRasterizerFunction(Function):
 
 class TileRasterizerFunctionFP16(Function):
     @staticmethod
-    @custom_fwd(device_type='cuda', cast_inputs=torch.float16)
+    @custom_fwd_wrapper(cast_inputs=torch.float16)
     def forward(ctx, means2D, radii, rotations, opacities, colors, colors_orig, 
                 primitive_templates, global_bmp_sel, c_blend, lr_conf, tile_primitive_mapping, image_height, image_width, tile_size, sigma, use_class=False):
         
@@ -193,7 +221,7 @@ class TileRasterizerFunctionFP16(Function):
         return out_color, out_alpha
     
     @staticmethod
-    @custom_bwd(device_type='cuda')
+    @custom_bwd_wrapper()
     def backward(ctx, grad_out_color, grad_out_alpha):
         means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, lr_conf = ctx.saved_tensors
         

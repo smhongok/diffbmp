@@ -2,7 +2,10 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
-from torch.amp import autocast, GradScaler
+try:
+    from torch.amp import autocast, GradScaler
+except ImportError:
+    from torch.cuda.amp import autocast, GradScaler
 from .simple_tile_renderer import SimpleTileRenderer
 
 # Import necessary functions for statistics
