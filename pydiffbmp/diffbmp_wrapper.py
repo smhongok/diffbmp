@@ -168,7 +168,7 @@ class DiffBMPWrapper:
         
         # Set default radii_max
         if radii_max is None:
-            radii_max = 0.5 * min(H, W)
+            radii_max = 0.1 * min(H, W)
         
         # Prepare initializer config
         init_config = {
@@ -224,7 +224,7 @@ class DiffBMPWrapper:
     def render(
         self,
         background: Optional[Union[str, torch.Tensor]] = 'white',
-        blur_sigma: float = 0.0,
+        blur_sigma: float = 1.0,
         return_alpha: bool = False,
         tile_size: int = 32,
         alpha_upper_bound: float = 0.5,
@@ -299,7 +299,7 @@ class DiffBMPWrapper:
             theta=self.theta, v=self.v, c=self.c,
             return_alpha=return_alpha,
             I_bg=I_bg,
-            sigma=1.0,
+            sigma=0.0,
             is_final=False
         )
         
