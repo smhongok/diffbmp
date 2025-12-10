@@ -4,10 +4,24 @@ import os
 import sys
 try:
     from torch.amp import custom_bwd, custom_fwd
+    # For newer PyTorch versions, we need to specify device_type
+    TORCH_AMP_NEW_API = True
 except ImportError:
     # Fallback for older PyTorch versions
     from torch.cuda.amp import custom_bwd, custom_fwd
+    TORCH_AMP_NEW_API = False
 import ctypes
+
+# Create version-aware decorator wrappers
+def custom_fwd_wrapper(**kwargs):
+    if TORCH_AMP_NEW_API:
+        return custom_fwd(device_type='cuda', **kwargs)
+    return custom_fwd(**kwargs)
+    
+def custom_bwd_wrapper():
+    if TORCH_AMP_NEW_API:
+        return custom_bwd(device_type='cuda')
+    return custom_bwd
                     
 #sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -167,7 +181,7 @@ class TileRasterizerFunction(Function):
 
 class TileRasterizerFunctionFP16(Function):
     @staticmethod
-    @custom_fwd(cast_inputs=torch.float16)
+    @custom_fwd_wrapper(cast_inputs=torch.float16)
     def forward(ctx, means2D, radii, rotations, opacities, colors, colors_orig, 
                 primitive_templates, global_bmp_sel, c_blend, lr_conf, tile_primitive_mapping, image_height, image_width, tile_size, sigma, use_class=False):
         
@@ -207,7 +221,7 @@ class TileRasterizerFunctionFP16(Function):
         return out_color, out_alpha
     
     @staticmethod
-    @custom_bwd
+    @custom_bwd_wrapper()
     def backward(ctx, grad_out_color, grad_out_alpha):
         means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, lr_conf = ctx.saved_tensors
         
