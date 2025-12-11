@@ -2,7 +2,7 @@
 PyDiffBMP Functional API with Wrapper Class
 
 Provides a class-based interface for differentiable rendering with bitmap primitives.
-Parameters are stored as class members to simplify function calls.
+Parameters (x, y, r, theta, v, c) are passed as function arguments for flexibility.
 """
 
 import torch
@@ -24,13 +24,13 @@ from pydiffbmp.core.preprocessing import Preprocessor
 class DiffBMPWrapper:
     """
     Wrapper class for DiffBMP functional operations.
-    Stores parameters as member variables to simplify API usage.
+    Parameters (x, y, r, theta, v, c) are passed as function arguments for flexibility.
     
     Example:
         >>> wrapper = DiffBMPWrapper(device='cuda')
         >>> wrapper.load_primitive("heart.svg", size=128)
-        >>> wrapper.initialize_params(n_primitives=100, canvas_size=(512, 512))
-        >>> rendered = wrapper.render()
+        >>> x, y, r, theta, v, c = wrapper.initialize_params(n_primitives=100, canvas_size=(512, 512))
+        >>> rendered = wrapper.render(x, y, r, theta, v, c)
     """
     
     def __init__(self, device: str = 'cuda'):
@@ -43,14 +43,6 @@ class DiffBMPWrapper:
         self.device = torch.device(device)
         self.primitive = None
         self.renderer = None
-        
-        # Rendering parameters (will be initialized)
-        self.x = None
-        self.y = None
-        self.r = None
-        self.theta = None
-        self.v = None
-        self.c = None
         
         # Canvas size
         self.canvas_size = None
@@ -145,7 +137,7 @@ class DiffBMPWrapper:
         v_init_bias: float = 2.0,
         theta_init: Optional[float] = None,
         **kwargs
-    ) -> 'DiffBMPWrapper':
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Initialize rendering parameters.
         
@@ -161,7 +153,7 @@ class DiffBMPWrapper:
             **kwargs: Additional arguments for initializer
         
         Returns:
-            self for method chaining
+            Tuple of (x, y, r, theta, v, c) tensors with gradients enabled
         """
         self.canvas_size = canvas_size
         H, W = canvas_size
@@ -211,18 +203,24 @@ class DiffBMPWrapper:
             opt_conf=None
         )
         
-        # Store as member variables with gradient tracking
-        self.x = x.requires_grad_(True)
-        self.y = y.requires_grad_(True)
-        self.r = r.requires_grad_(True)
-        self.theta = theta.requires_grad_(True)
-        self.v = v.requires_grad_(True)
-        self.c = c.requires_grad_(True)
+        # Enable gradient tracking if requested
+        x = x.requires_grad_(True)
+        y = y.requires_grad_(True)
+        r = r.requires_grad_(True)
+        theta = theta.requires_grad_(True)
+        v = v.requires_grad_(True)
+        c = c.requires_grad_(True)
         
-        return self
+        return x, y, r, theta, v, c
     
     def render(
         self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        r: torch.Tensor,
+        theta: torch.Tensor,
+        v: torch.Tensor,
+        c: torch.Tensor,
         background: Optional[Union[str, torch.Tensor]] = 'white',
         blur_sigma: float = 1.0,
         return_alpha: bool = False,
@@ -232,9 +230,15 @@ class DiffBMPWrapper:
         use_fp16: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
-        Render the primitives using stored parameters.
+        Render the primitives using provided parameters.
         
         Args:
+            x: X-position tensor (N,)
+            y: Y-position tensor (N,)
+            r: Radius tensor (N,)
+            theta: Rotation tensor (N,)
+            v: Visibility logits tensor (N,)
+            c: Color logits tensor (N, 3)
             background: Background ('white', 'black', 'random') or image tensor (H, W, 3)
             blur_sigma: Gaussian blur sigma
             return_alpha: Whether to return alpha channel
@@ -249,10 +253,8 @@ class DiffBMPWrapper:
         """
         if self.primitive is None:
             raise ValueError("Primitive not loaded. Call load_primitive() first.")
-        if self.x is None:
-            raise ValueError("Parameters not initialized. Call initialize_params() first.")
         if self.canvas_size is None:
-            raise ValueError("Canvas size not set. Call initialize_params() first.")
+            raise ValueError("Canvas size not set. Call initialize_params() or set canvas_size manually first.")
         
         H, W = self.canvas_size
         
@@ -293,10 +295,10 @@ class DiffBMPWrapper:
         else:
             I_bg = None
         
-        # Render with stored parameters
+        # Render with provided parameters
         rendered = self.renderer.render_from_params(
-            x=self.x, y=self.y, r=self.r,
-            theta=self.theta, v=self.v, c=self.c,
+            x=x, y=y, r=r,
+            theta=theta, v=v, c=c,
             return_alpha=return_alpha,
             I_bg=I_bg,
             sigma=0.0,
@@ -308,76 +310,3 @@ class DiffBMPWrapper:
             return torch.cat([rendered, alpha.unsqueeze(-1)], dim=-1)
         else:
             return rendered
-    
-    def update_params(
-        self,
-        x: Optional[torch.Tensor] = None,
-        y: Optional[torch.Tensor] = None,
-        r: Optional[torch.Tensor] = None,
-        theta: Optional[torch.Tensor] = None,
-        v: Optional[torch.Tensor] = None,
-        c: Optional[torch.Tensor] = None
-    ) -> 'DiffBMPWrapper':
-        """
-        Update specific parameters while keeping others unchanged.
-        
-        Args:
-            x, y: Position parameters
-            r: Scale parameters
-            theta: Rotation parameters
-            v: Visibility logits
-            c: Color logits
-        
-        Returns:
-            self for method chaining
-        """
-        if x is not None:
-            self.x = x
-        if y is not None:
-            self.y = y
-        if r is not None:
-            self.r = r
-        if theta is not None:
-            self.theta = theta
-        if v is not None:
-            self.v = v
-        if c is not None:
-            self.c = c
-        
-        return self
-    
-    def get_params(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Get all parameters as a tuple.
-        
-        Returns:
-            Tuple of (x, y, r, theta, v, c) tensors
-        """
-        return self.x, self.y, self.r, self.theta, self.v, self.c
-    
-    def clone_params(self, requires_grad: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Clone all parameters for optimization.
-        
-        Args:
-            requires_grad: Whether cloned parameters should require gradients
-        
-        Returns:
-            Tuple of cloned (x, y, r, theta, v, c) tensors
-        """
-        x_clone = self.x.clone().detach()
-        y_clone = self.y.clone().detach()
-        r_clone = self.r.clone().detach()
-        theta_clone = self.theta.clone().detach()
-        v_clone = self.v.clone().detach()
-        c_clone = self.c.clone().detach()
-        
-        if requires_grad:
-            x_clone.requires_grad_(True)
-            y_clone.requires_grad_(True)
-            r_clone.requires_grad_(True)
-            theta_clone.requires_grad_(True)
-            v_clone.requires_grad_(True)
-            c_clone.requires_grad_(True)
-        
-        return x_clone, y_clone, r_clone, theta_clone, v_clone, c_clone
