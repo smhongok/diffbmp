@@ -353,9 +353,11 @@ for img_idx, img_path in enumerate(img_paths):
         if renderer.use_fp16:
             try:
                 from torch.amp import autocast
+                autocast_ctx = autocast(device_type='cuda')
             except ImportError:
                 from torch.cuda.amp import autocast
-            with autocast('cuda'):
+                autocast_ctx = autocast()
+            with autocast_ctx:
                 rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=final_bg, sigma=0.0, is_final=True)
                 
                 # Save rendered image directly from rendered tensor 

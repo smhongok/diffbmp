@@ -228,13 +228,17 @@ class SimpleTileRenderer(VectorRenderer):
                 global_bmp_sel = None  # Single template case
                 print("    ⚠️ Unexpected self.S dimension, using None for global_bmp_sel")
         
-        # Initialize output canvas
+        # Initialize output canvas with background color
+        # This ensures tiles without primitives display I_bg instead of black
         if self.use_fp16:
             dtype = torch.float16
         else:
             dtype = torch.float32
-            
-        output = torch.zeros((self.H, self.W, 3), device=self.device, dtype=dtype)
+        
+        if I_bg is not None:
+            output = I_bg.clone().to(device=self.device, dtype=dtype)
+        else:
+            output = torch.zeros((self.H, self.W, 3), device=self.device, dtype=dtype)
         
         # Choose processing method based on tile count and device
         total_tiles = self.tiles_h * self.tiles_w
@@ -751,8 +755,10 @@ class SimpleTileRenderer(VectorRenderer):
         """
         try:
             from torch.amp import GradScaler, autocast
+            AUTOCAST_NEW_API = True  # PyTorch 2.0+: use device_type='cuda'
         except ImportError:
             from torch.cuda.amp import GradScaler, autocast
+            AUTOCAST_NEW_API = False  # PyTorch 1.x: use autocast() directly
         from tqdm import tqdm
         import datetime
         import os
@@ -770,7 +776,11 @@ class SimpleTileRenderer(VectorRenderer):
         lr = lr_conf.get("default", 0.1)
         
         # Mixed-precision scaler (only used if use_fp16 is True)
-        scaler = GradScaler('cuda') if self.use_fp16 else None
+        # PyTorch 2.0+: GradScaler('cuda'), PyTorch 1.x: GradScaler()
+        if self.use_fp16:
+            scaler = GradScaler('cuda') if AUTOCAST_NEW_API else GradScaler()
+        else:
+            scaler = None
         
         # Pre-calculate configurations
         blur_sigma = opt_conf.get("blur_sigma", 1.0)
@@ -846,7 +856,8 @@ class SimpleTileRenderer(VectorRenderer):
             
             # Use tile-based rendering directly from parameters
             if self.use_fp16:
-                with autocast('cuda'):
+                autocast_ctx = autocast(device_type='cuda') if AUTOCAST_NEW_API else autocast()
+                with autocast_ctx:
                     if is_no_bg_mode:
                         rendered, rendered_alpha = self.render_from_params(
                             x, y, r, theta, v, c, sigma=current_sigma, I_bg=I_bg, lr_conf=lr_conf, return_alpha=True
@@ -1297,8 +1308,10 @@ class SimpleTileRenderer(VectorRenderer):
         from contextlib import nullcontext
         try:
             from torch.amp import autocast
+            AUTOCAST_NEW_API = True
         except ImportError:
             from torch.cuda.amp import autocast
+            AUTOCAST_NEW_API = False
         from pydiffbmp.util.utils import gaussian_blur
         
         num_primitives = x.shape[0]
@@ -1311,7 +1324,8 @@ class SimpleTileRenderer(VectorRenderer):
                 dtype = torch.float32
             return torch.zeros((0, tile_h, tile_w), device=self.device, dtype=dtype)
         
-        context = autocast('cuda') if self.use_fp16 else nullcontext()
+        autocast_ctx = autocast(device_type='cuda') if AUTOCAST_NEW_API else autocast()
+        context = autocast_ctx if self.use_fp16 else nullcontext()
         with context:
             target_dtype = torch.float16 if self.use_fp16 else torch.float32
             

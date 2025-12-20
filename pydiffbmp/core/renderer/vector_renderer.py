@@ -551,8 +551,10 @@ class VectorRenderer:
         from contextlib import nullcontext
         try:
             from torch.amp import autocast
+            AUTOCAST_NEW_API = True
         except ImportError:
             from torch.cuda.amp import autocast
+            AUTOCAST_NEW_API = False
         from pydiffbmp.util.utils import gaussian_blur
         
         num_primitives = x.shape[0]
@@ -565,7 +567,8 @@ class VectorRenderer:
                 dtype = torch.float32
             return torch.zeros((0, tile_h, tile_w), device=self.device, dtype=dtype)
         
-        context = autocast('cuda') if self.use_fp16 else nullcontext()
+        context = autocast(device_type='cuda') if AUTOCAST_NEW_API else autocast()
+        context = context if self.use_fp16 else nullcontext()
         with context:
             target_dtype = torch.float16 if self.use_fp16 else torch.float32
             
@@ -642,7 +645,8 @@ class VectorRenderer:
         Returns:
             masks:     [N, H, W]  (one soft mask per shape)
         """
-        context = autocast('cuda') if self.use_fp16 else nullcontext()
+        context = autocast(device_type='cuda') if AUTOCAST_NEW_API else autocast()
+        context = context if self.use_fp16 else nullcontext()
         with context:
             B = len(x)
             _, H, W = self.X.shape
@@ -788,7 +792,8 @@ class VectorRenderer:
         - rgb  : (H, W, 3)  (always)
         - alpha: (H, W, 1)  (optional, when return_alpha=True)
         """
-        context = autocast('cuda') if self.use_fp16 else nullcontext()
+        context = autocast(device_type='cuda') if AUTOCAST_NEW_API else autocast()
+        context = context if self.use_fp16 else nullcontext()
         
         with context:    
             target_dtype = torch.float16 if self.use_fp16 else torch.float32
@@ -873,7 +878,8 @@ class VectorRenderer:
         video_path  : MP4 save path
         fps         : Frame rate
         """
-        context = autocast('cuda') if self.use_fp16 else nullcontext()
+        context = autocast(device_type='cuda') if AUTOCAST_NEW_API else autocast()
+        context = context if self.use_fp16 else nullcontext()
 
         with context:
             # 1.1 per-primitive alpha & color
@@ -1153,8 +1159,10 @@ class VectorRenderer:
         """
         try:
             from torch.amp import GradScaler, autocast
+            AUTOCAST_NEW_API = True
         except ImportError:
             from torch.cuda.amp import GradScaler, autocast
+            AUTOCAST_NEW_API = False
         from tqdm import tqdm
         import datetime
         import os
@@ -1167,7 +1175,11 @@ class VectorRenderer:
         lr = lr_conf.get("default", 0.1)
         
         # Mixed-precision scaler (only used if use_fp16 is True)
-        scaler = GradScaler('cuda') if self.use_fp16 else None
+        # PyTorch 2.0+: GradScaler('cuda'), PyTorch 1.x: GradScaler()
+        if self.use_fp16:
+            scaler = GradScaler('cuda') if AUTOCAST_NEW_API else GradScaler()
+        else:
+            scaler = None
         
         # Pre-calculate configurations
         blur_sigma = opt_conf.get("blur_sigma", 1.0)
@@ -1215,7 +1227,8 @@ class VectorRenderer:
             
             # Use tile-based rendering directly from parameters
             if self.use_fp16:
-                with autocast('cuda'):
+                autocast_ctx = autocast(device_type='cuda') if AUTOCAST_NEW_API else autocast()
+                with autocast_ctx:
                     if is_no_bg_mode:
                         rendered = self.render_from_params(
                             x, y, r, theta, v, c, sigma=current_sigma, no_background=True
