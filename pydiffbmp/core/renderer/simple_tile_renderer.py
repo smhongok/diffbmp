@@ -236,7 +236,11 @@ class SimpleTileRenderer(VectorRenderer):
             dtype = torch.float32
         
         if I_bg is not None:
-            output = I_bg.clone().to(device=self.device, dtype=dtype)
+            # Only clone/convert if necessary to avoid unnecessary memory operations
+            if I_bg.device != self.device or I_bg.dtype != dtype:
+                output = I_bg.to(device=self.device, dtype=dtype).clone()
+            else:
+                output = I_bg.clone()
         else:
             output = torch.zeros((self.H, self.W, 3), device=self.device, dtype=dtype)
         
