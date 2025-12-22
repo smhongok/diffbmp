@@ -4,8 +4,10 @@ import numpy as np
 from tqdm import tqdm
 try:
     from torch.amp import autocast, GradScaler
+    AUTOCAST_NEW_API = True
 except ImportError:
     from torch.cuda.amp import autocast, GradScaler
+    AUTOCAST_NEW_API = False
 from .simple_tile_renderer import SimpleTileRenderer
 
 # Import necessary functions for statistics
@@ -162,7 +164,11 @@ class SequentialFrameRenderer(SimpleTileRenderer):
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=lr_config['decay_rate'])
         
         # Mixed-precision scaler (only used if use_fp16 is True)
-        scaler = GradScaler('cuda') if self.use_fp16 else None
+        # PyTorch 2.0+: GradScaler('cuda'), PyTorch 1.x: GradScaler()
+        if self.use_fp16:
+            scaler = GradScaler('cuda') if AUTOCAST_NEW_API else GradScaler()
+        else:
+            scaler = None
         
         num_iter = opt_conf.get("num_iterations", opt_conf.get("num_iter", 50))
         adaptive_config = opt_conf.get('adaptive_control', {})
@@ -266,7 +272,8 @@ class SequentialFrameRenderer(SimpleTileRenderer):
             
             if self.use_fp16:
                 # FP16 path with autocast and GradScaler
-                with autocast('cuda'):
+                autocast_ctx = autocast(device_type='cuda') if AUTOCAST_NEW_API else autocast()
+                with autocast_ctx:
                     rendered = self.render_from_params(x, y, r, theta, v, c, I_bg=I_bg, sigma=0.0)
                     
                     # Compute loss with warmup scheduling

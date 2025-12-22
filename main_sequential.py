@@ -10,8 +10,10 @@ import torch.nn.functional as F
 import numpy as np
 try:
     from torch.amp import autocast
+    AUTOCAST_NEW_API = True
 except ImportError:
     from torch.cuda.amp import autocast
+    AUTOCAST_NEW_API = False
 import matplotlib as mpl
 mpl.use("Agg")  
 import matplotlib.pyplot as plt
@@ -414,7 +416,8 @@ for frame_idx, I_target_frame in enumerate(I_targets):
         white_bg = torch.ones((sequential_renderer.H, sequential_renderer.W, 3), device=sequential_renderer.device)
         # Use autocast for FP16 rendering to prevent NaN
         if use_fp16:
-            with autocast('cuda'):
+            autocast_ctx = autocast(device_type='cuda') if AUTOCAST_NEW_API else autocast()
+            with autocast_ctx:
                 frame_rendered = sequential_renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0, is_final=True)
         else:
             frame_rendered = sequential_renderer.render_from_params(x, y, r, theta, v, c, I_bg=white_bg, sigma=0.0, is_final=True)
@@ -476,7 +479,8 @@ for frame_idx, frame_result in enumerate(frame_results):
         white_bg = torch.ones((sequential_renderer.H, sequential_renderer.W, 3), device=sequential_renderer.device)
         # Use autocast for FP16 rendering to prevent NaN
         if use_fp16:
-            with autocast('cuda'):
+            autocast_ctx = autocast(device_type='cuda') if AUTOCAST_NEW_API else autocast()
+            with autocast_ctx:
                 frame_rendered, frame_rendered_alpha = renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
         else:
             frame_rendered, frame_rendered_alpha = renderer.render_from_params(x_frame, y_frame, r_frame, theta_frame, v_frame, c_frame, return_alpha=True, I_bg=white_bg, sigma=0.0, is_final=True)
@@ -700,7 +704,8 @@ if config['postprocessing'].get('compute_psnr', False):
                 white_bg = torch.ones((renderer.H, renderer.W, 3), device=renderer.device)
 
                 if use_fp16:
-                    with autocast('cuda'):
+                    autocast_ctx = autocast(device_type='cuda') if AUTOCAST_NEW_API else autocast()
+                    with autocast_ctx:
                         rendered_frame = renderer.render_from_params(
                             frame_result['x'], frame_result['y'], frame_result['r'], frame_result['theta'],
                             frame_result['v'], frame_result['c'], I_bg=white_bg, sigma=0.0, is_final=True
