@@ -18,6 +18,7 @@ from pydiffbmp.util.svg_loader import SVGLoader
 from pydiffbmp.util.primitive_loader import PrimitiveLoader
 from pydiffbmp.core.initializer.random_initializater import RandomInitializer
 from pydiffbmp.core.initializer.svgsplat_initializater import StructureAwareInitializer
+from pydiffbmp.core.initializer.designated_initializer import DesignatedInitializer
 from pydiffbmp.core.preprocessing import Preprocessor
 
 
@@ -136,6 +137,12 @@ class DiffBMPWrapper:
         radii_max: float = None,
         v_init_bias: float = 2.0,
         theta_init: Optional[float] = None,
+        x: Optional[Union[float, list]] = None,
+        y: Optional[Union[float, list]] = None,
+        r: Optional[Union[float, list]] = None,
+        theta: Optional[Union[float, list]] = None,
+        v: Optional[Union[float, list]] = None,
+        c: Optional[Union[list, list]] = None,
         **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -144,12 +151,18 @@ class DiffBMPWrapper:
         Args:
             n_primitives: Number of primitives to initialize
             canvas_size: (H, W) tuple for canvas dimensions
-            method: Initialization method ('random' or 'structure_aware')
+            method: Initialization method ('random', 'structure_aware', or 'designated')
             target_image: Target image tensor (H, W, 3), required for 'structure_aware'
             radii_min: Minimum radius for primitives
             radii_max: Maximum radius for primitives
             v_init_bias: Initial bias for visibility logits
             theta_init: Fixed initial rotation for all primitives
+            x: Designated x positions (for 'designated' method)
+            y: Designated y positions (for 'designated' method)
+            r: Designated radii (for 'designated' method)
+            theta: Designated rotations (for 'designated' method)
+            v: Designated visibility values (for 'designated' method)
+            c: Designated colors (for 'designated' method)
             **kwargs: Additional arguments for initializer
         
         Returns:
@@ -172,6 +185,21 @@ class DiffBMPWrapper:
             'debug_mode': False,
             'detail_first': True,
         }
+        
+        # Add designated parameters if provided (for 'designated' method)
+        if x is not None:
+            init_config['x'] = x
+        if y is not None:
+            init_config['y'] = y
+        if r is not None:
+            init_config['r'] = r
+        if theta is not None:
+            init_config['theta'] = theta
+        if v is not None:
+            init_config['v'] = v
+        if c is not None:
+            init_config['c'] = c
+        
         init_config.update(kwargs)
         
         # Create initializer
@@ -181,6 +209,8 @@ class DiffBMPWrapper:
             if target_image is None:
                 raise ValueError("target_image is required for 'structure_aware' initialization")
             initializer = StructureAwareInitializer(init_config)
+        elif method == 'designated':
+            initializer = DesignatedInitializer(init_config)
         else:
             raise ValueError(f"Unknown initialization method: {method}")
         

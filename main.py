@@ -25,6 +25,7 @@ from pydiffbmp.util.primitive_loader import PrimitiveLoader
 from pydiffbmp.util.svg_converter import FontParser, ImageToSVG
 from pydiffbmp.core.initializer.svgsplat_initializater import StructureAwareInitializer
 from pydiffbmp.core.initializer.random_initializater import RandomInitializer
+from pydiffbmp.core.initializer.designated_initializer import DesignatedInitializer
 from pydiffbmp.util.primitive_utils import expand_primitive_wildcards
 from pydiffbmp.util.transition_exporter import export_transition_video_with_holds
 # Import our modules
@@ -269,6 +270,8 @@ for img_idx, img_path in enumerate(img_paths):
         initializer = StructureAwareInitializer(init_conf)
     elif init_conf.get("initializer", "none") == "random":
         initializer = RandomInitializer(init_conf)
+    elif init_conf.get("initializer", "none") == "designated":
+        initializer = DesignatedInitializer(init_conf)
     else:
         raise ValueError(f"Invalid initializer: {init_conf.get('initializer', 'none')}")
 

@@ -70,6 +70,7 @@ from pydiffbmp.core.renderer.sequential_renderer import SequentialFrameRenderer
 from pydiffbmp.core.initializer.svgsplat_initializater import StructureAwareInitializer
 from pydiffbmp.core.initializer.random_initializater import RandomInitializer
 from pydiffbmp.core.initializer.base_initializer import BaseInitializer
+from pydiffbmp.core.initializer.designated_initializer import DesignatedInitializer
 
 # Utility exports
 from pydiffbmp.util.primitive_loader import PrimitiveLoader
@@ -103,6 +104,7 @@ __all__ = [
     'StructureAwareInitializer',
     'RandomInitializer',
     'BaseInitializer',
+    'DesignatedInitializer',
     
     # Loaders
     'PrimitiveLoader',
