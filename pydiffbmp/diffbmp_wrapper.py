@@ -18,6 +18,7 @@ from pydiffbmp.util.svg_loader import SVGLoader
 from pydiffbmp.util.primitive_loader import PrimitiveLoader
 from pydiffbmp.core.initializer.random_initializater import RandomInitializer
 from pydiffbmp.core.initializer.svgsplat_initializater import StructureAwareInitializer
+from pydiffbmp.core.initializer.designated_initializer import DesignatedInitializer
 from pydiffbmp.core.preprocessing import Preprocessor
 
 
@@ -181,6 +182,8 @@ class DiffBMPWrapper:
             if target_image is None:
                 raise ValueError("target_image is required for 'structure_aware' initialization")
             initializer = StructureAwareInitializer(init_config)
+        elif method == 'designated':
+            initializer = DesignatedInitializer(init_config)
         else:
             raise ValueError(f"Unknown initialization method: {method}")
         
