@@ -340,3 +340,91 @@ class DiffBMPWrapper:
             return torch.cat([rendered, alpha.unsqueeze(-1)], dim=-1)
         else:
             return rendered
+
+    def render_batch(
+        self,
+        params_list: list,
+        background: Optional[Union[str, torch.Tensor]] = 'white',
+        blur_sigma: float = 1.0,
+        return_alpha: bool = False,
+        tile_size: int = 32,
+        alpha_upper_bound: float = 0.5,
+        c_blend: float = 0.0,
+        use_fp16: bool = False
+    ) -> list:
+        """
+        Render multiple candidates in batch.
+        
+        This method optimizes batch rendering by reusing GPU resources across
+        multiple render calls, reducing memory allocation overhead.
+        
+        Args:
+            params_list: List of (x, y, r, theta, v, c) tuples, each representing
+                        a candidate's parameters where tensors have shape (N,)
+            background: Background ('white', 'black', 'random') or image tensor (H, W, 3)
+            blur_sigma: Gaussian blur sigma
+            return_alpha: Whether to return alpha channel
+            tile_size: Tile size for rendering
+            alpha_upper_bound: Maximum alpha value
+            c_blend: Blend factor between primitive color and parameter color
+            use_fp16: Whether to use FP16 for memory efficiency
+        
+        Returns:
+            List of rendered images, each (H, W, 3) or (H, W, 4) if return_alpha=True
+        """
+        if self.primitive is None:
+            raise ValueError("Primitive not loaded. Call load_primitive() first.")
+        if self.canvas_size is None:
+            raise ValueError("Canvas size not set. Call initialize_params() or set canvas_size manually first.")
+        
+        H, W = self.canvas_size
+        
+        # Pre-compute background tensor once (optimization: avoid repeated creation)
+        if isinstance(background, str):
+            if background == 'white':
+                I_bg = torch.ones((H, W, 3), device=self.device, dtype=torch.float32)
+            elif background == 'black':
+                I_bg = torch.zeros((H, W, 3), device=self.device, dtype=torch.float32)
+            elif background == 'random':
+                I_bg = torch.rand((H, W, 3), device=self.device, dtype=torch.float32)
+            else:
+                raise ValueError(f"Unknown background type: {background}")
+        elif isinstance(background, torch.Tensor):
+            I_bg = background
+            if I_bg.device != self.device:
+                I_bg = I_bg.to(self.device)
+        else:
+            I_bg = None
+        
+        # Try to use CUDA batch rendering if renderer is initialized
+        if self.renderer is not None and hasattr(self.renderer, 'render_from_params_batch'):
+            try:
+                return self.renderer.render_from_params_batch(
+                    params_list, 
+                    return_alpha=return_alpha, 
+                    I_bg=I_bg
+                )
+            except Exception as e:
+                # Fallback to sequential on error
+                print(f"CUDA batch rendering failed, falling back to sequential: {e}")
+        
+        # Fallback: sequential rendering using self.render()
+        results = []
+        for params in params_list:
+            x, y, r, theta, v, c = params
+            
+            # Use self.render() to ensure renderer is initialized
+            rendered = self.render(
+                x, y, r, theta, v, c,
+                background=I_bg if I_bg is not None else background,
+                blur_sigma=blur_sigma,
+                return_alpha=return_alpha,
+                tile_size=tile_size,
+                alpha_upper_bound=alpha_upper_bound,
+                c_blend=c_blend,
+                use_fp16=use_fp16
+            )
+            results.append(rendered)
+        
+        return results
+

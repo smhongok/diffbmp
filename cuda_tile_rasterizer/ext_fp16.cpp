@@ -49,13 +49,35 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     return global_tile_rasterizer_fp16->backward(grad_out_color, grad_out_alpha, means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, lr_config_tensor);
 }
 
+// Batch forward function - process multiple candidates in single call
+std::tuple<torch::Tensor, torch::Tensor> rasterize_tiles_batch_class_fp16(
+    torch::Tensor means2D,              // (B, N, 2)
+    torch::Tensor radii,                // (B, N)
+    torch::Tensor rotations,            // (B, N)
+    torch::Tensor opacities,            // (B, N)
+    torch::Tensor colors,               // (B, N, 3)
+    torch::Tensor colors_orig,          // (B, N, H, W, 3)
+    torch::Tensor primitive_templates,  // (P, H, W)
+    torch::Tensor global_bmp_sel,       // (N,) - shared across batch
+    float c_blend,
+    torch::Tensor tile_primitive_mapping) {
+    
+    if (!global_tile_rasterizer_fp16) {
+        throw std::runtime_error("TileRasterizerFP16 not initialized. Call init_tile_rasterizer_fp16 first.");
+    }
+    
+    return global_tile_rasterizer_fp16->forward_batch(means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, tile_primitive_mapping);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     // Class-based functions
     m.def("init_tile_rasterizer_fp16", &init_tile_rasterizer_fp16, "Initialize global tile rasterizer FP16");
     m.def("rasterize_tiles_class_fp16", &rasterize_tiles_class_fp16, "CUDA tile rasterization forward FP16 (class-based)");
+    m.def("rasterize_tiles_batch_class_fp16", &rasterize_tiles_batch_class_fp16, "CUDA tile rasterization forward batch FP16 (class-based)");
     m.def("rasterize_tiles_backward_class_fp16", &rasterize_tiles_backward_class_fp16, "CUDA tile rasterization backward FP16 (class-based)");
     
     // Timing functions
     m.def("print_cuda_timing_stats_fp16", &printCudaTimingStatsFP16, "Print CUDA timing statistics FP16");
     m.def("reset_cuda_timing_stats_fp16", &resetCudaTimingStatsFP16, "Reset CUDA timing statistics FP16");
 }
+

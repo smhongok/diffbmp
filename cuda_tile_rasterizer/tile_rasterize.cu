@@ -319,8 +319,8 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
     
     const int num_primitives = radii.size(0);
     
-    // Apply dynamic tile-primitive mapping if provided
-    if (tile_primitive_mapping.defined()) {
+    // Apply dynamic tile-primitive mapping if provided (must have data, not just be defined)
+    if (tile_primitive_mapping.defined() && tile_primitive_mapping.numel() > 0) {
         // Extract tile offsets and indices from mapping
         // tile_primitive_mapping is a 1D tensor containing concatenated data
         // Format: [tile_offsets_size, tile_indices_size, tile_offsets..., tile_indices...]
@@ -495,6 +495,144 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
 #endif
     
     return std::make_tuple(out_color_tensor, out_alpha_tensor);
+}
+
+std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward_batch(
+    torch::Tensor means2D,              // (B, N, 2)
+    torch::Tensor radii,                // (B, N)
+    torch::Tensor rotations,            // (B, N)
+    torch::Tensor opacities,            // (B, N)
+    torch::Tensor colors,               // (B, N, 3)
+    torch::Tensor colors_orig,          // (B, N, H, W, 3)
+    torch::Tensor primitive_templates,  // (P, H, W)
+    torch::Tensor global_bmp_sel,       // (N,) - shared across batch
+    float c_blend,
+    std::vector<torch::Tensor> tile_primitive_mappings) {  // List of mappings
+    
+    // Check if memory is allocated
+    if (!memory_allocated) {
+        throw std::runtime_error("TileRasterizer memory not allocated");
+    }
+    
+    const int batch_size = means2D.size(0);
+    const int num_prims = means2D.size(1);
+    const int total_pixels = image_height * image_width;
+    
+#if DEBUG_CUDA_KERNELS
+    printf("TileRasterizer::forward_batch: batch_size=%d, num_prims=%d, image=%dx%d\n", 
+           batch_size, num_prims, image_width, image_height);
+#endif
+    
+    // Allocate output tensors for batch
+    auto out_color_batch = torch::zeros({batch_size, image_height, image_width, 3}, 
+        torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
+    auto out_alpha_batch = torch::zeros({batch_size, image_height, image_width}, 
+        torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
+    
+    // Process each candidate in the batch
+    for (int b = 0; b < batch_size; b++) {
+        // Extract single candidate tensors from batch
+        auto means2D_b = means2D[b];          // (N, 2)
+        auto radii_b = radii[b];              // (N,)
+        auto rotations_b = rotations[b];      // (N,)
+        auto opacities_b = opacities[b];      // (N,)
+        auto colors_b = colors[b];            // (N, 3)
+        auto colors_orig_b = colors_orig[b];  // (N, H, W, 3)
+        
+        // Use the mapping for this specific candidate (if available)
+        torch::Tensor mapping_b;
+        if (b < tile_primitive_mappings.size() && tile_primitive_mappings[b].defined()) {
+            mapping_b = tile_primitive_mappings[b];
+        } else {
+            // Fallback to empty mapping if not provided
+            mapping_b = torch::empty(0, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA));
+        }
+        
+        // Call single forward for this candidate with its specific mapping
+        auto [out_color_single, out_alpha_single] = forward(
+            means2D_b, radii_b, rotations_b, opacities_b, colors_b,
+            colors_orig_b, primitive_templates, global_bmp_sel,
+            c_blend, mapping_b
+        );
+        
+        // Copy results to batch output
+        out_color_batch[b] = out_color_single;
+        out_alpha_batch[b] = out_alpha_single;
+    }
+    
+#if DEBUG_CUDA_KERNELS
+    printf("TileRasterizer::forward_batch: completed batch processing\n");
+#endif
+    
+    return std::make_tuple(out_color_batch, out_alpha_batch);
+}
+
+// Batch backward: compute gradients for multiple candidates
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+TileRasterizer::backward_batch(
+    torch::Tensor grad_out_color,    // (B, H, W, 3)
+    torch::Tensor grad_out_alpha,    // (B, H, W)
+    torch::Tensor means2D,           // (B, N, 2)
+    torch::Tensor radii,             // (B, N)
+    torch::Tensor rotations,         // (B, N)
+    torch::Tensor opacities,         // (B, N)
+    torch::Tensor colors,            // (B, N, 3)
+    torch::Tensor colors_orig,       // (B, N, H, W, 3)
+    torch::Tensor primitive_templates, // (P, H, W)
+    torch::Tensor global_bmp_sel,    // (N,) int32
+    float c_blend,
+    torch::Tensor lr_config          // (7,)
+) {
+    int batch_size = means2D.size(0);
+    int num_prims = means2D.size(1);
+    
+#if DEBUG_CUDA_KERNELS
+    printf("TileRasterizer::backward_batch: batch_size=%d, num_prims=%d\\n", 
+           batch_size, num_prims);
+#endif
+    
+    // Allocate gradient tensors for batch
+    auto grad_means2D_batch = torch::zeros_like(means2D);       // (B, N, 2)
+    auto grad_radii_batch = torch::zeros_like(radii);           // (B, N)
+    auto grad_rotations_batch = torch::zeros_like(rotations);   // (B, N)
+    auto grad_opacities_batch = torch::zeros_like(opacities);   // (B, N)
+    auto grad_colors_batch = torch::zeros_like(colors);         // (B, N, 3)
+    
+    // Process each candidate in the batch
+    for (int b = 0; b < batch_size; b++) {
+        // Extract gradients and parameters for this candidate
+        auto grad_out_color_b = grad_out_color[b];  // (H, W, 3)
+        auto grad_out_alpha_b = grad_out_alpha[b];  // (H, W)
+        auto means2D_b = means2D[b];                // (N, 2)
+        auto radii_b = radii[b];                    // (N,)
+        auto rotations_b = rotations[b];            // (N,)
+        auto opacities_b = opacities[b];            // (N,)
+        auto colors_b = colors[b];                  // (N, 3)
+        auto colors_orig_b = colors_orig[b];        // (N, H, W, 3)
+        
+        // Call single backward for this candidate
+        auto [grad_means2D_single, grad_radii_single, grad_rotations_single, 
+              grad_opacities_single, grad_colors_single] = backward(
+            grad_out_color_b, grad_out_alpha_b,
+            means2D_b, radii_b, rotations_b, opacities_b, colors_b,
+            colors_orig_b, primitive_templates, global_bmp_sel,
+            c_blend, lr_config
+        );
+        
+        // Copy gradients to batch output
+        grad_means2D_batch[b] = grad_means2D_single;
+        grad_radii_batch[b] = grad_radii_single;
+        grad_rotations_batch[b] = grad_rotations_single;
+        grad_opacities_batch[b] = grad_opacities_single;
+        grad_colors_batch[b] = grad_colors_single;
+    }
+    
+#if DEBUG_CUDA_KERNELS
+    printf("TileRasterizer::backward_batch: completed batch gradient computation\\n");
+#endif
+    
+    return std::make_tuple(grad_means2D_batch, grad_radii_batch, grad_rotations_batch,
+                          grad_opacities_batch, grad_colors_batch);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> TileRasterizer::backward(

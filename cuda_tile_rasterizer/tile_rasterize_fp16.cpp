@@ -320,8 +320,8 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizerFP16::forward(
     
     const int num_primitives = radii.size(0);
     
-    // Apply dynamic tile-primitive mapping if provided
-    if (tile_primitive_mapping.defined()) {
+    // Apply dynamic tile-primitive mapping if provided (must have data, not just be defined)
+    if (tile_primitive_mapping.defined() && tile_primitive_mapping.numel() > 0) {
         // Extract tile offsets and indices from mapping
         // tile_primitive_mapping is a 1D tensor containing concatenated data
         // Format: [tile_offsets_size, tile_indices_size, tile_offsets..., tile_indices...]
@@ -496,6 +496,67 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizerFP16::forward(
 #endif
     
     return std::make_tuple(out_color_tensor, out_alpha_tensor);
+}
+
+std::tuple<torch::Tensor, torch::Tensor> TileRasterizerFP16::forward_batch(
+    torch::Tensor means2D,              // (B, N, 2)
+    torch::Tensor radii,                // (B, N)
+    torch::Tensor rotations,            // (B, N)
+    torch::Tensor opacities,            // (B, N)
+    torch::Tensor colors,               // (B, N, 3)
+    torch::Tensor colors_orig,          // (B, N, H, W, 3)
+    torch::Tensor primitive_templates,  // (P, H, W)
+    torch::Tensor global_bmp_sel,       // (N,) - shared across batch
+    float c_blend,
+    torch::Tensor tile_primitive_mapping) {
+    
+    // Check if memory is allocated
+    if (!memory_allocated) {
+        throw std::runtime_error("TileRasterizerFP16 memory not allocated");
+    }
+    
+    const int batch_size = means2D.size(0);
+    const int num_prims = means2D.size(1);
+    const int total_pixels = image_height * image_width;
+    
+#if DEBUG_CUDA_KERNELS_FP16
+    printf("TileRasterizerFP16::forward_batch: batch_size=%d, num_prims=%d, image=%dx%d\n", 
+           batch_size, num_prims, image_width, image_height);
+#endif
+    
+    // Allocate output tensors for batch
+    auto out_color_batch = torch::zeros({batch_size, image_height, image_width, 3}, 
+        torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCUDA));
+    auto out_alpha_batch = torch::zeros({batch_size, image_height, image_width}, 
+        torch::TensorOptions().dtype(torch::kFloat16).device(torch::kCUDA));
+    
+    // Process each candidate in the batch
+    for (int b = 0; b < batch_size; b++) {
+        // Extract single candidate tensors from batch
+        auto means2D_b = means2D[b];          // (N, 2)
+        auto radii_b = radii[b];              // (N,)
+        auto rotations_b = rotations[b];      // (N,)
+        auto opacities_b = opacities[b];      // (N,)
+        auto colors_b = colors[b];            // (N, 3)
+        auto colors_orig_b = colors_orig[b];  // (N, H, W, 3)
+        
+        // Call single forward for this candidate
+        auto [out_color_single, out_alpha_single] = forward(
+            means2D_b, radii_b, rotations_b, opacities_b, colors_b,
+            colors_orig_b, primitive_templates, global_bmp_sel,
+            c_blend, tile_primitive_mapping
+        );
+        
+        // Copy results to batch output
+        out_color_batch[b] = out_color_single;
+        out_alpha_batch[b] = out_alpha_single;
+    }
+    
+#if DEBUG_CUDA_KERNELS_FP16
+    printf("TileRasterizerFP16::forward_batch: completed batch processing\n");
+#endif
+    
+    return std::make_tuple(out_color_batch, out_alpha_batch);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> TileRasterizerFP16::backward(

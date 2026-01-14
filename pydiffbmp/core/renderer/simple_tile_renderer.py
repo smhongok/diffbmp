@@ -265,6 +265,165 @@ class SimpleTileRenderer(VectorRenderer):
         else:
             return output
     
+    def render_from_params_batch(self, params_list: list, 
+                                  return_alpha: bool = False, 
+                                  I_bg: torch.Tensor = None) -> torch.Tensor:
+        """
+        Batch rendering for multiple candidates using CUDA batch forward.
+        
+        This method processes all candidates in a single CUDA call, significantly
+        reducing kernel launch overhead compared to sequential rendering.
+        
+        Args:
+            params_list: List of (x, y, r, theta, v, c) tuples, each tensor has shape (N,)
+            return_alpha: Whether to return alpha channel
+            I_bg: Background image (shared across batch)
+            
+        Returns:
+            List of rendered image tensors, each (H, W, 3) or (H, W, 4) if return_alpha
+        """
+        # Check if CUDA batch rendering is available
+        can_use_batch = (
+            CUDA_AVAILABLE and 
+            self.cuda_rasterizer is not None and 
+            hasattr(self.cuda_rasterizer, 'forward_batch')
+        )
+        
+        if not can_use_batch:
+            # Fallback to sequential rendering if batch not available
+            results = []
+            for params in params_list:
+                x, y, r, theta, v, c = params
+                rendered = self.render_from_params(x, y, r, theta, v, c, 
+                                                   return_alpha=return_alpha, 
+                                                   I_bg=I_bg)
+                results.append(rendered)
+            return results
+        
+        batch_size = len(params_list)
+        N = params_list[0][0].shape[0]
+        
+        # Stack all parameters into batch tensors
+        means2D = torch.stack([torch.stack([p[0], p[1]], dim=1) for p in params_list], dim=0)  # (B, N, 2)
+        radii = torch.stack([p[2] for p in params_list], dim=0)  # (B, N)
+        rotations = torch.stack([p[3] for p in params_list], dim=0)  # (B, N)
+        opacities = torch.stack([p[4] for p in params_list], dim=0)  # (B, N)
+        colors = torch.stack([p[5] for p in params_list], dim=0)  # (B, N, 3)
+        
+        # CRITICAL FIX: Clamp parameters to image bounds to prevent clipped insignias
+        # This matches what sequential render does via _clamp_params_inplace
+        r_max = int(min(self.H, self.W) // 4)
+        with torch.no_grad():
+            means2D[:, :, 0].clamp_(0.0, float(self.W - 1))  # x coordinates
+            means2D[:, :, 1].clamp_(0.0, float(self.H - 1))  # y coordinates
+            radii.clamp_(2.0, float(r_max))                   # radii
+        
+        # Get primitive templates first to determine p
+        primitive_templates = self.S_blurred if self.S_blurred is not None else self.S
+        if primitive_templates.dim() == 2:
+            primitive_templates = primitive_templates.unsqueeze(0)
+        
+        # Create global_bmp_sel (shared across batch) - MUST do this before colors_orig
+        p = primitive_templates.size(0)
+        global_bmp_sel = torch.arange(N, device=self.device, dtype=torch.long) % p
+        global_bmp_sel = global_bmp_sel.flip(0)
+        
+        
+        # Prepare colors_orig (B, N, H, W, 3) - use primitive colors with global_bmp_sel
+        if self.c_o is not None:
+            # IMPORTANT: Use global_bmp_sel to select correct color map for each primitive
+            # This matches sequential render: c_o = self.c_o[global_bmp_sel]
+            c_o_selected = self.c_o[global_bmp_sel]  # (N, H, W, 3) - select color maps
+            colors_orig = c_o_selected.unsqueeze(0).expand(batch_size, -1, -1, -1, -1)  # (B, N, H, W, 3)
+        else:
+            # Create dummy colors_orig
+            template_h, template_w = self.S.shape[-2:]
+            colors_orig = torch.zeros(batch_size, N, template_h, template_w, 3, 
+                                       device=self.device, dtype=torch.float32)
+        
+        # CRITICAL: Create CUDA rasterizer with sigma=0.0 to match sequential behavior
+        if self.cuda_rasterizer is None or self.cuda_rasterizer.sigma != 0.0:
+            from . import TileRasterizer
+            self.cuda_rasterizer = TileRasterizer(
+                image_height=self.H, 
+                image_width=self.W, 
+                tile_size=self.tile_size, 
+                sigma=0.0,
+                alpha_upper_bound=self.alpha_upper_bound, 
+                max_prims_per_pixel=self.max_prims_per_pixel, 
+                num_primitives=N,
+                use_fp16=self.use_fp16
+            )
+        
+        # Prepare lr_config_tensor (same as sequential render)
+        lr_config_tensor = torch.tensor([
+            0.1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0
+        ], dtype=torch.float16 if self.use_fp16 else torch.float32, device=self.device)
+        
+        # Compute tile-primitive mapping for EACH candidate
+        # Each candidate has different primitive positions, so needs its own mapping
+        tile_primitive_mappings = []
+        
+        # Compute tile boundaries (same for all candidates)
+        # CRITICAL FIX: Must create flattened tile grid (256 tiles), not 16x16 separate arrays!
+        tiles_h = (self.H + self.tile_size - 1) // self.tile_size
+        tiles_w = (self.W + self.tile_size - 1) // self.tile_size
+        
+        # Create flattened tile coordinates (256 elements for 16x16 grid)
+        tile_y_coords = torch.arange(tiles_h, device=self.device).repeat_interleave(tiles_w)
+        tile_x_coords = torch.arange(tiles_w, device=self.device).repeat(tiles_h)
+        
+        # Compute tile boundaries for all 256 tiles
+        y_starts = tile_y_coords * self.tile_size
+        y_ends = torch.clamp(y_starts + self.tile_size, max=self.H)
+        x_starts = tile_x_coords * self.tile_size
+        x_ends = torch.clamp(x_starts + self.tile_size, max=self.W)
+        
+        for b in range(batch_size):
+            means2D_b = means2D[b]  # (N, 2)
+            radii_b = radii[b]      # (N,)
+            rotations_b = rotations[b]  # (N,)
+            
+            x_b = means2D_b[:, 0]
+            y_b = means2D_b[:, 1]
+            
+            # Compute primitive-tile assignment for this candidate
+            primitive_tile_masks = self._unified_primitive_assignment(
+                x_b, y_b, radii_b, rotations_b, x_starts, x_ends, y_starts, y_ends
+            )
+            
+            # Convert to CUDA mapping format
+            mapping = self._convert_masks_to_mapping(
+                primitive_tile_masks, x_starts, x_ends, y_starts, y_ends
+            )
+            tile_primitive_mappings.append(mapping)
+        
+        # Call CUDA batch forward with autograd support
+        # Pass the list of mappings (one per candidate)
+        out_color_batch, out_alpha_batch = self.cuda_rasterizer.forward_batch(
+            means2D, radii, rotations, opacities, colors, colors_orig,
+            primitive_templates, global_bmp_sel, self.c_blend, lr_config_tensor, tile_primitive_mappings
+        )
+        
+        # Convert to list with proper background compositing
+        # CUDA returns: pre-multiplied color on black background + alpha
+        # We need to composite this over I_bg the same way sequential render does
+        results = []
+        for b in range(batch_size):
+            out_color = out_color_batch[b]
+            out_alpha = out_alpha_batch[b]
+            
+            if I_bg is not None:
+                # Sequential render formula: cuda_color + (1-alpha)*I_bg
+                out_color = out_color + (1 - out_alpha.unsqueeze(-1)) * I_bg
+            
+            if return_alpha:
+                results.append((out_color, out_alpha))
+            else:
+                results.append(out_color)
+        
+        return results
+    
     def _process_tiles_sequential(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                                  theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
                                  sigma: float, I_bg: torch.Tensor,
