@@ -341,20 +341,6 @@ class SimpleTileRenderer(VectorRenderer):
             colors_orig = torch.zeros(batch_size, N, template_h, template_w, 3, 
                                        device=self.device, dtype=torch.float32)
         
-        # CRITICAL: Create CUDA rasterizer with sigma=0.0 to match sequential behavior
-        if self.cuda_rasterizer is None or self.cuda_rasterizer.sigma != 0.0:
-            from . import TileRasterizer
-            self.cuda_rasterizer = TileRasterizer(
-                image_height=self.H, 
-                image_width=self.W, 
-                tile_size=self.tile_size, 
-                sigma=0.0,
-                alpha_upper_bound=self.alpha_upper_bound, 
-                max_prims_per_pixel=self.max_prims_per_pixel, 
-                num_primitives=N,
-                use_fp16=self.use_fp16
-            )
-        
         # Prepare lr_config_tensor (same as sequential render)
         lr_config_tensor = torch.tensor([
             0.1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0
