@@ -90,6 +90,154 @@ class TileRasterizer:
             means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, lr_conf, tile_primitive_mapping,
             self.image_height, self.image_width, self.tile_size, self.sigma, True
         )
+    
+    def forward_batch(self, means2D, radii, rotations, opacities, colors, colors_orig, 
+                      primitive_templates, global_bmp_sel, c_blend, lr_conf, tile_primitive_mappings=None):
+        """
+        Batch forward pass - process multiple candidates with autograd support.
+        
+        Args:
+            means2D: (B, N, 2) batch of primitive positions
+            radii: (B, N) batch of primitive radii
+            rotations: (B, N) batch of primitive rotations
+            opacities: (B, N) batch of primitive opacities
+            colors: (B, N, 3) batch of primitive colors
+            colors_orig: (B, N, H, W, 3) batch of original colors
+            primitive_templates: (P, H, W) shared primitive templates
+            global_bmp_sel: (N,) shared template selection
+            c_blend: color blend factor
+            lr_conf: learning rate config tensor (7,)
+            tile_primitive_mappings: list of mappings (one per candidate)
+            
+        Returns:
+            out_color: (B, H, W, 3) batch of rendered images
+            out_alpha: (B, H, W) batch of alpha masks
+        """
+        # Use autograd-enabled batch function
+        return TileRasterizerBatchFunction.apply(
+            means2D, radii, rotations, opacities, colors, colors_orig,
+            primitive_templates, global_bmp_sel, c_blend, lr_conf, tile_primitive_mappings,
+            self.image_height, self.image_width, self.tile_size, self.sigma, self.use_fp16
+        )
+
+# Autograd Function for batch rendering (supports gradient propagation)
+class TileRasterizerBatchFunction(Function):
+    @staticmethod
+    def forward(ctx, means2D, radii, rotations, opacities, colors, colors_orig,
+                primitive_templates, global_bmp_sel, c_blend, lr_conf, tile_primitive_mappings,
+                image_height, image_width, tile_size, sigma, use_fp16=False):
+        """
+        Forward pass for batch rendering with autograd support.
+        
+        Args:
+            means2D: (B, N, 2) batch of primitive positions
+            radii: (B, N) batch of primitive radii
+            rotations: (B, N) batch of primitive rotations
+            opacities: (B, N) batch of primitive opacities
+            colors: (B, N, 3) batch of primitive colors
+            colors_orig: (B, N, H, W, 3) batch of original colors
+            primitive_templates: (P, H, W) shared primitive templates
+            global_bmp_sel: (N,) shared template selection
+            c_blend: float, color blend factor
+            lr_conf: (7,) learning rate config tensor
+            tile_primitive_mappings: list of mappings (one per candidate)
+            
+        Returns:
+            out_color: (B, H, W, 3) batch of rendered images
+            out_alpha: (B, H, W) batch of alpha masks
+        """
+        # Ensure all inputs are float32 for CUDA kernel compatibility
+        means2D = means2D.float().contiguous()
+        radii = radii.float().contiguous()
+        rotations = rotations.float().contiguous()
+        opacities = opacities.float().contiguous()
+        colors = colors.float().contiguous()
+        colors_orig = colors_orig.float().contiguous()
+        primitive_templates = primitive_templates.float().contiguous()
+        global_bmp_sel_int32 = global_bmp_sel.to(dtype=torch.int32).contiguous()
+        lr_conf = lr_conf.float().contiguous()
+        
+        if isinstance(c_blend, torch.Tensor):
+            c_blend = c_blend.float().item()
+        else:
+            c_blend = float(c_blend)
+        
+        # Handle tile_primitive_mappings (list of tensors or None)
+        if tile_primitive_mappings is None:
+            tile_primitive_mappings = []
+        
+        # Save tensors for backward (including lr_conf like sequential render)
+        ctx.save_for_backward(means2D, radii, rotations, opacities, colors, colors_orig,
+                              primitive_templates, global_bmp_sel_int32, lr_conf)
+        ctx.c_blend = c_blend
+        ctx.image_height = image_height
+        ctx.image_width = image_width
+        ctx.tile_size = tile_size
+        ctx.sigma = sigma
+        ctx.use_fp16 = use_fp16
+        ctx.tile_primitive_mappings = tile_primitive_mappings
+        
+        # Call CUDA batch forward with list of mappings
+        if use_fp16 and CUDA_FP16_AVAILABLE:
+            out_color, out_alpha = _C_FP16.rasterize_tiles_batch_class_fp16(
+                means2D, radii, rotations, opacities, colors, colors_orig,
+                primitive_templates, global_bmp_sel_int32, c_blend, tile_primitive_mappings
+            )
+        elif CUDA_AVAILABLE:
+            out_color, out_alpha = _C.rasterize_tiles_batch_class(
+                means2D, radii, rotations, opacities, colors, colors_orig,
+                primitive_templates, global_bmp_sel_int32, c_blend, tile_primitive_mappings
+            )
+        else:
+            raise RuntimeError("CUDA not available for batch forward")
+        
+        return out_color, out_alpha
+    
+    @staticmethod
+    def backward(ctx, grad_out_color, grad_out_alpha):
+        """
+        Backward pass for batch rendering using CUDA batch backward kernel.
+        """
+        # CRITICAL: Unpack saved_tensors ONCE (including lr_conf like sequential)
+        means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, lr_conf = ctx.saved_tensors
+        
+        batch_size = means2D.size(0)
+        
+        # Call C++ batch backward kernel (using saved lr_conf like sequential)
+        if ctx.use_fp16 and CUDA_FP16_AVAILABLE:
+            # Use FP16 backward (TODO: implement FP16 backward_batch)
+            # For now, fall back to sequential
+            grad_means2D = torch.zeros_like(means2D)
+            grad_radii = torch.zeros_like(radii)
+            grad_rotations = torch.zeros_like(rotations)
+            grad_opacities = torch.zeros_like(opacities)
+            grad_colors = torch.zeros_like(colors)
+            
+            for b in range(batch_size):
+                grads = _C_FP16.rasterize_tiles_backward_class_fp16(
+                    grad_out_color[b], grad_out_alpha[b],
+                    means2D[b], radii[b], rotations[b], opacities[b], colors[b],
+                    colors_orig[b], primitive_templates, global_bmp_sel,
+                    ctx.c_blend, lr_conf
+                )
+                grad_means2D[b] = grads[0]
+                grad_radii[b] = grads[1]
+                grad_rotations[b] = grads[2]
+                grad_opacities[b] = grads[3]
+                grad_colors[b] = grads[4]
+        elif CUDA_AVAILABLE:
+            # Use FP32 batch backward (CUDA kernel)
+            grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors = _C.rasterize_tiles_backward_batch_class(
+                grad_out_color, grad_out_alpha,
+                means2D, radii, rotations, opacities, colors,
+                colors_orig, primitive_templates, global_bmp_sel,
+                ctx.c_blend, lr_conf
+            )
+        else:
+            raise RuntimeError("CUDA not available for backward")
+        
+        # Return gradients (None for non-differentiable inputs)
+        return grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors, None, None, None, None, None, None, None, None, None, None, None
 
 class TileRasterizerFunction(Function):
     @staticmethod

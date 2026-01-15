@@ -81,6 +81,19 @@ public:
         float c_blend,
         torch::Tensor tile_primitive_mapping);
     
+    // Batch forward pass - process multiple candidates in single call
+    std::tuple<torch::Tensor, torch::Tensor> forward_batch(
+        torch::Tensor means2D,              // (B, N, 2)
+        torch::Tensor radii,                // (B, N)
+        torch::Tensor rotations,            // (B, N)
+        torch::Tensor opacities,            // (B, N)
+        torch::Tensor colors,               // (B, N, 3)
+        torch::Tensor colors_orig,          // (B, N, H, W, 3)
+        torch::Tensor primitive_templates,  // (P, H, W)
+        torch::Tensor global_bmp_sel,       // (N,) - shared across batch
+        float c_blend,
+        torch::Tensor tile_primitive_mapping);
+    
     // Backward pass
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> backward(
         torch::Tensor grad_out_color,
