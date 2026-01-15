@@ -45,10 +45,7 @@ class SequentialInitializer(BaseInitializer):
                 
         # Ensure image is in correct format for ORB
         if I_np.dtype != np.uint8:
-            I_np = (I_np * 255).astype(np.uint8)        
-
-        
-        print("Using whole random initialization.")
+            I_np = (I_np * 255).astype(np.uint8)
         
         return self._sequential_splat_params(self.num_init, 0, 0, H, W, device)
 
