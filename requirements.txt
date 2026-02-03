@@ -30,6 +30,9 @@ nvidia-ml-py
 # Progress Bars & Utilities
 tqdm
 
+# Web UI for demos (Hugging Face Spaces)
+gradio>=4.0.0
+
 # Optional: Image Quality Metrics (only if compute_psnr=true)
 piq
 
