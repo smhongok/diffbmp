@@ -340,6 +340,85 @@ class LossRegistry:
         return penalty_weight * total_overlap
     
     @staticmethod
+    def constraint_loss(rendered: torch.Tensor = None,
+                       target: torch.Tensor = None,
+                       mask: Optional[torch.Tensor] = None,
+                       primitive_params: Optional[dict] = None,
+                       canvas_size: Optional[tuple] = None,
+                       boundary_margin: float = 10.0,
+                       repulsion_ratio: float = 1.5,
+                       boundary_weight: float = 1.0,
+                       repulsion_weight: float = 1.0,
+                       **kwargs) -> torch.Tensor:
+        """
+        Unified constraint loss combining boundary and collision penalties.
+        
+        Penalizes:
+        1. Boundary violations: insignias going outside the image bounds
+        2. Collision violations: insignias overlapping with each other
+        
+        Both penalties use ReLU (soft) for differentiability with gradient descent.
+        
+        Args:
+            primitive_params: Dict with 'x', 'y', 'r' tensors
+            canvas_size: Tuple of (height, width) for boundary checking
+            boundary_margin: Minimum distance from image edge (default: 10)
+            repulsion_ratio: Multiplier for minimum distance between insignias (default: 1.5)
+                            min_distance = (r_i + r_j) * repulsion_ratio
+            boundary_weight: Weight for boundary violation penalty (default: 1.0)
+            repulsion_weight: Weight for collision penalty (default: 1.0)
+        
+        Returns:
+            Combined constraint loss (boundary_loss + repulsion_loss)
+        """
+        if primitive_params is None:
+            return torch.tensor(0.0, requires_grad=True)
+        
+        x = primitive_params.get('x')  # (N,)
+        y = primitive_params.get('y')  # (N,)
+        r = primitive_params.get('r')  # (N,)
+        
+        if x is None or y is None or r is None:
+            return torch.tensor(0.0, device=x.device if x is not None else 'cpu', requires_grad=True)
+        
+        N = x.shape[0]
+        device = x.device
+        
+        # ========== 1. Boundary Loss (경계 이탈 페널티) ==========
+        boundary_loss = torch.tensor(0.0, device=device, requires_grad=True)
+        
+        if canvas_size is not None:
+            H, W = canvas_size
+            # Insignia must be fully inside: center must be at least (r + margin) from edges
+            left_violation = F.relu(r + boundary_margin - x)           # 왼쪽 경계 이탈
+            right_violation = F.relu(x + r + boundary_margin - W)      # 오른쪽 경계 이탈
+            top_violation = F.relu(r + boundary_margin - y)            # 위쪽 경계 이탈
+            bottom_violation = F.relu(y + r + boundary_margin - H)     # 아래쪽 경계 이탈
+            
+            boundary_loss = (left_violation + right_violation + top_violation + bottom_violation).sum()
+        
+        # ========== 2. Repulsion Loss (충돌 페널티) ==========
+        repulsion_loss = torch.tensor(0.0, device=device, requires_grad=True)
+        
+        if N >= 2:
+            # Compute pairwise distances
+            positions = torch.stack([x, y], dim=1)  # (N, 2)
+            diffs = positions.unsqueeze(0) - positions.unsqueeze(1)  # (N, N, 2)
+            distances = torch.sqrt((diffs ** 2).sum(dim=-1) + 1e-6)  # (N, N)
+            
+            # Minimum allowed distance = (r_i + r_j) * ratio
+            min_dists = (r.unsqueeze(0) + r.unsqueeze(1)) * repulsion_ratio  # (N, N)
+            
+            # Distance violation (positive if too close)
+            violations = F.relu(min_dists - distances)  # (N, N)
+            
+            # Exclude diagonal (self-comparison)
+            mask_diag = ~torch.eye(N, dtype=torch.bool, device=device)
+            repulsion_loss = violations[mask_diag].sum() / 2.0  # Divide by 2 for symmetric pairs
+        
+        return boundary_weight * boundary_loss + repulsion_weight * repulsion_loss
+    
+    @staticmethod
     def size_regularization_loss(rendered: torch.Tensor = None,
                                 target: torch.Tensor = None,
                                 mask: Optional[torch.Tensor] = None,

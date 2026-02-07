@@ -28,7 +28,8 @@ setup(
                     '-O3',  # Debug flags for CUDA
                     '--use_fast_math',
                     '-Xptxas=-v',
-                    '-gencode=arch=compute_86,code=sm_86',  # RTX 3090, A100
+                    '-gencode=arch=compute_80,code=sm_80',  # A100 (Ampere)
+                    '-gencode=arch=compute_86,code=sm_86',  # RTX 3090
                     '-gencode=arch=compute_89,code=sm_89',  # L40S, RTX 4090
                 ]
             }
