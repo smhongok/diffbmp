@@ -146,21 +146,25 @@ class TileRasterizerBatchFunction(Function):
             out_color: (B, H, W, 3) batch of rendered images
             out_alpha: (B, H, W) batch of alpha masks
         """
-        # Ensure all inputs are float32 for CUDA kernel compatibility
-        means2D = means2D.float().contiguous()
-        radii = radii.float().contiguous()
-        rotations = rotations.float().contiguous()
-        opacities = opacities.float().contiguous()
-        colors = colors.float().contiguous()
-        colors_orig = colors_orig.float().contiguous()
-        primitive_templates = primitive_templates.float().contiguous()
+        # Ensure all inputs are correct dtype for CUDA kernel compatibility
+        if use_fp16:
+            dtype = torch.float16
+        else:
+            dtype = torch.float32
+            
+        means2D = means2D.to(dtype=dtype).contiguous()
+        radii = radii.to(dtype=dtype).contiguous()
+        rotations = rotations.to(dtype=dtype).contiguous()
+        opacities = opacities.to(dtype=dtype).contiguous()
+        colors = colors.to(dtype=dtype).contiguous()
+        colors_orig = colors_orig.to(dtype=dtype).contiguous()
+        primitive_templates = primitive_templates.to(dtype=dtype).contiguous()
         global_bmp_sel_int32 = global_bmp_sel.to(dtype=torch.int32).contiguous()
-        lr_conf = lr_conf.float().contiguous()
+        lr_conf = lr_conf.to(dtype=dtype).contiguous()
         
         if isinstance(c_blend, torch.Tensor):
-            c_blend = c_blend.float().item()
-        else:
-            c_blend = float(c_blend)
+            c_blend = c_blend.item()
+        c_blend = float(c_blend)
         
         # Handle tile_primitive_mappings (list of tensors or None)
         if tile_primitive_mappings is None:
@@ -179,7 +183,7 @@ class TileRasterizerBatchFunction(Function):
         
         # Call CUDA batch forward with list of mappings
         if use_fp16 and CUDA_FP16_AVAILABLE:
-            out_color, out_alpha = _C_FP16.rasterize_tiles_batch_class_fp16(
+            out_color, out_alpha = _C_fp16.rasterize_tiles_batch_class_fp16(
                 means2D, radii, rotations, opacities, colors, colors_orig,
                 primitive_templates, global_bmp_sel_int32, c_blend, tile_primitive_mappings
             )
@@ -203,6 +207,14 @@ class TileRasterizerBatchFunction(Function):
         
         batch_size = means2D.size(0)
         
+        # Cast gradients if needed
+        dtype = torch.float16 if ctx.use_fp16 else torch.float32
+        
+        if grad_out_color is not None:
+            grad_out_color = grad_out_color.to(dtype=dtype)
+        if grad_out_alpha is not None:
+            grad_out_alpha = grad_out_alpha.to(dtype=dtype)
+            
         # Call C++ batch backward kernel (using saved lr_conf like sequential)
         if ctx.use_fp16 and CUDA_FP16_AVAILABLE:
             # Use FP16 backward (TODO: implement FP16 backward_batch)
@@ -214,7 +226,7 @@ class TileRasterizerBatchFunction(Function):
             grad_colors = torch.zeros_like(colors)
             
             for b in range(batch_size):
-                grads = _C_FP16.rasterize_tiles_backward_class_fp16(
+                grads = _C_fp16.rasterize_tiles_backward_class_fp16(
                     grad_out_color[b], grad_out_alpha[b],
                     means2D[b], radii[b], rotations[b], opacities[b], colors[b],
                     colors_orig[b], primitive_templates, global_bmp_sel,
@@ -329,9 +341,24 @@ class TileRasterizerFunction(Function):
 
 class TileRasterizerFunctionFP16(Function):
     @staticmethod
-    @custom_fwd_wrapper(cast_inputs=torch.float16)
     def forward(ctx, means2D, radii, rotations, opacities, colors, colors_orig, 
                 primitive_templates, global_bmp_sel, c_blend, lr_conf, tile_primitive_mapping, image_height, image_width, tile_size, sigma, use_class=False):
+        
+        # Manually cast floating point inputs to FP16
+        means2D = means2D.to(dtype=torch.float16)
+        radii = radii.to(dtype=torch.float16)
+        rotations = rotations.to(dtype=torch.float16)
+        opacities = opacities.to(dtype=torch.float16)
+        colors = colors.to(dtype=torch.float16)
+        colors_orig = colors_orig.to(dtype=torch.float16)
+        primitive_templates = primitive_templates.to(dtype=torch.float16)
+        # lr_conf might already be fp16 from renderer, but ensure it
+        lr_conf = lr_conf.to(dtype=torch.float16)
+        
+        # c_blend scalar
+        if isinstance(c_blend, torch.Tensor):
+            c_blend = c_blend.item()
+        c_blend = float(c_blend)
         
         # Call CUDA forward
         if use_class and CUDA_FP16_AVAILABLE:
@@ -369,10 +396,15 @@ class TileRasterizerFunctionFP16(Function):
         return out_color, out_alpha
     
     @staticmethod
-    @custom_bwd_wrapper()
     def backward(ctx, grad_out_color, grad_out_alpha):
         means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, lr_conf = ctx.saved_tensors
         
+        # Manually cast gradients to FP16
+        if grad_out_color is not None:
+            grad_out_color = grad_out_color.to(dtype=torch.float16)
+        if grad_out_alpha is not None:
+            grad_out_alpha = grad_out_alpha.to(dtype=torch.float16)
+            
         # Debug: Check if alpha gradient is None
         if DEBUG_MODE:
             print(f"Alpha gradient is None: {grad_out_alpha is None}")
