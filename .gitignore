@@ -7,6 +7,7 @@ main_text.py
 main_rgb.py
 *ignore.py
 .vscode/
+.windsurf/
 
 codes_legacy/*
 extra_outputs/*
@@ -15,6 +16,7 @@ assets/primitives/*
 output_webpage/node_modules/
 output_webpage/src/index.html
 output_webpage/src_lyrics/index.html
+output_webpage/src_lyrics_black/index.html
 output_webpage/src_sequential/index.html
 output_webpage/src_sequential_lyrics/index.html
 !assets/svg/fire.svg
