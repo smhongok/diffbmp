@@ -334,10 +334,18 @@ for img_idx, img_path in enumerate(img_paths):
             stroke_width=config["postprocessing"]["linewidth"]
         )
         
+        # Determine HTML output path from config or defaults
+        if "html_output_path" in config.get("postprocessing", {}):
+            html_output_path = config["postprocessing"]["html_output_path"]
+        elif html_extra_path_special is not None:
+            html_output_path = html_extra_path_special
+        else:
+            html_output_path = "output_webpage/src/index.html"
+        
         exporter.export(x, y, r, theta, v, c,
                         output_path=pdf_path,
                         svg_hollow=config["primitive"]["primitive_hollow"],
-                        html_extra_path = "output_webpage/src/index.html" if html_extra_path_special is None else html_extra_path_special,
+                        html_extra_path=html_output_path,
                         export_pdf=True,
                         html_extra_meta={"char_counts": json.dumps(char_counts), "word_lengths_per_line": json.dumps(word_lengths_per_line)} if 'char_counts' in locals() else {}
         )
