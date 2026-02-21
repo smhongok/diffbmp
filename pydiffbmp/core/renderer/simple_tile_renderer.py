@@ -346,9 +346,12 @@ class SimpleTileRenderer(VectorRenderer):
             0.1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0
         ], dtype=torch.float16 if self.use_fp16 else torch.float32, device=self.device)
         
-        # Compute tile-primitive mapping for EACH candidate
-        # Each candidate has different primitive positions, so needs its own mapping
+        # Compute tile-primitive mappings.
+        # FP16 batch kernel in this environment expects a single mapping tensor.
+        # Build a shared superset mapping across candidates so every candidate can use it.
+        use_shared_mapping = bool(self.use_fp16)
         tile_primitive_mappings = []
+        shared_primitive_tile_masks = None
         
         # Compute tile boundaries (same for all candidates)
         # CRITICAL FIX: Must create flattened tile grid (256 tiles), not 16x16 separate arrays!
@@ -378,14 +381,29 @@ class SimpleTileRenderer(VectorRenderer):
                 x_b, y_b, radii_b, rotations_b, x_starts, x_ends, y_starts, y_ends
             )
             
-            # Convert to CUDA mapping format
-            mapping = self._convert_masks_to_mapping(
-                primitive_tile_masks, x_starts, x_ends, y_starts, y_ends
+            if use_shared_mapping:
+                if shared_primitive_tile_masks is None:
+                    shared_primitive_tile_masks = primitive_tile_masks.clone()
+                else:
+                    shared_primitive_tile_masks |= primitive_tile_masks
+            else:
+                # Convert to CUDA mapping format
+                mapping = self._convert_masks_to_mapping(
+                    primitive_tile_masks, x_starts, x_ends, y_starts, y_ends
+                )
+                tile_primitive_mappings.append(mapping)
+
+        if use_shared_mapping:
+            if shared_primitive_tile_masks is None:
+                shared_primitive_tile_masks = torch.zeros(
+                    (tiles_h * tiles_w, N), dtype=torch.bool, device=self.device
+                )
+            tile_primitive_mappings = self._convert_masks_to_mapping(
+                shared_primitive_tile_masks, x_starts, x_ends, y_starts, y_ends
             )
-            tile_primitive_mappings.append(mapping)
-        
+
         # Call CUDA batch forward with autograd support
-        # Pass the list of mappings (one per candidate)
+        # FP32 path uses per-candidate mapping list; FP16 path uses one shared mapping tensor.
         out_color_batch, out_alpha_batch = self.cuda_rasterizer.forward_batch(
             means2D, radii, rotations, opacities, colors, colors_orig,
             primitive_templates, global_bmp_sel, self.c_blend, lr_config_tensor, tile_primitive_mappings
@@ -509,7 +527,7 @@ class SimpleTileRenderer(VectorRenderer):
                 else:
                     print("  ⚠️ CUDA kernel call returned None, falling back...")
             except Exception as e:
-                print(f"  ❌ CUDA kernel call failed: {e}")
+                print(f"  ❌ CUDA kernel call failed ({type(e).__name__}); falling back.")
                 # Fallback to sequential processing
                 pass
         
@@ -693,10 +711,10 @@ class SimpleTileRenderer(VectorRenderer):
             return result
             
         except Exception as e:
-            print(f"    ❌ CUDA kernel call failed with exception: {e}")
-            import traceback
-            print(f"    📋 Exception traceback:")
-            traceback.print_exc()
+            print(f"    ❌ CUDA kernel call failed ({type(e).__name__}); falling back.")
+            if DEBUG_MODE:
+                import traceback
+                traceback.print_exc()
             # Return None to trigger fallback
             return None
     
@@ -1876,6 +1894,6 @@ if __name__ == "__main__":
         print("\n✅ SimpleTileRenderer test completed successfully!")
         
     except Exception as e:
-        print(f"❌ Error during rendering: {e}")
+        print(f"❌ Error during rendering ({type(e).__name__})")
         import traceback
         traceback.print_exc()
