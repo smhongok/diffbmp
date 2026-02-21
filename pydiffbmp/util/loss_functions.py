@@ -349,6 +349,7 @@ class LossRegistry:
                        repulsion_ratio: float = 1.5,
                        boundary_weight: float = 1.0,
                        repulsion_weight: float = 1.0,
+                       edge_attraction_weight: float = 1.0,
                        **kwargs) -> torch.Tensor:
         """
         Unified constraint loss combining boundary and collision penalties.
@@ -415,8 +416,22 @@ class LossRegistry:
             # Exclude diagonal (self-comparison)
             mask_diag = ~torch.eye(N, dtype=torch.bool, device=device)
             repulsion_loss = violations[mask_diag].sum() / 2.0  # Divide by 2 for symmetric pairs
+
+        # ========== 3. Edge Attraction Loss (중앙 페널티) ==========
+        edge_loss = torch.tensor(0.0, device=device, requires_grad=True)
         
-        return boundary_weight * boundary_loss + repulsion_weight * repulsion_loss
+        if canvas_size is not None and edge_attraction_weight > 0.0:
+            dist_left = x
+            dist_right = W - x
+            dist_top = y
+            dist_bottom = H - y
+            
+            dists_to_edges = torch.stack([dist_left, dist_right, dist_top, dist_bottom], dim=0) # (4, N)
+            min_dist_to_edge, _ = torch.min(dists_to_edges, dim=0) # (N,)
+
+            edge_loss = torch.sqrt(torch.mean(min_dist_to_edge**2))
+
+        return boundary_weight * boundary_loss + repulsion_weight * repulsion_loss + edge_attraction_weight * edge_loss
     
     @staticmethod
     def size_regularization_loss(rendered: torch.Tensor = None,
