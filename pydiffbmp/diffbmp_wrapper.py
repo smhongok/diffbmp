@@ -44,6 +44,7 @@ class DiffBMPWrapper:
         self.device = torch.device(device)
         self.primitive = None
         self.renderer = None
+        self._disable_cuda_batch = False
         
         # Canvas size
         self.canvas_size = None
@@ -397,7 +398,11 @@ class DiffBMPWrapper:
             I_bg = None
         
         # Try to use CUDA batch rendering if renderer is initialized
-        if self.renderer is not None and hasattr(self.renderer, 'render_from_params_batch'):
+        if (
+            not self._disable_cuda_batch
+            and self.renderer is not None
+            and hasattr(self.renderer, 'render_from_params_batch')
+        ):
             try:
                 return self.renderer.render_from_params_batch(
                     params_list, 
@@ -405,8 +410,9 @@ class DiffBMPWrapper:
                     I_bg=I_bg
                 )
             except Exception as e:
-                # Fallback to sequential on error
-                print(f"CUDA batch rendering failed, falling back to sequential: {e}")
+                # Fallback to sequential on error and suppress repeated retries.
+                self._disable_cuda_batch = True
+                print(f"CUDA batch rendering disabled after failure ({type(e).__name__}); using sequential fallback.")
         
         # Fallback: sequential rendering using self.render()
         results = []
@@ -427,4 +433,3 @@ class DiffBMPWrapper:
             results.append(rendered)
         
         return results
-
