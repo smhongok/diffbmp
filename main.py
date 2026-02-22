@@ -380,6 +380,18 @@ for img_idx, img_path in enumerate(img_paths):
             rendered_np = (rendered_np * 255).astype(np.uint8)
             Image.fromarray(rendered_np).save(output_path)
 
+        if 'postprocessing_effect' in config and config['postprocessing_effect'] is not None:
+            effect_name = config['postprocessing_effect']
+            print(f"Applying post-processing effect: {effect_name}")
+            if effect_name == "blossom":
+                from apps.post_processing import blossom_effect
+                blossom_effect(
+                    renderer=renderer,
+                    x=x, y=y, r=r, theta=theta, v=v, c=c,
+                    I_bg=final_bg,
+                    output_path=output_path,
+                )
+
         if psd_export:
             # Export PSD layers using util/psd_exporter.py with batched processing
             from pydiffbmp.util.psd_exporter import PSDExporter
