@@ -49,11 +49,13 @@
         "do_decay": true,
         "do_gaussian_blur": true,
         "c_blend": 0.3,
-        "alpha_upper_bound" : 0.7
+        "alpha_upper_bound" : 0.7,
+        "bg_color":"random"
     },
     "postprocessing": {
         "output_folder": "outputs/",
         "compute_psnr": true,
         "export_psd": true
-        }
+        },
+    "postprocessing_effect" : "blossom"
 } 
