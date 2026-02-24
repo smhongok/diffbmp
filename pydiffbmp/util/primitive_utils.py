@@ -14,30 +14,40 @@ def expand_primitive_wildcards(primitive_file_config):
         Expanded config (str or list) with wildcards resolved to actual filenames
     """
     def _expand_single(item):
-        """Expand a single item (string or non-string)."""
         if not isinstance(item, str):
             return [item]
         
-        # Check if contains wildcard characters
         if not any(ch in item for ch in ["*", "?", "["]):
             return [item]
         
         # Determine base directory based on extension
+
+        IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG")
+        SVG_EXTS = (".svg",)
+        
         ext = os.path.splitext(item)[1].lower()
-        if ext == ".svg":
-            base_dir = os.path.join("assets", "svg")
-        elif ext in (".png", ".jpg", ".jpeg"):
+        
+        if ext in IMAGE_EXTS or ext == "": 
             base_dir = os.path.join("assets", "primitives")
+            target_exts = IMAGE_EXTS
+        elif ext in SVG_EXTS:
+            base_dir = os.path.join("assets", "svg")
+            target_exts = SVG_EXTS
         else:
             return [item]
         
-        # Expand glob pattern
-        full_pattern = os.path.join(base_dir, item)
         # Use recursive=True if pattern contains **
+        matches = []
         recursive = "**" in item
-        matches = sorted(glob.glob(full_pattern, recursive=recursive))
         
-        # Convert back to relative paths
+        search_patterns = [item] if ext != "" else [item + e for e in target_exts]
+        
+        for pattern in search_patterns:
+            full_pattern = os.path.join(base_dir, pattern)
+            matches.extend(glob.glob(full_pattern, recursive=recursive))
+        
+        matches = sorted(list(set(matches))) 
+        
         rels = []
         prefix = base_dir + os.sep
         for p in matches:
@@ -54,16 +64,8 @@ def expand_primitive_wildcards(primitive_file_config):
         for it in primitive_file_config:
             expanded_list.extend(_expand_single(it))
         return expanded_list
-    
-    # Handle string input
     elif isinstance(primitive_file_config, str):
         expanded = _expand_single(primitive_file_config)
-        # Return list if expanded, otherwise keep as string
-        if len(expanded) > 1:
-            return expanded
-        elif len(expanded) == 1 and expanded[0] != primitive_file_config:
-            return expanded
-        else:
-            return primitive_file_config
+        return expanded if len(expanded) > 1 or (len(expanded) == 1 and expanded[0] != primitive_file_config) else primitive_file_config
     
     return primitive_file_config
