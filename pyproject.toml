@@ -2,13 +2,17 @@
 requires = [
     "setuptools>=42",
     "wheel",
-    "torch>=1.13.0",  # Required for CUDA extension compilation
 ]
 build-backend = "setuptools.build_meta"
 
+[project.urls]
+Homepage = "https://github.com/smhongok/diffbmp"
+Repository = "https://github.com/smhongok/diffbmp"
+Documentation = "https://github.com/smhongok/diffbmp/blob/main/README.md"
+
 [project]
 name = "pydiffbmp"
-version = "0.1.0"
+version = "0.3.1"
 description = "DiffBMP: Fast Differentiable Painting with Any Image Primitives"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -17,6 +21,30 @@ authors = [
     {name = "DiffBMP Team"},
 ]
 keywords = ["differentiable-rendering", "2d-splatting", "image-synthesis", "pytorch", "cuda"]
+
+dependencies = [
+    "torch>=1.13.0",
+    "torchvision",
+    "numpy<2.0",
+    "Pillow",
+    "opencv-python",
+    "matplotlib",
+    "fonttools",
+    "svgwrite",
+    "svgpathtools",
+    "scour",
+    "cairosvg",
+    "psd-tools",
+    "nvidia-ml-py",
+    "tqdm",
+    "piq",
+    "moviepy",
+    "pyvista",
+    "pylrc",
+    "pandas",
+    "scikit-image",
+    "scipy",
+]
 
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -30,4 +58,4 @@ classifiers = [
 ]
 
 [tool.setuptools]
-packages = ["pydiffbmp"]
+# Packages are defined in setup.py to include CUDA extensions
