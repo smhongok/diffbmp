@@ -3,20 +3,30 @@ include README.md
 include LICENSE
 include requirements.txt
 
-# Include CUDA source files
-recursive-include cuda_tile_rasterizer *.cu *.h *.cpp *.py
+# Include CUDA source files (for reference, not compilation)
+recursive-include cuda_tile_rasterizer *.cu *.h *.cpp
+include cuda_tile_rasterizer/*.py
+include cuda_tile_rasterizer/cuda_tile_rasterizer/__init__.py
+include cuda_tile_rasterizer/cuda_tile_rasterizer_fp16/__init__.py
 
-# Include configuration files
-recursive-include configs *.json *.yaml *.yml
-
-# Include assets
-recursive-include assets *.svg *.png *.jpg *.ttf *.otf
-
-# Include pre-built CUDA extensions (.so files)
-recursive-include cuda_tile_rasterizer *.so
+# Include pre-built CUDA extensions (.so files) - only from final locations
+include cuda_tile_rasterizer/cuda_tile_rasterizer/*.so
+include cuda_tile_rasterizer/cuda_tile_rasterizer_fp16/*.so
+include cuda_tile_rasterizer/*.so
 
 # Exclude unnecessary files
 global-exclude __pycache__
 global-exclude *.py[co]
 global-exclude .DS_Store
 global-exclude *.egg-info
+prune cuda_tile_rasterizer/build
+prune configs
+prune assets
+prune images
+prune output
+prune visualization_output
+global-exclude *.json
+global-exclude *.yaml
+global-exclude *.yml
+global-exclude *.sh
+global-exclude *.md

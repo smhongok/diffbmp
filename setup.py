@@ -32,8 +32,8 @@ with open('README.md', 'r', encoding='utf-8') as f:
 
 setup(
     name='pydiffbmp',
-    version='0.3.1',
-    description='DiffBMP: Fast Differentiable Painting with Any Image Primitives',
+    version='0.1.3',
+    description='DiffBMP: Differentiable Rendering with Bitmap Primitives',
     long_description=long_description,
     long_description_content_type='text/markdown',
     author='DiffBMP Team',
