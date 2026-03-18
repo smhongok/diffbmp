@@ -5,19 +5,46 @@
 DiffBMP provides tools and methodologies for fast differentiable painting with any image primitives. It includes initialization techniques, rendering methods, and evaluation scripts aimed at comparing the effectiveness and quality of various vector art generation algorithms.
 
 
-## Requirements
+## Installation
 
-Install dependencies using pip:
+### From PyPI (Recommended)
 
+```bash
+pip install pydiffbmp
 ```
-pip install -r requirements.txt
-```
 
-Install Poppler
+**System Requirements:**
+- **Python**: 3.8, 3.9, 3.10, or 3.11
+- **Platform**: Linux x86_64 (pre-built CUDA binaries included)
+- **GPU**: NVIDIA GPU with CUDA capability 8.6+ (RTX 3090, A100, RTX 4090, L40S, etc.)
+- **CUDA Driver**: 11.8+ (no CUDA toolkit installation required)
+- **PyTorch**: 1.13.0+
 
-```
+Additional system dependencies:
+```bash
 sudo apt-get install poppler-utils
 ```
+
+### From Source (Development)
+
+For development or if you need to customize CUDA kernels:
+
+```bash
+git clone https://github.com/smhongok/diffbmp.git
+cd diffbmp
+pip install -r requirements.txt
+
+# Build CUDA extensions (requires CUDA toolkit 12.3+)
+./build_wheels.sh
+
+# Install in editable mode
+pip install -e .
+```
+
+**Build Requirements** (only for source installation):
+- CUDA Toolkit 12.3+ (recommended)
+- C++ compiler (GCC 9.4.0+ recommended)
+- PyTorch 1.13.0+
 
 ## Usage
 

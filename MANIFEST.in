@@ -12,9 +12,11 @@ recursive-include configs *.json *.yaml *.yml
 # Include assets
 recursive-include assets *.svg *.png *.jpg *.ttf *.otf
 
+# Include pre-built CUDA extensions (.so files)
+recursive-include cuda_tile_rasterizer *.so
+
 # Exclude unnecessary files
 global-exclude __pycache__
 global-exclude *.py[co]
 global-exclude .DS_Store
-global-exclude *.so
 global-exclude *.egg-info
