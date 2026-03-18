@@ -3,25 +3,23 @@
 <p align="center">
   <a href="https://diffbmp.com"><img src="https://img.shields.io/badge/Project-Page-blue" alt="Project Page"></a>
   <a href="https://arxiv.org/abs/2602.22625"><img src="https://img.shields.io/badge/arXiv-2602.22625-b31b1b.svg" alt="arXiv"></a>
+  <a href="https://github.com/smhongok/diffbmp"><img src="https://img.shields.io/badge/GitHub-Repository-181717?logo=github" alt="GitHub"></a>
   <a href="https://pypi.org/project/pydiffbmp/"><img src="https://img.shields.io/pypi/v/pydiffbmp" alt="PyPI"></a>
-  <a href="https://github.com/smhongok/diffbmp"><img src="https://img.shields.io/github/stars/smhongok/diffbmp?style=social" alt="GitHub stars"></a>
 </p>
 
 <p align="center"><strong>Accepted to CVPR 2026</strong></p>
 
 ## Authors
 
-[**Seongmin Hong**](https://smhongok.github.io)<sup>1,*</sup>, 
-[**Junghun James Kim**](https://www.linkedin.com/in/james-hun-kim-a4682b106/)<sup>2,*</sup>, 
+[**Seongmin Hong**](https://smhongok.github.io)<sup>1,\*</sup>, 
+[**Junghun James Kim**](https://www.linkedin.com/in/james-hun-kim-a4682b106/)<sup>2,\*</sup>, 
 [**Daehyeop Kim**](https://www.linkedin.com/in/daehyeop-kim-41536530a/)<sup>3</sup>, 
 [**Insoo Chung**](https://www.linkedin.com/in/insoo-chung-07a242358/)<sup>3</sup>, 
 [**Se Young Chun**](https://icl.snu.ac.kr/)<sup>1,2,3,†</sup>
 
 <sup>1</sup> INMC, <sup>2</sup> IPAI, <sup>3</sup> Dept. of ECE, Seoul National University, Republic of Korea
 
-<sup>*</sup> Co-first authors &nbsp;&nbsp; <sup>†</sup> Corresponding author
-
-**Contact**: {smhongok, jonghean12, 2012abcd, insoo_chung, sychun}@snu.ac.kr
+<sup>\*</sup> Co-first authors &nbsp;&nbsp; <sup>†</sup> Corresponding author
 
 ---
 
@@ -115,13 +113,24 @@ For more details on research code, evaluation scripts, and advanced features, se
 If you use DiffBMP in your research, please cite our paper:
 
 ```bibtex
-@inproceedings{hong2026diffbmp,
-  title={DiffBMP: Differentiable Rendering with Bitmap Primitives},
-  author={Hong, Seongmin and Kim, Junghun James and Kim, Daehyeop and Chung, Insoo and Chun, Se Young},
-  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
-  year={2026}
+@misc{hong2026diffbmp,
+    author    = {Hong, Seongmin and Kim, Junghun James and Kim, Daehyeop and Chung, Insoo and Chun, Se Young},
+    title     = {DiffBMP: Differentiable Rendering with Bitmap Primitives},
+    arxiv     = {2602.22625},
+    year      = {2026}
 }
 ```
+
+---
+
+## 🙏 Acknowledgments
+
+This work was inspired by and builds upon several excellent open-source projects:
+
+- [**DiffVG**](https://github.com/BachiLi/diffvg)
+- [**gsplat**](https://github.com/nerfstudio-project/gsplat)
+
+We thank the authors of these projects for their contributions to the community.
 
 ---
 
