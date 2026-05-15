@@ -5,6 +5,8 @@
 #include <device_launch_parameters.h>
 #include <math_constants.h>
 
+#define DCT_DEFORM_BASIS_COUNT 8
+
 // =======================================================
 // Common structures and utilities for tile-based rasterization
 // =======================================================
@@ -56,13 +58,16 @@ public:
     const float* colors;            // [P, 3] - color logits
     const float* colors_orig;       // [P, H, W, 3] - original color map logits (no gradient)
     const float* primitive_templates; // [T, Ht, Wt] - template masks
+    const float* deform_coeffs;     // [P, 8, 2] - DCT local displacement coefficients
     const int* global_bmp_sel;      // [P] - template selection indices
     float c_blend;                  // Color blending factor
+    float deform_max_disp;          // Maximum local displacement in normalized primitive coords
     
     __host__ __device__ InputTensors(
         const float* means2D, const float* radii, const float* rotations,
         const float* opacities, const float* colors, const float* colors_orig, 
-        const float* primitive_templates, const int* global_bmp_sel, float c_blend);
+        const float* primitive_templates, const float* deform_coeffs,
+        const int* global_bmp_sel, float c_blend, float deform_max_disp);
 };
 
 // Output tensor group for gradients
@@ -75,11 +80,12 @@ public:
     float* grad_rotations;    // [P] - gradients for rotations
     float* grad_opacities;    // [P] - gradients for opacities
     float* grad_colors;       // [P, 3] - gradients for colors
+    float* grad_deform_coeffs; // [P, 8, 2] - gradients for DCT deformation coeffs
     
     __host__ __device__ OutputTensors(
         float* out_color, float* out_alpha,
         float* grad_means2D, float* grad_radii, float* grad_rotations,
-        float* grad_opacities, float* grad_colors);
+        float* grad_opacities, float* grad_colors, float* grad_deform_coeffs);
 };
 
 // Global memory buffers for transmit-over compositing
@@ -156,6 +162,53 @@ __device__ __forceinline__ void atomicAddM2(float* g, float m00, float m01, floa
     atomicAdd(g + 1, m01);
     atomicAdd(g + 2, m10);
     atomicAdd(g + 3, m11);
+}
+
+// --------- DCT deformation utilities ----------
+__device__ __forceinline__ void dct_deform_mode(int k, int& fu, int& fv) {
+    const int modes_u[DCT_DEFORM_BASIS_COUNT] = {1, 0, 1, 2, 0, 2, 1, 2};
+    const int modes_v[DCT_DEFORM_BASIS_COUNT] = {0, 1, 1, 0, 2, 1, 2, 2};
+    fu = modes_u[k];
+    fv = modes_v[k];
+}
+
+__device__ __forceinline__ void dct_basis_and_grad(
+    int k, float u, float v, float& phi, float& dphi_du, float& dphi_dv) {
+    int fu, fv;
+    dct_deform_mode(k, fu, fv);
+    const float uu = 0.5f * (u + 1.0f);
+    const float vv = 0.5f * (v + 1.0f);
+    const float au = CUDART_PI_F * (float)fu * uu;
+    const float av = CUDART_PI_F * (float)fv * vv;
+    const float cu = __cosf(au);
+    const float cv = __cosf(av);
+    const float su = __sinf(au);
+    const float sv = __sinf(av);
+    phi = cu * cv;
+    dphi_du = (fu == 0) ? 0.0f : -0.5f * CUDART_PI_F * (float)fu * su * cv;
+    dphi_dv = (fv == 0) ? 0.0f : -0.5f * CUDART_PI_F * (float)fv * cu * sv;
+}
+
+__device__ __forceinline__ void apply_dct_deformation(
+    const InputTensors& inputs, int prim_idx, float u, float v,
+    float& u_def, float& v_def) {
+    u_def = u;
+    v_def = v;
+    if (inputs.deform_coeffs == nullptr || inputs.deform_max_disp <= 0.0f) {
+        return;
+    }
+
+    float raw_u = 0.0f;
+    float raw_v = 0.0f;
+    const int coeff_base = prim_idx * DCT_DEFORM_BASIS_COUNT * 2;
+    for (int k = 0; k < DCT_DEFORM_BASIS_COUNT; ++k) {
+        float phi, dphi_du, dphi_dv;
+        dct_basis_and_grad(k, u, v, phi, dphi_du, dphi_dv);
+        raw_u += inputs.deform_coeffs[coeff_base + 2 * k + 0] * phi;
+        raw_v += inputs.deform_coeffs[coeff_base + 2 * k + 1] * phi;
+    }
+    u_def = u + inputs.deform_max_disp * tanhf(raw_u);
+    v_def = v + inputs.deform_max_disp * tanhf(raw_v);
 }
 
 // --------- Indexing utilities ----------

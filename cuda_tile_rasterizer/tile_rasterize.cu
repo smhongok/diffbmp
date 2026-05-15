@@ -39,6 +39,7 @@ TileRasterizer::TileRasterizer(int image_h, int image_w, int tile_sz, float sig,
     grad_rotations = nullptr;
     grad_opacities = nullptr;
     grad_colors = nullptr;
+    grad_deform_coeffs = nullptr;
     
     allocateMemory();
 }
@@ -149,6 +150,11 @@ void TileRasterizer::allocateMemory() {
         printf("CUDA Error: Failed to allocate grad_colors: %s\n", cudaGetErrorString(err));
         throw std::runtime_error("CUDA memory allocation failed");
     }
+    err = cudaMalloc(&grad_deform_coeffs, num_primitives * DCT_DEFORM_BASIS_COUNT * 2 * sizeof(float));
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to allocate grad_deform_coeffs: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory allocation failed");
+    }
     
     // Initialize arrays to zero
     cudaMemset(pixel_alphas, 0, total_alpha_size * sizeof(float));
@@ -200,7 +206,8 @@ void TileRasterizer::allocateMemory() {
     cudaMemset(grad_rotations, 0, num_primitives * sizeof(float));
     cudaMemset(grad_opacities, 0, num_primitives * sizeof(float));
     cudaMemset(grad_colors, 0, num_primitives * 3 * sizeof(float));
-    printf("Gradient tensors allocated: means2D=%d, radii=%d, rotations=%d, opacities=%d, colors=%d\n", num_primitives * 2, num_primitives, num_primitives, num_primitives, num_primitives * 3);    
+    cudaMemset(grad_deform_coeffs, 0, num_primitives * DCT_DEFORM_BASIS_COUNT * 2 * sizeof(float));
+    printf("Gradient tensors allocated: means2D=%d, radii=%d, rotations=%d, opacities=%d, colors=%d, deform=%d\n", num_primitives * 2, num_primitives, num_primitives, num_primitives, num_primitives * 3, num_primitives * DCT_DEFORM_BASIS_COUNT * 2);
     
     memory_allocated = true;
     printf("TileRasterizer memory allocated successfully\n");
@@ -283,6 +290,10 @@ void TileRasterizer::freeMemory() {
         cudaFree(grad_colors);
         grad_colors = nullptr;
     }
+    if (grad_deform_coeffs) {
+        cudaFree(grad_deform_coeffs);
+        grad_deform_coeffs = nullptr;
+    }
     
     // Reset tile array sizes
     tile_offsets_size = 0;
@@ -302,7 +313,9 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
     torch::Tensor colors,
     torch::Tensor colors_orig,
     torch::Tensor primitive_templates,
+    torch::Tensor deform_coeffs,
     torch::Tensor global_bmp_sel,
+    float deform_max_disp,
     float c_blend,
     torch::Tensor tile_primitive_mapping) {
     
@@ -313,7 +326,7 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
     
     // Check for null pointers
     if (!pixel_alphas || !pixel_colors_r || !pixel_colors_g || !pixel_colors_b || 
-        !pixel_T_values || !pixel_prim_counts || !sigma_inv || !grad_sigma) {
+        !pixel_T_values || !pixel_prim_counts || !sigma_inv || !grad_sigma || !grad_deform_coeffs) {
         throw std::runtime_error("TileRasterizer has null pointers");
     }
     
@@ -441,8 +454,10 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
             colors.data_ptr<float>(),
             colors_orig.data_ptr<float>(),
             primitive_templates.data_ptr<float>(),
+            deform_coeffs.data_ptr<float>(),
             global_bmp_sel.data_ptr<int>(),
-            c_blend
+            c_blend,
+            deform_max_disp
         ),
         OutputTensors(
             out_color,
@@ -451,7 +466,8 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward(
             grad_radii,
             grad_rotations,
             grad_opacities,
-            grad_colors
+            grad_colors,
+            grad_deform_coeffs
         ),
         GlobalBuffers(
             pixel_alphas, pixel_colors_r, pixel_colors_g, pixel_colors_b, 
@@ -547,12 +563,14 @@ std::tuple<torch::Tensor, torch::Tensor> TileRasterizer::forward_batch(
             // Fallback to empty mapping if not provided
             mapping_b = torch::empty(0, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA));
         }
+        auto deform_coeffs_b = torch::zeros({num_prims, DCT_DEFORM_BASIS_COUNT, 2},
+            torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
         
         // Call single forward for this candidate with its specific mapping
         auto [out_color_single, out_alpha_single] = forward(
             means2D_b, radii_b, rotations_b, opacities_b, colors_b,
-            colors_orig_b, primitive_templates, global_bmp_sel,
-            c_blend, mapping_b
+            colors_orig_b, primitive_templates, deform_coeffs_b, global_bmp_sel,
+            0.0f, c_blend, mapping_b
         );
         
         // Copy results to batch output
@@ -609,14 +627,16 @@ TileRasterizer::backward_batch(
         auto opacities_b = opacities[b];            // (N,)
         auto colors_b = colors[b];                  // (N, 3)
         auto colors_orig_b = colors_orig[b];        // (N, H, W, 3)
+        auto deform_coeffs_b = torch::zeros({num_prims, DCT_DEFORM_BASIS_COUNT, 2},
+            torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
         
         // Call single backward for this candidate
         auto [grad_means2D_single, grad_radii_single, grad_rotations_single, 
-              grad_opacities_single, grad_colors_single] = backward(
+              grad_opacities_single, grad_colors_single, grad_deform_coeffs_single] = backward(
             grad_out_color_b, grad_out_alpha_b,
             means2D_b, radii_b, rotations_b, opacities_b, colors_b,
-            colors_orig_b, primitive_templates, global_bmp_sel,
-            c_blend, lr_config
+            colors_orig_b, primitive_templates, deform_coeffs_b, global_bmp_sel,
+            0.0f, c_blend, lr_config
         );
         
         // Copy gradients to batch output
@@ -635,7 +655,7 @@ TileRasterizer::backward_batch(
                           grad_opacities_batch, grad_colors_batch);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> TileRasterizer::backward(
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> TileRasterizer::backward(
     torch::Tensor grad_out_color,
     torch::Tensor grad_out_alpha,
     torch::Tensor means2D,
@@ -645,7 +665,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     torch::Tensor colors,
     torch::Tensor colors_orig,
     torch::Tensor primitive_templates,
+    torch::Tensor deform_coeffs,
     torch::Tensor global_bmp_sel,
+    float deform_max_disp,
     float c_blend,
     torch::Tensor lr_config) {
     
@@ -656,7 +678,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     
     // Check for null pointers
     if (!pixel_alphas || !pixel_colors_r || !pixel_colors_g || !pixel_colors_b || 
-        !pixel_T_values || !pixel_prim_counts || !sigma_inv || !grad_sigma) {
+        !pixel_T_values || !pixel_prim_counts || !sigma_inv || !grad_sigma || !grad_deform_coeffs) {
         throw std::runtime_error("TileRasterizer has null pointers");
     }
     
@@ -673,6 +695,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     cudaMemset(grad_rotations, 0,  num_primitives * sizeof(float));
     cudaMemset(grad_opacities, 0,  num_primitives * sizeof(float));
     cudaMemset(grad_colors, 0,  num_primitives * 3 * sizeof(float));
+    cudaMemset(grad_deform_coeffs, 0, num_primitives * DCT_DEFORM_BASIS_COUNT * 2 * sizeof(float));
     
     // Start timing for kernel execution only
     backward_start_time = std::chrono::high_resolution_clock::now();
@@ -689,8 +712,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
             colors.data_ptr<float>(),
             colors_orig.data_ptr<float>(),
             primitive_templates.data_ptr<float>(),
+            deform_coeffs.data_ptr<float>(),
             global_bmp_sel.data_ptr<int>(),
-            c_blend
+            c_blend,
+            deform_max_disp
         ),
         OutputTensors(
             out_color,
@@ -699,7 +724,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
             grad_radii,
             grad_rotations,
             grad_opacities,
-            grad_colors
+            grad_colors,
+            grad_deform_coeffs
         ),
         GlobalBuffers(
             pixel_alphas, pixel_colors_r, pixel_colors_g, pixel_colors_b, 
@@ -734,6 +760,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     auto grad_rotations_tensor = torch::zeros({num_primitives}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
     auto grad_opacities_tensor = torch::zeros({num_primitives}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
     auto grad_colors_tensor = torch::zeros({num_primitives, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
+    auto grad_deform_coeffs_tensor = torch::zeros({num_primitives, DCT_DEFORM_BASIS_COUNT, 2}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
 
     // Copy from GPU memory to CUDA tensors
     cudaError_t err;
@@ -772,11 +799,18 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
         throw std::runtime_error("CUDA memory copy failed");
     }
 
+    err = cudaMemcpy(grad_deform_coeffs_tensor.data_ptr<float>(), grad_deform_coeffs,
+                     num_primitives * DCT_DEFORM_BASIS_COUNT * 2 * sizeof(float), cudaMemcpyDeviceToDevice);
+    if (err != cudaSuccess) {
+        printf("CUDA Error: Failed to copy grad_deform_coeffs to CUDA tensor: %s\n", cudaGetErrorString(err));
+        throw std::runtime_error("CUDA memory copy failed");
+    }
+
 #if DEBUG_CUDA_KERNELS
     printf("TileRasterizer::backward: Tensors created successfully\n");
 #endif
     
-    return std::make_tuple(grad_means2D_tensor, grad_radii_tensor, grad_rotations_tensor, grad_opacities_tensor, grad_colors_tensor);
+    return std::make_tuple(grad_means2D_tensor, grad_radii_tensor, grad_rotations_tensor, grad_opacities_tensor, grad_colors_tensor, grad_deform_coeffs_tensor);
 }
 
 // Timing functions implementation

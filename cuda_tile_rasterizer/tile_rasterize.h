@@ -35,6 +35,7 @@ private:
     float* grad_rotations;
     float* grad_opacities;
     float* grad_colors;
+    float* grad_deform_coeffs;
     
     // Track if memory is allocated
     bool memory_allocated;
@@ -76,7 +77,9 @@ public:
         torch::Tensor colors,
         torch::Tensor colors_orig,
         torch::Tensor primitive_templates,
+        torch::Tensor deform_coeffs,
         torch::Tensor global_bmp_sel,
+        float deform_max_disp,
         float c_blend,
         torch::Tensor tile_primitive_mapping);
     
@@ -109,7 +112,7 @@ public:
         torch::Tensor lr_config          // (7,)
     );
     // Backward pass
-    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> backward(
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> backward(
         torch::Tensor grad_out_color,
         torch::Tensor grad_out_alpha,
         torch::Tensor means2D,
@@ -119,7 +122,9 @@ public:
         torch::Tensor colors,
         torch::Tensor colors_orig,
         torch::Tensor primitive_templates,
+        torch::Tensor deform_coeffs,
         torch::Tensor global_bmp_sel,
+        float deform_max_disp,
         float c_blend,
         torch::Tensor lr_config
     );

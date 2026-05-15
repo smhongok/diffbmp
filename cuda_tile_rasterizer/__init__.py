@@ -81,13 +81,28 @@ class TileRasterizer:
             if CUDA_AVAILABLE:
                 _C.init_tile_rasterizer(image_height, image_width, tile_size, sigma, alpha_upper_bound, max_prims_per_pixel, num_primitives)
     
-    def __call__(self, means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, lr_conf, tile_primitive_mapping=None):
+    def __call__(self, means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, lr_conf, tile_primitive_mapping=None, deform_coeffs=None, deform_max_disp=0.0):
         """
         Forward pass using the class-based rasterizer with dynamic tile-primitive mapping
         """
-        
+        if self.use_fp16:
+            if deform_coeffs is not None and float(deform_max_disp) > 0.0:
+                raise RuntimeError("DCT deformation is implemented only for the FP32 CUDA rasterizer in v1.")
+            return self.apply_fn(
+                means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, lr_conf, tile_primitive_mapping,
+                self.image_height, self.image_width, self.tile_size, self.sigma, True
+            )
+
+        if deform_coeffs is None:
+            deform_coeffs = torch.zeros(
+                (means2D.shape[0], 8, 2),
+                dtype=torch.float32,
+                device=means2D.device,
+            )
+
         return self.apply_fn(
-            means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, lr_conf, tile_primitive_mapping,
+            means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, lr_conf,
+            deform_coeffs, float(deform_max_disp), tile_primitive_mapping,
             self.image_height, self.image_width, self.tile_size, self.sigma, True
         )
     
@@ -254,7 +269,8 @@ class TileRasterizerBatchFunction(Function):
 class TileRasterizerFunction(Function):
     @staticmethod
     def forward(ctx, means2D, radii, rotations, opacities, colors, colors_orig, 
-                primitive_templates, global_bmp_sel, c_blend, lr_conf, tile_primitive_mapping, image_height, image_width, tile_size, sigma, use_class=False):        
+                primitive_templates, global_bmp_sel, c_blend, lr_conf, deform_coeffs, deform_max_disp,
+                tile_primitive_mapping, image_height, image_width, tile_size, sigma, use_class=False):
         # Ensure all inputs are float32 for CUDA kernel compatibility
         means2D = means2D.float()
         radii = radii.float()
@@ -264,6 +280,7 @@ class TileRasterizerFunction(Function):
         colors_orig = colors_orig.float()
         primitive_templates = primitive_templates.float()
         lr_conf = lr_conf.float()
+        deform_coeffs = deform_coeffs.float().contiguous()
         # c_blend is a scalar, ensure it's float32
         if isinstance(c_blend, torch.Tensor):
             c_blend = c_blend.float()
@@ -277,7 +294,7 @@ class TileRasterizerFunction(Function):
             # Convert global_bmp_sel to int32 to match CUDA kernel expectation
             global_bmp_sel_int32 = global_bmp_sel.to(dtype=torch.int32)
             # Save for backward (save the int32 version)
-            ctx.save_for_backward(means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel_int32, lr_conf)
+            ctx.save_for_backward(means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel_int32, lr_conf, deform_coeffs)
             ctx.image_height = image_height
             ctx.image_width = image_width
             ctx.tile_size = tile_size
@@ -285,12 +302,13 @@ class TileRasterizerFunction(Function):
             ctx.use_class = use_class
             ctx.tile_primitive_mapping = tile_primitive_mapping
             ctx.c_blend = c_blend
+            ctx.deform_max_disp = float(deform_max_disp)
             # Use class-based approach with global memory management
-            out_color, out_alpha = _C.rasterize_tiles_class(means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel_int32, c_blend, tile_primitive_mapping)
+            out_color, out_alpha = _C.rasterize_tiles_class(means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, deform_coeffs, global_bmp_sel_int32, float(deform_max_disp), c_blend, tile_primitive_mapping)
         else:
             # Save for backward (original approach)
             global_bmp_sel_int32 = global_bmp_sel.to(dtype=torch.int32)
-            ctx.save_for_backward(means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel_int32, lr_conf)
+            ctx.save_for_backward(means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel_int32, lr_conf, deform_coeffs)
             ctx.image_height = image_height
             ctx.image_width = image_width
             ctx.tile_size = tile_size
@@ -298,6 +316,7 @@ class TileRasterizerFunction(Function):
             ctx.use_class = use_class
             ctx.tile_primitive_mapping = tile_primitive_mapping
             ctx.c_blend = c_blend
+            ctx.deform_max_disp = float(deform_max_disp)
             # Use original approach
             out_color, out_alpha = _C.rasterize_tiles(
                 means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel_int32, c_blend, tile_primitive_mapping, 
@@ -307,7 +326,7 @@ class TileRasterizerFunction(Function):
     
     @staticmethod
     def backward(ctx, grad_out_color, grad_out_alpha):        
-        means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, lr_conf = ctx.saved_tensors
+        means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, lr_conf, deform_coeffs = ctx.saved_tensors
         
         # Debug: Check if alpha gradient is None
         if DEBUG_MODE:
@@ -329,15 +348,17 @@ class TileRasterizerFunction(Function):
         # Call CUDA backward
         # Use class-based approach with shared global memory (global_bmp_sel is already int32)
         if ctx.use_class and CUDA_AVAILABLE:
-            grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors = _C.rasterize_tiles_backward_class(
-                grad_out_color, grad_out_alpha, means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, ctx.c_blend, lr_config)
+            grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors, grad_deform_coeffs = _C.rasterize_tiles_backward_class(
+                grad_out_color, grad_out_alpha, means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates,
+                deform_coeffs, global_bmp_sel, ctx.deform_max_disp, ctx.c_blend, lr_config)
         else:
             # Use original approach
             grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors = _C.rasterize_tiles_backward(
                 grad_out_color, grad_out_alpha, means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, ctx.c_blend, lr_config,
                 ctx.image_height, ctx.image_width, ctx.tile_size, ctx.sigma)
+            grad_deform_coeffs = torch.zeros_like(deform_coeffs)
                 
-        return grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors, None, None, None, None, None, None, None, None, None, None, None
+        return grad_means2D, grad_radii, grad_rotations, grad_opacities, grad_colors, None, None, None, None, None, grad_deform_coeffs, None, None, None, None, None, None, None
 
 class TileRasterizerFunctionFP16(Function):
     @staticmethod

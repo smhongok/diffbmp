@@ -260,8 +260,10 @@ __global__ void tile_rasterize_forward_kernel(
             const float u =  c*ndx + s*ndy;                        // [-?,?]
             const float v = -s*ndx + c*ndy;
 
-            const float tex_x = (u + 1.f) * 0.5f * (prim_config.template_width  - 1); // [0..W-1]
-            const float tex_y = (v + 1.f) * 0.5f * (prim_config.template_height - 1); // [0..H-1]
+            float u_sample, v_sample;
+            apply_dct_deformation(inputs, n, u, v, u_sample, v_sample);
+            const float tex_x = (u_sample + 1.f) * 0.5f * (prim_config.template_width  - 1); // [0..W-1]
+            const float tex_y = (v_sample + 1.f) * 0.5f * (prim_config.template_height - 1); // [0..H-1]
 
             const float* tex = &inputs.primitive_templates[template_idx * prim_config.template_height * prim_config.template_width];
             mask_value = bilinear_sample(tex, prim_config.template_height, prim_config.template_width, tex_y, tex_x);
@@ -569,8 +571,10 @@ __global__ void tile_rasterize_forward_kernel_debug(
                     const float u =  c*ndx + s*ndy;                        // [-?,?]
                     const float v = -s*ndx + c*ndy;
 
-                    const float tex_x = (u + 1.f) * 0.5f * (prim_config.template_width  - 1); // [0..W-1]
-                    const float tex_y = (v + 1.f) * 0.5f * (prim_config.template_height - 1); // [0..H-1]
+                    float u_sample, v_sample;
+                    apply_dct_deformation(inputs, n, u, v, u_sample, v_sample);
+                    const float tex_x = (u_sample + 1.f) * 0.5f * (prim_config.template_width  - 1); // [0..W-1]
+                    const float tex_y = (v_sample + 1.f) * 0.5f * (prim_config.template_height - 1); // [0..H-1]
 
                     const float* tex = &inputs.primitive_templates[template_idx * prim_config.template_height * prim_config.template_width];
                     mask_value = bilinear_sample(tex, prim_config.template_height, prim_config.template_width, tex_y, tex_x);

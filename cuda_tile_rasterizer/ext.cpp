@@ -16,7 +16,9 @@ std::tuple<torch::Tensor, torch::Tensor> rasterize_tiles_class(
     torch::Tensor colors,
     torch::Tensor colors_orig,
     torch::Tensor primitive_templates,
+    torch::Tensor deform_coeffs,
     torch::Tensor global_bmp_sel,
+    float deform_max_disp,
     float c_blend,
     torch::Tensor tile_primitive_mapping) {
     
@@ -24,11 +26,11 @@ std::tuple<torch::Tensor, torch::Tensor> rasterize_tiles_class(
         throw std::runtime_error("TileRasterizer not initialized. Call init_tile_rasterizer first.");
     }
     
-    return global_tile_rasterizer->forward(means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, tile_primitive_mapping);
+    return global_tile_rasterizer->forward(means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, deform_coeffs, global_bmp_sel, deform_max_disp, c_blend, tile_primitive_mapping);
 }
 
 // Class-based backward function
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> rasterize_tiles_backward_class(
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> rasterize_tiles_backward_class(
     torch::Tensor grad_out_color,
     torch::Tensor grad_out_alpha,
     torch::Tensor means2D,
@@ -38,7 +40,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     torch::Tensor colors,
     torch::Tensor colors_orig,
     torch::Tensor primitive_templates,
+    torch::Tensor deform_coeffs,
     torch::Tensor global_bmp_sel,
+    float deform_max_disp,
     float c_blend,
     torch::Tensor lr_config_tensor) {
     
@@ -46,7 +50,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
         throw std::runtime_error("TileRasterizer not initialized or forward pass not called.");
     }
         
-    return global_tile_rasterizer->backward(grad_out_color, grad_out_alpha, means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, global_bmp_sel, c_blend, lr_config_tensor);
+    return global_tile_rasterizer->backward(grad_out_color, grad_out_alpha, means2D, radii, rotations, opacities, colors, colors_orig, primitive_templates, deform_coeffs, global_bmp_sel, deform_max_disp, c_blend, lr_config_tensor);
 }
 
 // Python binding for forward_batch (class-based, globally managed memory)

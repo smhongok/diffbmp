@@ -80,6 +80,12 @@ if type(config["initialization"]["N"]) is list:
 pp_conf = config["preprocessing"]
 opt_conf = config["optimization"]
 use_fp16 = opt_conf.get("use_fp16", False)  # Default to False for CPU compatibility
+deformation_conf = opt_conf.get("deformation", config.get("deformation", {})) or {}
+deformation_enabled = bool(deformation_conf.get("enabled", False))
+if deformation_enabled and use_fp16:
+    print("DCT deformation is FP32-only in v1; overriding optimization.use_fp16=false.")
+    use_fp16 = False
+    opt_conf["use_fp16"] = False
 
 exist_bg = pp_conf.get("exist_bg", True)
 
@@ -258,6 +264,7 @@ for img_idx, img_path in enumerate(img_paths):
         "c_blend": config["optimization"].get("c_blend", 0.0),  # Pass c_blend from config
         "primitive_colors": primitive_colors,  # Pass primitive colors for c_o initialization
         "max_prims_per_pixel": config["initialization"].get("max_prims_per_pixel"),  # Pass max_prims_per_pixel from config
+        "deformation": deformation_conf,
     }
 
     renderer = renderer_class(**renderer_kwargs)
@@ -296,13 +303,18 @@ for img_idx, img_path in enumerate(img_paths):
         print("🎬 MP4 recording enabled - will record optimization process")
     
     # Optimize parameters
-    x, y, r, v, theta, c = renderer.optimize_parameters(
+    optimized_params = renderer.optimize_parameters(
         x, y, r, v, theta, c,
         I_target, 
         opt_conf=opt_conf,
         target_binary_mask=target_binary_mask,
         initializer=initializer
     )
+    deform_coeffs = None
+    if len(optimized_params) == 7:
+        x, y, r, v, theta, c, deform_coeffs = optimized_params
+    else:
+        x, y, r, v, theta, c = optimized_params
 
     if not exist_bg:
         I_target = I_target[..., :3]  # Remove alpha channel if exists
@@ -323,7 +335,9 @@ for img_idx, img_path in enumerate(img_paths):
     output_path = os.path.join(output_dir, f'output_{timestamp}{output_suffix}.png')
 
     # Standard PDF export for SVG-only primitives (if no raster primitives)
-    if not (primitive_loader and primitive_loader.has_raster_primitives()):
+    if deformation_enabled:
+        print("Skipping PDF vector export for deformable primitives; PNG preview and deformation params are exported.")
+    if (not deformation_enabled) and not (primitive_loader and primitive_loader.has_raster_primitives()):
         # Single image PDF export
         pdf_path = os.path.join(output_dir, f'output_{timestamp}{output_suffix}.pdf')
         exporter = PDFExporter(
@@ -361,7 +375,7 @@ for img_idx, img_path in enumerate(img_paths):
                 from torch.cuda.amp import autocast
                 autocast_ctx = autocast()
             with autocast_ctx:
-                rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=final_bg, sigma=0.0, is_final=True)
+                rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=final_bg, sigma=0.0, is_final=True, deform_coeffs=deform_coeffs)
                 
                 # Save rendered image directly from rendered tensor 
                 rendered_np = rendered.detach().cpu().numpy()
@@ -372,13 +386,20 @@ for img_idx, img_path in enumerate(img_paths):
 
         else:
             # Still render final PNG for preview/compatibility
-            rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=final_bg, sigma=0.0, is_final=True)
+            rendered, rendered_alpha = renderer.render_from_params(x, y, r, theta, v, c, return_alpha=True, I_bg=final_bg, sigma=0.0, is_final=True, deform_coeffs=deform_coeffs)
             if not exist_bg:
                 save_spatial_constraints(rendered, rendered_alpha, output_path)
             # Save rendered image directly from rendered tensor 
             rendered_np = rendered.detach().cpu().numpy()
             rendered_np = (rendered_np * 255).astype(np.uint8)
             Image.fromarray(rendered_np).save(output_path)
+            if deform_coeffs is not None:
+                deform_path = output_path.replace(".png", "_deform_coeffs.pt")
+                torch.save({
+                    "deform_coeffs": deform_coeffs.detach().cpu(),
+                    "deformation": deformation_conf,
+                }, deform_path)
+                print(f"Saved deformation coefficients to: {deform_path}")
 
         if 'postprocessing_effect' in config and config['postprocessing_effect'] is not None:
             effect_name = config['postprocessing_effect']
@@ -392,7 +413,9 @@ for img_idx, img_path in enumerate(img_paths):
                     output_path=output_path,
                 )
 
-        if psd_export:
+        if psd_export and deformation_enabled:
+            print("Skipping PSD layer export for deformable primitives in v1.")
+        if psd_export and not deformation_enabled:
             # Export PSD layers using util/psd_exporter.py with batched processing
             from pydiffbmp.util.psd_exporter import PSDExporter
             

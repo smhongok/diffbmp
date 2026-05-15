@@ -18,19 +18,22 @@ __host__ __device__ PrimitiveConfig::PrimitiveConfig(int num_primitives, int num
 __host__ __device__ InputTensors::InputTensors(
     const float* means2D, const float* radii, const float* rotations,
     const float* opacities, const float* colors, const float* colors_orig, 
-    const float* primitive_templates, const int* global_bmp_sel, float c_blend)
+    const float* primitive_templates, const float* deform_coeffs,
+    const int* global_bmp_sel, float c_blend, float deform_max_disp)
     : means2D(means2D), radii(radii), rotations(rotations),
       opacities(opacities), colors(colors), colors_orig(colors_orig), 
-      primitive_templates(primitive_templates), global_bmp_sel(global_bmp_sel), c_blend(c_blend) {}
+      primitive_templates(primitive_templates), deform_coeffs(deform_coeffs),
+      global_bmp_sel(global_bmp_sel), c_blend(c_blend), deform_max_disp(deform_max_disp) {}
 
 // Output tensor group constructors
 __host__ __device__ OutputTensors::OutputTensors(
     float* out_color, float* out_alpha,
     float* grad_means2D, float* grad_radii, float* grad_rotations,
-    float* grad_opacities, float* grad_colors)
+    float* grad_opacities, float* grad_colors, float* grad_deform_coeffs)
     : out_color(out_color), out_alpha(out_alpha),
       grad_means2D(grad_means2D), grad_radii(grad_radii), grad_rotations(grad_rotations),
-      grad_opacities(grad_opacities), grad_colors(grad_colors) {}
+      grad_opacities(grad_opacities), grad_colors(grad_colors),
+      grad_deform_coeffs(grad_deform_coeffs) {}
 
 // Global buffers constructors
 __host__ __device__ GlobalBuffers::GlobalBuffers(

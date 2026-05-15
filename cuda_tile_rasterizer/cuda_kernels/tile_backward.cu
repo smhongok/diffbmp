@@ -195,8 +195,10 @@ __device__ inline void backward_over_one_pixel(
             const float ndy = dy * inv_r;
             const float u =  c*ndx + s*ndy;
             const float v = -s*ndx + c*ndy;
-            const float tex_x = (u + 1.f) * 0.5f * (prim_config.template_width  - 1);
-            const float tex_y = (v + 1.f) * 0.5f * (prim_config.template_height - 1);
+            float u_sample, v_sample;
+            apply_dct_deformation(inputs, n, u, v, u_sample, v_sample);
+            const float tex_x = (u_sample + 1.f) * 0.5f * (prim_config.template_width  - 1);
+            const float tex_y = (v_sample + 1.f) * 0.5f * (prim_config.template_height - 1);
 
             const float* tex = &inputs.primitive_templates[
                 template_idx * prim_config.template_height * prim_config.template_width];
@@ -289,8 +291,31 @@ __device__ inline void backward_over_one_pixel(
         const float ndy = dy * inv_r;
         const float u =  c*ndx + s*ndy;
         const float v = -s*ndx + c*ndy;
-        const float tex_x = (u + 1.f) * 0.5f * (prim_config.template_width  - 1);
-        const float tex_y = (v + 1.f) * 0.5f * (prim_config.template_height - 1);
+        float u_sample = u;
+        float v_sample = v;
+        float raw_du = 0.0f;
+        float raw_dv = 0.0f;
+        float tanh_du = 0.0f;
+        float tanh_dv = 0.0f;
+        float sech2_du = 1.0f;
+        float sech2_dv = 1.0f;
+        if (inputs.deform_coeffs != nullptr && inputs.deform_max_disp > 0.0f) {
+            const int coeff_base = n * DCT_DEFORM_BASIS_COUNT * 2;
+            for (int basis_idx = 0; basis_idx < DCT_DEFORM_BASIS_COUNT; ++basis_idx) {
+                float phi_basis, dphi_du_tmp, dphi_dv_tmp;
+                dct_basis_and_grad(basis_idx, u, v, phi_basis, dphi_du_tmp, dphi_dv_tmp);
+                raw_du += inputs.deform_coeffs[coeff_base + 2 * basis_idx + 0] * phi_basis;
+                raw_dv += inputs.deform_coeffs[coeff_base + 2 * basis_idx + 1] * phi_basis;
+            }
+            tanh_du = tanhf(raw_du);
+            tanh_dv = tanhf(raw_dv);
+            sech2_du = 1.0f - tanh_du * tanh_du;
+            sech2_dv = 1.0f - tanh_dv * tanh_dv;
+            u_sample = u + inputs.deform_max_disp * tanh_du;
+            v_sample = v + inputs.deform_max_disp * tanh_dv;
+        }
+        const float tex_x = (u_sample + 1.f) * 0.5f * (prim_config.template_width  - 1);
+        const float tex_y = (v_sample + 1.f) * 0.5f * (prim_config.template_height - 1);
 
         if (template_idx >= 0 && template_idx < prim_config.num_templates) {
             const float* tex = &inputs.primitive_templates[
@@ -322,8 +347,40 @@ __device__ inline void backward_over_one_pixel(
             const float dmask_dv = dmask_dy_tex * dv2y;
 
             const float dL_dmask = dLdalpha * dalpha_dmask;
-            const float dL_du = dL_dmask * dmask_du;
-            const float dL_dv = dL_dmask * dmask_dv;
+            const float dL_du_sample = dL_dmask * dmask_du;
+            const float dL_dv_sample = dL_dmask * dmask_dv;
+            float dL_du = dL_du_sample;
+            float dL_dv = dL_dv_sample;
+
+            if (inputs.deform_coeffs != nullptr && inputs.deform_max_disp > 0.0f) {
+                const int coeff_base = n * DCT_DEFORM_BASIS_COUNT * 2;
+                float draw_du_base = 0.0f;
+                float draw_dv_base = 0.0f;
+                float drawv_du_base = 0.0f;
+                float drawv_dv_base = 0.0f;
+                for (int basis_idx = 0; basis_idx < DCT_DEFORM_BASIS_COUNT; ++basis_idx) {
+                    float phi_basis, dphi_du_base, dphi_dv_base;
+                    dct_basis_and_grad(basis_idx, u, v, phi_basis, dphi_du_base, dphi_dv_base);
+                    const float coeff_u = inputs.deform_coeffs[coeff_base + 2 * basis_idx + 0];
+                    const float coeff_v = inputs.deform_coeffs[coeff_base + 2 * basis_idx + 1];
+                    draw_du_base += coeff_u * dphi_du_base;
+                    draw_dv_base += coeff_u * dphi_dv_base;
+                    drawv_du_base += coeff_v * dphi_du_base;
+                    drawv_dv_base += coeff_v * dphi_dv_base;
+
+                    const float grad_coeff_u = dL_du_sample * inputs.deform_max_disp * sech2_du * phi_basis;
+                    const float grad_coeff_v = dL_dv_sample * inputs.deform_max_disp * sech2_dv * phi_basis;
+                    atomicAdd(&outputs.grad_deform_coeffs[coeff_base + 2 * basis_idx + 0], grad_coeff_u);
+                    atomicAdd(&outputs.grad_deform_coeffs[coeff_base + 2 * basis_idx + 1], grad_coeff_v);
+                }
+
+                const float du_sample_du = 1.0f + inputs.deform_max_disp * sech2_du * draw_du_base;
+                const float du_sample_dv = inputs.deform_max_disp * sech2_du * draw_dv_base;
+                const float dv_sample_du = inputs.deform_max_disp * sech2_dv * drawv_du_base;
+                const float dv_sample_dv = 1.0f + inputs.deform_max_disp * sech2_dv * drawv_dv_base;
+                dL_du = dL_du_sample * du_sample_du + dL_dv_sample * dv_sample_du;
+                dL_dv = dL_du_sample * du_sample_dv + dL_dv_sample * dv_sample_dv;
+            }
 
             // (6) ∂(u,v)/∂(μx,μy,r,φ)   (r is scale)
             // u = ( c*dx + s*dy)/r,   v = (-s*dx + c*dy)/r

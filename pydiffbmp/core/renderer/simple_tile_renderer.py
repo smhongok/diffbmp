@@ -87,7 +87,8 @@ class SimpleTileRenderer(VectorRenderer):
     """
     
     def __init__(self, canvas_size: Tuple[int, int], S: torch.Tensor, 
-                 tile_size: int = 32, max_prims_per_pixel: int = None, **kwargs):
+                 tile_size: int = 32, max_prims_per_pixel: int = None,
+                 deformation: Optional[dict] = None, **kwargs):
         """
         Initialize the tile renderer.
         
@@ -101,6 +102,17 @@ class SimpleTileRenderer(VectorRenderer):
         print("="*10,"Initializing SimpleTileRenderer...","="*10)
         super().__init__(canvas_size, S, **kwargs)
         self.tile_size = tile_size
+        self.deformation_config = deformation or {}
+        self.deformation_enabled = bool(self.deformation_config.get("enabled", False))
+        self.deform_num_basis = int(self.deformation_config.get("num_basis", 8))
+        if self.deformation_enabled and self.deform_num_basis != 8:
+            raise ValueError("DCT-CUDA deformation v1 requires num_basis=8.")
+        self.deform_max_disp = float(self.deformation_config.get("max_disp", 0.15 if self.deformation_enabled else 0.0))
+        self.deform_basis_freq = torch.tensor(
+            [1, 1, 2, 2, 2, 3, 3, 4],
+            device=self.device,
+            dtype=torch.float32,
+        )
         
         # Calculate tile grid dimensions
         self.tiles_h = (self.H + tile_size - 1) // tile_size
@@ -173,7 +185,8 @@ class SimpleTileRenderer(VectorRenderer):
     def render_from_params(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor, 
                            theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
                            return_alpha: bool = False, I_bg: torch.Tensor = None, 
-                           sigma: float = 0.0, lr_conf: dict = None, is_final: bool = False) -> torch.Tensor:
+                           sigma: float = 0.0, lr_conf: dict = None, is_final: bool = False,
+                           deform_coeffs: torch.Tensor = None) -> torch.Tensor:
         """
         Memory-efficient tile-based rendering.
         
@@ -251,9 +264,9 @@ class SimpleTileRenderer(VectorRenderer):
         self._forward_compute_time_accum = 0.0
         
         if use_parallel:
-            output = self._process_tiles_parallel(x, y, r, theta, v, c, sigma, I_bg, global_bmp_sel, output, lr_conf, is_final=is_final, return_alpha=return_alpha)
+            output = self._process_tiles_parallel(x, y, r, theta, v, c, sigma, I_bg, global_bmp_sel, output, lr_conf, is_final=is_final, return_alpha=return_alpha, deform_coeffs=deform_coeffs)
         else:
-            output = self._process_tiles_sequential(x, y, r, theta, v, c, sigma, I_bg, global_bmp_sel, output, lr_conf, is_final=is_final)
+            output = self._process_tiles_sequential(x, y, r, theta, v, c, sigma, I_bg, global_bmp_sel, output, lr_conf, is_final=is_final, deform_coeffs=deform_coeffs)
         
         # Update PyTorch forward timing statistics (core compute only)
         self.pytorch_forward_time += self._forward_compute_time_accum
@@ -433,7 +446,8 @@ class SimpleTileRenderer(VectorRenderer):
                                  sigma: float, I_bg: torch.Tensor,
                                  global_bmp_sel: torch.Tensor, output: torch.Tensor, lr_conf: dict,
                                  is_final: bool = False,
-                                 return_alpha: bool = False) -> torch.Tensor:
+                                 return_alpha: bool = False,
+                                 deform_coeffs: torch.Tensor = None) -> torch.Tensor:
         """Sequential tile processing (original method)."""
         if return_alpha:
             alpha = torch.zeros((self.H, self.W), device=self.device, dtype=output.dtype)
@@ -457,10 +471,10 @@ class SimpleTileRenderer(VectorRenderer):
                 
                 # Render this tile with selected primitives only
                 tile_result = self._render_tile(
-                    x, y, r, theta, v, c, c_blend, tile_primitive_indices,
+                    x, y, r, theta, v, c, tile_primitive_indices,
                     x_start, x_end, y_start, y_end, sigma, I_bg,
                     global_bmp_sel=global_bmp_sel, is_final=is_final,
-                    return_alpha=return_alpha
+                    return_alpha=return_alpha, deform_coeffs=deform_coeffs
                 )
                 
                 # Place result in output canvas
@@ -479,7 +493,8 @@ class SimpleTileRenderer(VectorRenderer):
     def _process_tiles_parallel(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                                theta: torch.Tensor, v: torch.Tensor, c: torch.Tensor,
                                sigma: float, I_bg: torch.Tensor, global_bmp_sel: torch.Tensor, output: torch.Tensor, lr_conf: dict, is_final: bool = False,
-                               return_alpha: bool = False) -> torch.Tensor:
+                               return_alpha: bool = False,
+                               deform_coeffs: torch.Tensor = None) -> torch.Tensor:
         """True vectorized tile processing using PyTorch operations."""
         
         # Pre-compute all tile boundaries
@@ -515,7 +530,7 @@ class SimpleTileRenderer(VectorRenderer):
                     x, y, r, theta, v, c, sigma, I_bg,
                     global_bmp_sel, primitive_tile_masks,
                     x_starts, x_ends, y_starts, y_ends, lr_conf, is_final=is_final,
-                    return_alpha=return_alpha
+                    return_alpha=return_alpha, deform_coeffs=deform_coeffs
                 )
 
                 if result is not None:
@@ -549,7 +564,7 @@ class SimpleTileRenderer(VectorRenderer):
                 x_starts[tile_idx].item(), x_ends[tile_idx].item(),
                 y_starts[tile_idx].item(), y_ends[tile_idx].item(),
                 sigma, I_bg, global_bmp_sel=global_bmp_sel, is_final=is_final,
-                return_alpha=return_alpha
+                return_alpha=return_alpha, deform_coeffs=deform_coeffs
             )
             
             # Place result in output canvas
@@ -574,7 +589,8 @@ class SimpleTileRenderer(VectorRenderer):
                                global_bmp_sel: torch.Tensor, primitive_tile_masks: torch.Tensor,
                                x_starts: torch.Tensor, x_ends: torch.Tensor,
                                y_starts: torch.Tensor, y_ends: torch.Tensor, lr_conf: dict, is_final: bool = False,
-                               return_alpha: bool = False) -> torch.Tensor:
+                               return_alpha: bool = False,
+                               deform_coeffs: torch.Tensor = None) -> torch.Tensor:
 
         try:
             # Prepare input tensors for CUDA kernel
@@ -583,6 +599,12 @@ class SimpleTileRenderer(VectorRenderer):
             rotations = theta  # (N,)
             opacities = v  # (N,)
             colors = c  # (N, 3)
+            if deform_coeffs is None:
+                deform_coeffs_cuda = torch.zeros((len(radii), 8, 2), device=means2D.device, dtype=torch.float32)
+                deform_max_disp = 0.0
+            else:
+                deform_coeffs_cuda = deform_coeffs.to(device=means2D.device, dtype=torch.float32).contiguous()
+                deform_max_disp = self.deform_max_disp
             
             # Use instance variables for c_o and c_blend
             if self.c_o is not None:
@@ -679,7 +701,9 @@ class SimpleTileRenderer(VectorRenderer):
             cuda_color, cuda_alpha = self.cuda_rasterizer(
                 means2D, radii, rotations, opacities, colors, c_o,
                 primitive_templates, global_bmp_sel, c_blend,
-                lr_config_tensor, tile_primitive_mapping
+                lr_config_tensor, tile_primitive_mapping,
+                deform_coeffs=deform_coeffs_cuda,
+                deform_max_disp=deform_max_disp
             )
             
             if DEBUG_MODE:
@@ -941,6 +965,20 @@ class SimpleTileRenderer(VectorRenderer):
         num_iterations = opt_conf.get("num_iterations", 100)
         lr_conf = opt_conf["learning_rate"]
         lr = lr_conf.get("default", 0.1)
+        deform_conf = opt_conf.get("deformation", self.deformation_config or {})
+        deform_enabled = bool(deform_conf.get("enabled", False))
+        deform_start_iter = int(num_iterations * float(deform_conf.get("start_frac", 0.30)))
+        deform_coeffs = None
+        if deform_enabled and self.use_fp16:
+            print("DCT deformation is FP32-only in v1; disabling renderer fp16 for this optimization.")
+            self.use_fp16 = False
+        if deform_enabled:
+            deform_coeffs = torch.zeros(
+                (x.numel(), 8, 2),
+                device=self.device,
+                dtype=torch.float32,
+                requires_grad=True,
+            )
         
         # Mixed-precision scaler (only used if use_fp16 is True)
         # PyTorch 2.0+: GradScaler('cuda'), PyTorch 1.x: GradScaler()
@@ -958,14 +996,17 @@ class SimpleTileRenderer(VectorRenderer):
         os.makedirs(self.output_path, exist_ok=True)
         
         # Create optimizer (constants already merged in config)
-        optimizer = torch.optim.Adam([
+        opt_groups = [
             {'params': x, 'lr': lr*lr_conf['gain_x']},
             {'params': y, 'lr': lr*lr_conf['gain_y']},
             {'params': r, 'lr': lr*lr_conf['gain_r']},
             {'params': v, 'lr': lr*lr_conf['gain_v'] * (1000.0 / x.numel())},
             {'params': theta, 'lr': lr*lr_conf['gain_theta']},
             {'params': c, 'lr': lr*lr_conf.get("gain_c", 1.0)},
-        ])
+        ]
+        if deform_enabled:
+            opt_groups.append({'params': deform_coeffs, 'lr': lr * float(deform_conf.get("gain_deform", 0.15))})
+        optimizer = torch.optim.Adam(opt_groups)
         
         # Create scheduler if decay is enabled (constants already merged in config)
         do_decay = opt_conf.get("do_decay", False)
@@ -994,7 +1035,8 @@ class SimpleTileRenderer(VectorRenderer):
                 'r': [],
                 'v': [],
                 'theta': [],
-                'c': []
+                'c': [],
+                'deform_coeffs': []
             }
             print("🎬 Recording optimization process for MP4 export...")
         
@@ -1055,19 +1097,30 @@ class SimpleTileRenderer(VectorRenderer):
                 #optimizer.step()
 
             else:
+                active_deform_coeffs = deform_coeffs if (deform_enabled and iteration >= deform_start_iter) else None
                 if is_no_bg_mode:
                     rendered, rendered_alpha = self.render_from_params(
-                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=I_bg, lr_conf=lr_conf, return_alpha=True
+                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=I_bg, lr_conf=lr_conf, return_alpha=True,
+                        deform_coeffs=active_deform_coeffs
                     )
                 else:
                     rendered = self.render_from_params(
-                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=I_bg, lr_conf=lr_conf
+                        x, y, r, theta, v, c, sigma=current_sigma, I_bg=I_bg, lr_conf=lr_conf,
+                        deform_coeffs=active_deform_coeffs
                     )
                     rendered_alpha = None
                 
                 # Compute loss
                 loss = self.compute_loss(rendered, target_image, x, y, r, v, theta, c, 
                                          rendered_alpha=rendered_alpha)
+                if active_deform_coeffs is not None:
+                    freq = self.deform_basis_freq.to(active_deform_coeffs.device, active_deform_coeffs.dtype).view(1, 8, 1)
+                    coeff_l2 = (active_deform_coeffs ** 2).mean()
+                    freq_l2 = ((active_deform_coeffs * freq) ** 2).mean()
+                    disp_proxy = torch.tanh(active_deform_coeffs).abs().mean()
+                    loss = loss + float(deform_conf.get("lambda_coeff", 0.001)) * coeff_l2
+                    loss = loss + float(deform_conf.get("lambda_freq", 0.001)) * freq_l2
+                    loss = loss + float(deform_conf.get("lambda_disp", 0.0001)) * disp_proxy
                 
                 # Backward pass
                 start_backward_time = time.time()
@@ -1113,6 +1166,8 @@ class SimpleTileRenderer(VectorRenderer):
                         print("📊 C (Color) Gradients (First 10):")
                         for i in range(min(10, len(c))):
                             print(f"  Primitive {i}: R={c.grad[i,0].item():.6f}, G={c.grad[i,1].item():.6f}, B={c.grad[i,2].item():.6f}")
+                    if deform_coeffs is not None and deform_coeffs.grad is not None:
+                        print(f"📊 DCT deform grad mean: {deform_coeffs.grad.abs().mean().item():.6f}")
                     
                     print("=" * 80)
 
@@ -1138,6 +1193,8 @@ class SimpleTileRenderer(VectorRenderer):
                 optimization_history['v'].append(v.detach().clone())
                 optimization_history['theta'].append(theta.detach().clone())
                 optimization_history['c'].append(c.detach().clone())
+                if deform_coeffs is not None:
+                    optimization_history['deform_coeffs'].append(deform_coeffs.detach().clone())
 
             if DEBUG_MODE:
                 print(f"    📊 Input data ranges: iteration {iteration}")
@@ -1157,6 +1214,10 @@ class SimpleTileRenderer(VectorRenderer):
                     epoch=iteration,
                     return_components=True
                 )
+                if deform_enabled:
+                    loss_components["deform_active"] = float(iteration >= deform_start_iter)
+                    if deform_coeffs is not None:
+                        loss_components["deform_abs_mean"] = float(deform_coeffs.detach().abs().mean().item())
                 
                 # Format loss components string
                 components_str = ", ".join([f"{name}={val:.6f}" for name, val in loss_components.items()])
@@ -1225,6 +1286,24 @@ class SimpleTileRenderer(VectorRenderer):
             print(f"VRAM used: {mb(used):.0f} MiB, {gb(used):.3f} GB")
             print("="*60)
         
+        if deform_enabled:
+            with torch.no_grad():
+                deform_flat = deform_coeffs.detach().abs().flatten()
+                deform_stats = {
+                    "enabled": True,
+                    "type": "dct",
+                    "num_basis": 8,
+                    "max_disp": self.deform_max_disp,
+                    "start_iteration": deform_start_iter,
+                    "coeff_l2": float((deform_coeffs.detach() ** 2).mean().item()),
+                    "coeff_abs_mean": float(deform_flat.mean().item()),
+                    "coeff_abs_p95": float(torch.quantile(deform_flat, 0.95).item()),
+                }
+            os.makedirs(self.output_path, exist_ok=True)
+            with open(os.path.join(self.output_path, "deformation_stats.json"), "w", encoding="utf-8") as f:
+                import json
+                json.dump(deform_stats, f, indent=2)
+            return x, y, r, v, theta, c, deform_coeffs
         return x, y, r, v, theta, c
 
     def do_prune(self, x , y , r, v, theta, c, prune_conf, initializer, target_image) -> None:
@@ -1306,7 +1385,8 @@ class SimpleTileRenderer(VectorRenderer):
                      primitive_indices: List[int], x_start: int, x_end: int,
                      y_start: int, y_end: int, sigma: float,
                      I_bg: torch.Tensor, global_bmp_sel: torch.Tensor = None, 
-                     is_final: bool = False, return_alpha: bool = False) -> torch.Tensor:
+                     is_final: bool = False, return_alpha: bool = False,
+                     deform_coeffs: torch.Tensor = None) -> torch.Tensor:
         """
         Render a single tile with only the selected primitives.
         
@@ -1388,7 +1468,8 @@ class SimpleTileRenderer(VectorRenderer):
                 tile_masks = self._generate_tile_masks(
                     tile_x, tile_y, tile_r, tile_theta, tile_X, tile_Y, sigma,
                     global_primitive_indices=primitive_indices,
-                    global_bmp_sel=global_bmp_sel, is_final=is_final
+                    global_bmp_sel=global_bmp_sel, is_final=is_final,
+                    deform_coeffs=deform_coeffs[indices] if deform_coeffs is not None else None
                 )
                 
                 # Convert logits to actual values
@@ -1416,7 +1497,8 @@ class SimpleTileRenderer(VectorRenderer):
             tile_masks = self._generate_tile_masks(
                 tile_x, tile_y, tile_r, tile_theta, tile_X, tile_Y, sigma,
                 global_primitive_indices=primitive_indices,
-                global_bmp_sel=global_bmp_sel, is_final=is_final
+                global_bmp_sel=global_bmp_sel, is_final=is_final,
+                deform_coeffs=deform_coeffs[indices] if deform_coeffs is not None else None
             )
             
             # Convert logits to actual values
@@ -1459,7 +1541,8 @@ class SimpleTileRenderer(VectorRenderer):
     def _generate_tile_masks(self, x: torch.Tensor, y: torch.Tensor, r: torch.Tensor,
                             theta: torch.Tensor, tile_X: torch.Tensor, tile_Y: torch.Tensor,
                             sigma: float, global_primitive_indices: List[int] = None,
-                            global_bmp_sel: torch.Tensor = None, is_final: bool = False) -> torch.Tensor:
+                            global_bmp_sel: torch.Tensor = None, is_final: bool = False,
+                            deform_coeffs: torch.Tensor = None) -> torch.Tensor:
         """
         Generate masks for primitives within a tile using actual self.S primitives.
         Based on _batched_soft_rasterize logic but for tile regions only.
@@ -1519,6 +1602,20 @@ class SimpleTileRenderer(VectorRenderer):
             R_inv[:, 0, 0] = cos_t; R_inv[:, 0, 1] = sin_t
             R_inv[:, 1, 0] = -sin_t; R_inv[:, 1, 1] = cos_t
             uv = torch.einsum('bij,bjhw->bihw', R_inv, pos)
+            if deform_coeffs is not None and self.deform_max_disp > 0.0:
+                modes = torch.tensor(
+                    [[1, 0], [0, 1], [1, 1], [2, 0], [0, 2], [2, 1], [1, 2], [2, 2]],
+                    device=self.device,
+                    dtype=uv.dtype,
+                )
+                u_norm = 0.5 * (uv[:, 0] + 1.0)
+                v_norm = 0.5 * (uv[:, 1] + 1.0)
+                basis = []
+                for mode_u, mode_v in modes:
+                    basis.append(torch.cos(np.pi * mode_u * u_norm) * torch.cos(np.pi * mode_v * v_norm))
+                basis = torch.stack(basis, dim=1)
+                raw = (basis.unsqueeze(2) * deform_coeffs.to(dtype=uv.dtype).view(num_primitives, 8, 2, 1, 1)).sum(dim=1)
+                uv = uv + self.deform_max_disp * torch.tanh(raw)
             grid = uv.permute(0, 2, 3, 1)  # (num_primitives, tile_h, tile_w, 2)
             
             # Build bmp_exp: one bitmap per instance, cycling through p if provided
