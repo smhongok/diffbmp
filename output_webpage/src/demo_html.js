@@ -64,12 +64,16 @@ function animateSplatGroup(svgId, numClass, minY, maxY, yBase, scaleParams, offs
 // ---------------------------
 // 예시: 여러 SVG 그룹 동시 적용
 // ---------------------------
+const svgEl = document.getElementById('svgsplat1');
+const vb = svgEl?.getAttribute('viewBox')?.trim().split(/\s+/).map(Number);
+const yBase = (vb && vb.length === 4) ? vb[1] + (4 / 5) * vb[3] : 240;
+
 animateSplatGroup(
   "svgsplat1",   // svgId
   numClass,             // numClass
   minY,          // minY
   maxY,           // maxY
-  240,           // yBase (기본 y값)
+  yBase,         // yBase: viewBox minY + 4/5 * height
   { max: maxScale, min: minScale }, // scaleParams
   'x'            // offsetAxis: x축에 offset 배분
 );
