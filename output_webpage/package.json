@@ -13,6 +13,7 @@
     "live-server": "^1.2.2"
   },
   "dependencies": {
-    "gsap": "^3.13.0"
+    "gsap": "^3.13.0",
+    "puppeteer": "^24.43.1"
   }
 }
