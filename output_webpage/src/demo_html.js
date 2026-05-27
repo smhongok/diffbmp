@@ -37,6 +37,7 @@ function animateSplatGroup(svgId, numClass, minY, maxY, yBase, scaleParams, offs
   const layers = gsap.utils.toArray(`#${svgId} > g > g`);
   gsap.set(layers, { opacity: 1 });
 
+  const N = layers.length;
   layers.forEach((g, i) => {
     const group = i % numClass;
     const yOffset = yOffsetArr[group];
@@ -45,7 +46,7 @@ function animateSplatGroup(svgId, numClass, minY, maxY, yBase, scaleParams, offs
       rotation: 0,
       scale: scale,
       autoAlpha: 1,
-      delay: 0.5 + i * 0.005,
+      delay: 0.5 + i * 5 / N,
       fill: "#0F0F70",
       ease: "back.out(1.4)"
     };
