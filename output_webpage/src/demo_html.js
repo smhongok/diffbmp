@@ -37,6 +37,26 @@ function animateSplatGroup(svgId, numClass, minY, maxY, yBase, scaleParams, offs
   const layers = gsap.utils.toArray(`#${svgId} > g > g`);
   gsap.set(layers, { opacity: 1 });
 
+  // Compute per-class baseline-corrected fixed axis value so all letters share the same visual baseline.
+  // Formula from special/gif_webpage: gsapFixed = yBase + b.y*(scale-1) - scale*baselineY
+  const classReps = Array.from({ length: numClass }, (_, c) =>
+    layers.find((_, i) => i % numClass === c)
+  );
+  function extractInnerBaselineY(gElem) {
+    const innerPath = gElem?.querySelector('path');
+    if (!innerPath) return null;
+    const t = innerPath.getAttribute('transform') || '';
+    const m = t.match(/translate\(\s*[\d.e+-]+[\s,]+\s*([\d.e+-]+)/i);
+    return m ? parseFloat(m[1]) : null;
+  }
+  const baselineY = extractInnerBaselineY(classReps[0]) ?? 65.18;
+  const localBBoxes = classReps.map(g =>
+    g ? g.getBBox() : { x: 0, y: 0, width: 0, height: 0 }
+  );
+  const classGsapFixed = localBBoxes.map(b =>
+    yBase + b.y * (scale - 1) - scale * baselineY
+  );
+
   const N = layers.length;
   layers.forEach((g, i) => {
     const group = i % numClass;
@@ -52,9 +72,9 @@ function animateSplatGroup(svgId, numClass, minY, maxY, yBase, scaleParams, offs
     };
     if (offsetAxis === 'x') {
       animProps.x = yOffset;
-      animProps.y = yBase;
+      animProps.y = classGsapFixed[group];
     } else {
-      animProps.x = yBase;
+      animProps.x = classGsapFixed[group];
       animProps.y = yOffset;
     }
     gsap.from(g, animProps);
