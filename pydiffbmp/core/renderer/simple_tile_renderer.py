@@ -16,25 +16,33 @@ DEBUG_MODE_DETAIL = False
 DEBUG_MODE_SAVE = False
 
 # Try to import CUDA extension, fallback to PyTorch if not available
-try:
-    import sys
-    import os
-    # Add CUDA extension path to sys.path
-    cuda_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cuda_tile_rasterizer',  'cuda_tile_rasterizer')
-    cuda_fp16_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cuda_tile_rasterizer',  'cuda_tile_rasterizer_fp16')
-    print(f"cuda_tile_rasterizer path: {cuda_path}")
-    print(f"cuda_tile_rasterizer_fp16 path: {cuda_fp16_path}")
-    if cuda_path not in sys.path:
-        sys.path.insert(0, cuda_path)
-    if cuda_fp16_path not in sys.path:
-        sys.path.insert(0, cuda_fp16_path)
-    from cuda_tile_rasterizer import TileRasterizer, print_cuda_timing_stats, print_cuda_timing_stats_fp16
-    CUDA_AVAILABLE = True
-    print("CUDA tile rasterizer loaded successfully!")
-            
-except ImportError as e:
+# Check environment variable to force PyTorch fallback
+FORCE_PYTORCH_FALLBACK = os.environ.get('DIFFBMP_FORCE_PYTORCH', '0') == '1'
+
+if FORCE_PYTORCH_FALLBACK:
     CUDA_AVAILABLE = False
-    print(f"CUDA tile rasterizer not available, using PyTorch fallback: {e}")
+    print("🔧 CUDA custom kernel disabled by DIFFBMP_FORCE_PYTORCH environment variable")
+    print("   Using PyTorch fallback implementation")
+else:
+    try:
+        import sys
+        import os
+        # Add CUDA extension path to sys.path
+        cuda_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cuda_tile_rasterizer',  'cuda_tile_rasterizer')
+        cuda_fp16_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cuda_tile_rasterizer',  'cuda_tile_rasterizer_fp16')
+        print(f"cuda_tile_rasterizer path: {cuda_path}")
+        print(f"cuda_tile_rasterizer_fp16 path: {cuda_fp16_path}")
+        if cuda_path not in sys.path:
+            sys.path.insert(0, cuda_path)
+        if cuda_fp16_path not in sys.path:
+            sys.path.insert(0, cuda_fp16_path)
+        from cuda_tile_rasterizer import TileRasterizer, print_cuda_timing_stats, print_cuda_timing_stats_fp16
+        CUDA_AVAILABLE = True
+        print("CUDA tile rasterizer loaded successfully!")
+                
+    except ImportError as e:
+        CUDA_AVAILABLE = False
+        print(f"CUDA tile rasterizer not available, using PyTorch fallback: {e}")
 
 # CUDA_AVAILABLE=False
 # CUDA_AVAILABLE_FP16=False
@@ -1397,8 +1405,9 @@ class SimpleTileRenderer(VectorRenderer):
                 
                 # Apply c_o and c_blend
                 c_o_sigmoid = torch.sigmoid(tile_c_o)
-                c_blend_sigmoid = torch.sigmoid(tile_c_blend)
-                rgb = rgb * (1 - c_blend_sigmoid) + c_o_sigmoid * c_blend_sigmoid
+                # NOTE: c_blend is already in [0, 1] range from config, no sigmoid needed
+                # This matches CUDA implementation: sr = (1-c_blend)*c_i + c_blend*c_o
+                rgb = rgb * (1 - tile_c_blend) + c_o_sigmoid * tile_c_blend
                 
                 # Apply alpha to masks
                 a = tile_masks * alpha.view(-1, 1, 1)
@@ -1430,8 +1439,10 @@ class SimpleTileRenderer(VectorRenderer):
             h_center, w_center = tile_c_o.shape[1] // 2, tile_c_o.shape[2] // 2
             c_o_sigmoid_center = c_o_sigmoid[:, h_center, w_center, :]  # (num_primitives_in_tile, 3)
             
-            c_blend_sigmoid = torch.sigmoid(tile_c_blend).item()  # Convert to scalar
-            rgb = rgb * (1 - c_blend_sigmoid) + c_o_sigmoid_center * c_blend_sigmoid
+            # NOTE: c_blend is already in [0, 1] range from config, no sigmoid needed
+            # This matches CUDA implementation: sr = (1-c_blend)*c_i + c_blend*c_o
+            c_blend_val = tile_c_blend.item()  # Convert to scalar
+            rgb = rgb * (1 - c_blend_val) + c_o_sigmoid_center * c_blend_val
             
             # Apply alpha to masks
             a = tile_masks * alpha.view(-1, 1, 1)
